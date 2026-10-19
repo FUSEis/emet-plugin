@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -90,7 +91,13 @@ def is_prompt(entry: dict[str, Any]) -> bool:
 
 
 def prompt_text(entry: dict[str, Any]) -> str:
-    return "\n".join(part.get("text", "") for part in content_parts(entry) if part.get("type") == "text")
+    text = "\n".join(part.get("text", "") for part in content_parts(entry) if part.get("type") == "text")
+    # Slash commands arrive wrapped in tags; show them as typed
+    name = re.search(r"<command-name>(.*?)</command-name>", text, re.S)
+    if name:
+        args = re.search(r"<command-args>(.*?)</command-args>", text, re.S)
+        return f"{name.group(1).strip()} {args.group(1).strip() if args else ''}".strip()
+    return text
 
 
 def split_turns(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -239,7 +246,8 @@ def build_spans(turn: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def build_envelope(session_id: str, turn: list[dict[str, Any]], cfg: dict[str, str], hook_input: dict[str, Any]) -> dict[str, Any]:
     prompt = turn[0]
-    title = prompt_text(prompt).strip().splitlines()[0][:255] if prompt_text(prompt).strip() else ""
+    text = prompt_text(prompt).strip()
+    title = text.splitlines()[0][:255] if text else ""
     return strip_nul(
         {
             "tenant_ref": cfg["tenant_ref"],
