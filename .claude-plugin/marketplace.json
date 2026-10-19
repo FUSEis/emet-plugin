@@ -1,0 +1,16 @@
+{
+  "name": "emet-plugins",
+  "owner": {
+    "name": "Emet"
+  },
+  "metadata": {
+    "description": "Emet plugins that send coding-agent traces to Emet for claim verification"
+  },
+  "plugins": [
+    {
+      "name": "emet",
+      "source": "./claude-code",
+      "description": "Sends each Claude Code turn to Emet so its claims can be checked against the tool results that produced them"
+    }
+  ]
+}
