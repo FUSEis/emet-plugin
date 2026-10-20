@@ -4,7 +4,7 @@ Plugins that send coding-agent turns to [Emet](https://emet.so), so the claims a
 
 | Folder | Host | Status |
 |---|---|---|
-| `claude/` | Claude Code | Spike (EM-331) |
+| `claude/` | Claude Code | Preview |
 
 Each plugin folder is self-contained, because Anthropic's directory installs only the plugin folder.
 
