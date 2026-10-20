@@ -53,15 +53,21 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
         return Outcome(0, False, False, type(error).__name__)
 
 
-def queue_name(envelope: Dict[str, Any]) -> str:
-    """Names a queued envelope so that names sort in the order they were queued."""
-    first = envelope["spans"][0]["span_id"] if envelope.get("spans") else ""
-    key = f"{envelope.get('trace_id')}/{first}".encode()
-    return f"{time.time_ns():020d}-{hashlib.sha256(key).hexdigest()[:16]}.json"
-
-
 def queued(root: Path) -> List[Path]:
     return sorted((root / "queue").glob("*.json"))
+
+
+def queue_name(root: Path, envelope: Dict[str, Any]) -> str:
+    """Names a queued envelope so that names sort in the order they were queued. The number only
+    ever grows, since clocks can repeat a value (Windows) or step back."""
+    first = envelope["spans"][0]["span_id"] if envelope.get("spans") else ""
+    key = f"{envelope.get('trace_id')}/{first}".encode()
+    sequence = time.time_ns()
+    files = queued(root)
+    if files:
+        with contextlib.suppress(ValueError):
+            sequence = max(sequence, int(files[-1].name.split("-", 1)[0]) + 1)
+    return f"{sequence:020d}-{hashlib.sha256(key).hexdigest()[:16]}.json"
 
 
 def remove(path: Path) -> None:
@@ -71,18 +77,19 @@ def remove(path: Path) -> None:
 
 
 def enqueue(root: Path, envelope: Dict[str, Any]) -> None:
-    storage.write_json(root / "queue" / queue_name(envelope), envelope)
-    files = queued(root)
-    sizes = {}
-    for path in files:
-        with contextlib.suppress(FileNotFoundError):
-            sizes[path] = path.stat().st_size
-    total = sum(sizes.values())
-    while files and (len(files) > QUEUE_MAX_FILES or total > QUEUE_MAX_BYTES):
-        oldest = files.pop(0)
-        total -= sizes.get(oldest, 0)
-        remove(oldest)
-        storage.log(root, f"queue full, dropped {oldest.name}")
+    with storage.locked(root / "queue.lock"):
+        storage.write_json(root / "queue" / queue_name(root, envelope), envelope)
+        files = queued(root)
+        sizes = {}
+        for path in files:
+            with contextlib.suppress(FileNotFoundError):
+                sizes[path] = path.stat().st_size
+        total = sum(sizes.values())
+        while files and (len(files) > QUEUE_MAX_FILES or total > QUEUE_MAX_BYTES):
+            oldest = files.pop(0)
+            total -= sizes.get(oldest, 0)
+            remove(oldest)
+            storage.log(root, f"queue full, dropped {oldest.name}")
 
 
 def describe(outcome: Outcome) -> str:
