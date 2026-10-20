@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/FUSEis/emet-plugin/security/advisories/new
+    about: Report security issues privately, not as public issues.

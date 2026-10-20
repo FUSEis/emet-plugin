@@ -1,30 +1,52 @@
 {
   "name": "emet",
   "displayName": "Emet",
-  "version": "0.0.1",
-  "description": "Sends each Claude Code turn to Emet so its claims can be checked against the tool results that produced them",
+  "version": "0.1.0",
+  "description": "Sends each Claude Code turn to Emet, which checks the claims in the answer against the tool results behind them.",
   "author": {
-    "name": "Emet"
+    "name": "Emet",
+    "url": "https://emet.so"
   },
   "homepage": "https://emet.so",
-  "keywords": ["tracing", "observability", "verification", "emet"],
+  "repository": "https://github.com/FUSEis/emet-plugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "verification",
+    "observability",
+    "tracing",
+    "hallucination",
+    "emet"
+  ],
   "userConfig": {
     "api_key": {
       "type": "string",
-      "title": "Emet application key",
-      "description": "The key from your Emet application's Keys page",
-      "sensitive": true
+      "title": "Emet key",
+      "description": "The key from your Emet application's Keys page. Stored in your system keychain.",
+      "sensitive": true,
+      "required": true
     },
     "tenant_ref": {
       "type": "string",
-      "title": "Team external ID",
-      "description": "The external ID of the Emet team these sessions belong to"
+      "title": "Team ID",
+      "description": "The external ID of the Emet team these sessions belong to.",
+      "required": true
     },
     "endpoint": {
       "type": "string",
       "title": "Emet endpoint",
-      "description": "Base URL of the Emet API",
+      "description": "Base URL of the Emet API. Change it only for a self-hosted or staging Emet.",
       "default": "https://app.emet.so"
+    },
+    "capture_mode": {
+      "type": "string",
+      "title": "Capture mode",
+      "description": "sanitized sends content with secrets redacted, full sends content as is, metadata sends no content (Emet cannot check claims).",
+      "options": [
+        "sanitized",
+        "full",
+        "metadata"
+      ],
+      "default": "sanitized"
     }
   }
 }
