@@ -16,7 +16,8 @@ SECRETS = [
     ("stripe_key", "sk_live_" + "f" * 24),
     ("google_api_key", "AIza" + "g" * 35),
     ("npm_token", "npm_" + "h" * 36),
-    ("jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"),
+    # Built from parts so secret scanners do not mistake the fixture for a real token
+    ("jwt", ".".join(["eyJ" + "hbGciOiJub25lIn0", "eyJ" + "zdWIiOiJ0ZXN0In0", "c2lnbmF0dXJlLXZhbHVl"])),
     ("emet_key", "Abcd1234.ZyxwVuts98765432QwertyUiop123456"),
     ("private_key", "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----"),
 ]
@@ -108,5 +109,13 @@ def test_clip_keeps_both_ends_and_says_so():
     assert content.clip("short", 40) == "short"
 
 
-def test_strip_nul_everywhere():
-    assert content.strip_nul({"a\x00": ["b\x00c", 1]}) == {"a\x00": ["bc", 1]}
+def test_clean_removes_nul_and_lone_surrogates_everywhere():
+    cleaned = content.clean({"a\x00": ["b\x00c", 1, "x\ud800y"]})
+    assert cleaned == {"a": ["bc", 1, "x\ufffdy"]}
+    "".join(cleaned["a"][::2]).encode("utf-8")
+
+
+def test_secrets_in_keys_are_redacted():
+    key = "ghp_" + "k" * 36
+    walked = content.walk_strings({key: "value"}, lambda text: content.redact(text)[0])
+    assert list(walked) == ["[REDACTED:github_token]"]

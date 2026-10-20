@@ -17,6 +17,9 @@ def data_dir(environ: Mapping[str, str] = os.environ) -> Path:
     root = Path(environ.get("CLAUDE_PLUGIN_DATA") or Path.home() / ".emet" / "claude-code")
     for path in (root, root / "state", root / "queue"):
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # mkdir leaves the mode of a folder that already existed alone
+        if sys.platform != "win32" and path.stat().st_mode & 0o077:
+            path.chmod(0o700)
     return root
 
 

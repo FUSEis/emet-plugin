@@ -1,4 +1,7 @@
 import json
+import os
+
+import pytest
 
 from emet_claude import transcript as tr
 
@@ -74,8 +77,14 @@ def test_by_person(transcript):
 def test_persisted_output_reads_the_saved_file(transcript):
     saved = transcript.saved_output("toolu_9.txt", "full output")
     part = {"type": "tool_result", "content": f"<persisted-output>\nOutput too large (50KB). Full output saved to: {saved}\n\nPreview..."}
-    assert tr.persisted_output(transcript.path, part, None) == "full output"
-    assert tr.persisted_output(transcript.path, {"content": "x"}, {"persistedOutputPath": str(saved)}) == "full output"
+    assert tr.persisted_output(transcript.path, part, None) == ("full output", False)
+    assert tr.persisted_output(transcript.path, {"content": "x"}, {"persistedOutputPath": str(saved)}) == ("full output", False)
+
+
+def test_persisted_output_says_when_it_was_cut(transcript, monkeypatch):
+    monkeypatch.setattr(tr, "PERSISTED_MAX_BYTES", 10)
+    saved = transcript.saved_output("big.txt", "x" * 50)
+    assert tr.persisted_output(transcript.path, {"content": ""}, {"persistedOutputPath": str(saved)}) == ("x" * 10, True)
 
 
 def test_persisted_output_refuses_paths_outside_the_session_folder(transcript, tmp_path):
@@ -85,6 +94,33 @@ def test_persisted_output_refuses_paths_outside_the_session_folder(transcript, t
     assert tr.persisted_output(transcript.path, part, {"persistedOutputPath": str(outside)}) is None
     sneaky = transcript.folder / "tool-results" / ".." / ".." / "secrets.txt"
     assert tr.persisted_output(transcript.path, {"content": ""}, {"persistedOutputPath": str(sneaky)}) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_subagent_links_out_of_the_folder_are_ignored(transcript, tmp_path):
+    outside = tmp_path / "elsewhere.jsonl"
+    outside.write_text("{}\n")
+    path = transcript.subagent("a2", "toolu_link")
+    path.unlink()
+    path.symlink_to(outside)
+    assert "toolu_link" not in tr.subagents(transcript.path)
+
+
+def test_images_in_messages_leave_a_placeholder(transcript):
+    entry = transcript.write(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                ],
+            },
+        }
+    )
+    assert tr.text_of(entry) == "what is this\n[image content not shown]"
+    assert tr.has_binary(entry)
 
 
 def test_subagents_are_found_by_launching_tool_call(transcript):

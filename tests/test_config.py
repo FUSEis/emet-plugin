@@ -41,6 +41,16 @@ def test_endpoint_must_be_https_unless_local():
 
 
 def test_key_hint_never_shows_the_secret():
-    config = load({"CLAUDE_PLUGIN_OPTION_API_KEY": "Abcd1234.secretsecret"})
+    config = load({"CLAUDE_PLUGIN_OPTION_API_KEY": "Abcd1234.secretsecretsecret12"})
     assert config.key_hint == "Abcd1234…"
     assert "secret" not in config.key_hint
+
+
+def test_key_hint_shows_nothing_of_an_unexpected_key():
+    for value in ("short", "hunter2hunter2", "abc.def", "Abcd1234.short"):
+        assert load({"CLAUDE_PLUGIN_OPTION_API_KEY": value}).key_hint == "set"
+    assert load({}).key_hint == ""
+
+
+def test_malformed_endpoint_is_a_problem_not_a_crash():
+    assert "not a valid URL" in endpoint_problem("https://[::1")

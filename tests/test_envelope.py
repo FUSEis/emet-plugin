@@ -165,6 +165,44 @@ def test_images_become_placeholders_and_mark_the_span_truncated(transcript):
     assert "image content not shown" in json.dumps(tool["payload"]["result"])
 
 
+def test_an_image_the_user_attached_marks_the_model_span_truncated(transcript):
+    transcript.write(
+        {
+            "type": "user",
+            "promptSource": "typed",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                ],
+            },
+        }
+    )
+    transcript.text("msg_1", "A login page.")
+    (model,) = by_kind(spans_of(build(transcript)[0]), "model")
+    assert model["is_truncated"] is True
+    assert model["payload"]["input_messages"][0]["parts"][0]["content"] == "what is this\n[image content not shown]"
+
+
+def test_a_cut_saved_output_marks_the_tool_span_truncated(transcript, monkeypatch):
+    monkeypatch.setattr(tr, "PERSISTED_MAX_BYTES", 100)
+    saved = transcript.saved_output("cut.txt", "y" * 1000)
+    transcript.prompt("big")
+    transcript.tool_use("msg_1", "toolu_1", "Bash", {"command": "cat big"})
+    transcript.tool_result("toolu_1", "preview", tool_use_result={"persistedOutputPath": str(saved)})
+    transcript.text("msg_2", "done")
+    (tool,) = by_kind(spans_of(build(transcript)[0]), "tool")
+    assert tool["is_truncated"] is True and len(tool["payload"]["result"]) == 100
+
+
+def test_lone_surrogates_do_not_abort_a_turn(transcript):
+    transcript.prompt("odd \ud800 text")
+    transcript.text("msg_1", "ok")
+    _, envelopes, _ = build(transcript)[0]
+    json.dumps(envelopes, ensure_ascii=False).encode("utf-8")
+
+
 def test_saved_outputs_are_sent_in_full(transcript):
     saved = transcript.saved_output("b1.txt", "line\n" * 5000)
     transcript.prompt("big")

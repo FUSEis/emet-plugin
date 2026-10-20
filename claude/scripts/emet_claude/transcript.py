@@ -18,6 +18,7 @@ LOCAL_COMMAND = re.compile(
 PERSISTED_PATH = re.compile(r"Full output saved to: (\S+)")
 # Never read more than this from a saved tool output
 PERSISTED_MAX_BYTES = 8 * 1024 * 1024
+BINARY_PARTS = ("image", "document")
 
 
 def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List[Tuple[int, Entry]], int]:
@@ -58,7 +59,18 @@ def content_parts(entry: Entry) -> List[Dict[str, Any]]:
 
 
 def text_of(entry: Entry) -> str:
-    return "\n".join(part.get("text") or "" for part in content_parts(entry) if part.get("type") == "text")
+    """Returns the text of a message, with a placeholder where it held an image or a document."""
+    texts = []
+    for part in content_parts(entry):
+        if part.get("type") == "text":
+            texts.append(part.get("text") or "")
+        elif part.get("type") in BINARY_PARTS:
+            texts.append(f"[{part['type']} content not shown]")
+    return "\n".join(texts)
+
+
+def has_binary(entry: Entry) -> bool:
+    return any(part.get("type") in BINARY_PARTS for part in content_parts(entry))
 
 
 def starts_turn(entry: Entry) -> bool:
@@ -113,8 +125,8 @@ def session_folder(transcript: Path) -> Path:
     return transcript.with_suffix("")
 
 
-def persisted_output(transcript: Path, part: Dict[str, Any], result: Any) -> Optional[str]:
-    """Returns the full text of a tool output Claude Code saved to disk instead of the transcript, if there is one.
+def persisted_output(transcript: Path, part: Dict[str, Any], result: Any) -> Optional[Tuple[str, bool]]:
+    """Returns the text of a tool output Claude Code saved to disk instead of the transcript, and whether it was cut short.
 
     Reads only from this session's own tool-results folder, whatever path the transcript names.
     """
@@ -132,8 +144,9 @@ def persisted_output(transcript: Path, part: Dict[str, Any], result: Any) -> Opt
         if path.parent != folder or not path.is_file():
             continue
         with open(path, "rb") as handle:
-            data = handle.read(PERSISTED_MAX_BYTES)
-        return data.decode("utf-8", "replace")
+            data = handle.read(PERSISTED_MAX_BYTES + 1)
+        cut = len(data) > PERSISTED_MAX_BYTES
+        return data[:PERSISTED_MAX_BYTES].decode("utf-8", "replace"), cut
     return None
 
 
@@ -143,6 +156,7 @@ def subagents(transcript: Path) -> Dict[str, Tuple[Path, Dict[str, Any]]]:
     folder = session_folder(transcript) / "subagents"
     if not folder.is_dir():
         return found
+    real_folder = folder.resolve()
     for meta_path in folder.glob("agent-*.meta.json"):
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -150,6 +164,9 @@ def subagents(transcript: Path) -> Dict[str, Tuple[Path, Dict[str, Any]]]:
             continue
         tool_use_id = meta.get("toolUseId") if isinstance(meta, dict) else None
         agent_path = meta_path.with_name(meta_path.name[: -len(".meta.json")] + ".jsonl")
+        # A link pointing out of the folder could make the plugin send some other file
+        if agent_path.is_symlink() or agent_path.resolve().parent != real_folder:
+            continue
         if isinstance(tool_use_id, str) and agent_path.is_file():
             found[tool_use_id] = (agent_path, meta)
     return found

@@ -213,10 +213,45 @@ def test_hook_mode_without_configuration_only_records_the_problem(monkeypatch, e
     assert status(environ)["problem"] == "No Emet key is set."
 
 
-def test_session_start_checks_the_key_then_sends(transcript, environ, emet):
+def test_session_start_checks_the_key_and_sends_only_finished_turns(transcript, environ, emet):
     emet.statuses = [400]
-    finished_turn(transcript)
+    earlier = finished_turn(transcript)
+    finished_turn(transcript, "latest", "maybe still running")
     commands.run_worker("session-start", json.dumps(transcript.hook_input()).encode(), environ)
     assert emet.envelopes[0] == {}
     assert status(environ)["key_check"] == "accepted"
-    assert len(emet.envelopes) == 2
+    assert [env["trace_id"] for env in emet.envelopes[1:]] == [earlier["uuid"]]
+
+
+def test_subagent_stop_does_not_send_the_turn_still_running(transcript, environ, emet):
+    prompt = transcript.prompt("research it")
+    transcript.tool_use("msg_1", "toolu_agent", "Agent", {"prompt": "dig"})
+    agent_path = transcript.subagent("s1", "toolu_agent")
+    transcript.write({"type": "user", "isSidechain": True, "message": {"role": "user", "content": "dig"}}, agent_path)
+    transcript.text("msg_s1", "found it", path=agent_path, isSidechain=True)
+    # The subagent finished; the parent turn has a tool call but no answer yet
+    commands.run_worker("subagent-stop", json.dumps(transcript.hook_input()).encode(), environ)
+    assert emet.envelopes == []
+    transcript.tool_result("toolu_agent", "found it")
+    transcript.text("msg_2", "Here is what the agent found.")
+    commands.run_worker("stop", json.dumps(transcript.hook_input()).encode(), environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [prompt["uuid"]]
+    finals = [span["span_id"] for span in emet.spans() if span.get("is_final_output")]
+    assert finals == ["model.msg_2"]
+
+
+def test_queue_keeps_the_order_turns_were_queued(tmp_path):
+    root = storage.data_dir({"CLAUDE_PLUGIN_DATA": str(tmp_path)})
+    for index in range(20):
+        transport.enqueue(root, {"trace_id": f"t{index:02d}", "spans": [{"span_id": "turn"}]})
+    order = [storage.read_json(path, {})["trace_id"] for path in transport.queued(root)]
+    assert order == [f"t{index:02d}" for index in range(20)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_existing_data_folders_are_made_private(tmp_path):
+    (tmp_path / "queue").mkdir(mode=0o755)
+    tmp_path.chmod(0o755)
+    storage.data_dir({"CLAUDE_PLUGIN_DATA": str(tmp_path)})
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "queue").stat().st_mode) == 0o700

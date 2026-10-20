@@ -72,23 +72,26 @@ def wrap(
     title: str = "",
 ) -> List[Dict[str, Any]]:
     """Returns the envelopes for one trace. Only the last carries end, so Emet seals the trace once."""
-    groups = batches(spans) or [[]]
+    groups = batches(content.clean(spans)) or [[]]
     envelopes = []
     for index, group in enumerate(groups):
-        envelope: Dict[str, Any] = {
-            "tenant_ref": config.tenant_ref,
-            "conversation_id": session_id,
-            "trace_id": trace_id,
-            "session_ref": session_id,
-            "ingestion_mode": "sdk",
-            "semconv_version": SEMCONV_VERSION,
-            "resource": resource_attrs,
-            "spans": group,
-            "end": index == len(groups) - 1,
-        }
+        envelope: Dict[str, Any] = content.clean(
+            {
+                "tenant_ref": config.tenant_ref,
+                "conversation_id": session_id,
+                "trace_id": trace_id,
+                "session_ref": session_id,
+                "ingestion_mode": "sdk",
+                "semconv_version": SEMCONV_VERSION,
+                "resource": resource_attrs,
+                "end": index == len(groups) - 1,
+            }
+        )
         if title and index == 0:
-            envelope["conversation_title"] = title
-        envelopes.append(content.strip_nul(envelope))
+            envelope["conversation_title"] = content.clean_text(title)
+        # Spans were cleaned once, before batching
+        envelope["spans"] = group
+        envelopes.append(envelope)
     return envelopes
 
 
@@ -105,7 +108,7 @@ def for_turn(
     capture = builder.capture
     text = transcript.prompt_text(first)
     built = Built()
-    opening = builder.message("user", text)
+    opening = builder.message("user", text, transcript.has_binary(first))
     builder.thread(turn[1:], "turn", opening, built, main=True)
     timestamps = [str(entry["timestamp"]) for _, entry in turn if entry.get("timestamp")]
     root: Dict[str, Any] = {
@@ -120,7 +123,7 @@ def for_turn(
     }
     title = ""
     if transcript.by_person(first) and capture.keeps_content:
-        title = capture.text(text).strip().splitlines()[0][:TITLE_MAX] if text.strip() else ""
+        title = capture.text(text)[0].strip().splitlines()[0][:TITLE_MAX] if text.strip() else ""
     return trace_id, wrap(config, session_id, trace_id, [root, *built.spans], resource(config, first, cwd), title), built
 
 

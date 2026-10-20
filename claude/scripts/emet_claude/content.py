@@ -62,10 +62,11 @@ def redact(text: str, extra_secrets: Tuple[str, ...] = ()) -> Tuple[str, int]:
 
 
 def walk_strings(value: Any, transform: Callable[[str], str]) -> Any:
+    """Applies transform to every string, keys included."""
     if isinstance(value, str):
         return transform(value)
     if isinstance(value, dict):
-        return {key: walk_strings(item, transform) for key, item in value.items()}
+        return {transform(key) if isinstance(key, str) else key: walk_strings(item, transform) for key, item in value.items()}
     if isinstance(value, list):
         return [walk_strings(item, transform) for item in value]
     return value
@@ -116,6 +117,15 @@ def clip(text: str, limit: int) -> str:
     return f"{text[:head]}\n[… {omitted} characters not shown …]\n{text[-tail:]}"
 
 
-def strip_nul(value: Any) -> Any:
-    """Emet rejects NUL characters anywhere in a payload."""
-    return walk_strings(value, lambda text: text.replace("\x00", "") if "\x00" in text else text)
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def clean_text(text: str) -> str:
+    """Drops NUL characters, which Emet rejects, and replaces lone surrogates, which cannot be encoded as UTF-8."""
+    if "\x00" in text:
+        text = text.replace("\x00", "")
+    return LONE_SURROGATE.sub("\ufffd", text)
+
+
+def clean(value: Any) -> Any:
+    return walk_strings(value, clean_text)

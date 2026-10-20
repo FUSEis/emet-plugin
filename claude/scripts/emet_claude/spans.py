@@ -11,6 +11,8 @@ from . import content, transcript
 from .transcript import Entry
 
 SPAN_ID_MAX = 64
+# A message as sent, and whether content was left out of it
+Opening = Tuple[Dict[str, Any], bool]
 ERROR_MESSAGE_MAX = 2000
 
 
@@ -40,10 +42,12 @@ class Capture:
             value = content.walk_strings(value, scrub)
         return value, removed, redactions
 
-    def text(self, text: str) -> str:
+    def text(self, text: str) -> Tuple[str, bool]:
+        """Returns the text as sent and whether binary content was removed from it."""
         if not self.keeps_content:
-            return ""
-        return str(self.value(text)[0])
+            return "", False
+        value, removed, _ = self.value(text)
+        return str(value), removed
 
 
 @dataclass
@@ -94,14 +98,16 @@ class Builder:
             self._subagents = transcript.subagents(self.transcript_path)
         return self._subagents
 
-    def message(self, role: str, text: str) -> Dict[str, Any]:
-        return {"role": role, "parts": [{"type": "text", "content": self.capture.text(text)}]}
+    def message(self, role: str, text: str, binary: bool = False) -> Opening:
+        """Returns a message and whether content was left out of it, such as an image the user attached."""
+        sent, removed = self.capture.text(text)
+        return {"role": role, "parts": [{"type": "text", "content": sent}]}, (removed or binary) and self.capture.keeps_content
 
     def thread(
         self,
         items: List[Tuple[int, Entry]],
         parent_span_id: str,
-        opening: Optional[Dict[str, Any]],
+        opening: Optional[Opening],
         built: Built,
         main: bool,
     ) -> None:
@@ -129,6 +135,7 @@ class Builder:
                         "stop_reason": message.get("stop_reason") or "",
                         "inputs": pending,
                         "parts": [],
+                        "truncated": False,
                     }
                     pending = []
                     by_id[message_id] = call
@@ -138,9 +145,14 @@ class Builder:
                 call["stop_reason"] = message.get("stop_reason") or call["stop_reason"]
                 for part in transcript.content_parts(entry):
                     if part.get("type") == "text" and part.get("text"):
-                        call["parts"].append({"type": "text", "content": self.capture.text(part["text"])})
+                        sent, removed = self.capture.text(part["text"])
+                        call["parts"].append({"type": "text", "content": sent})
+                        call["truncated"] = call["truncated"] or removed
                     elif part.get("type") == "tool_use" and part.get("id"):
-                        arguments = self.capture.value(part.get("input"))[0] if self.capture.keeps_content else None
+                        arguments = None
+                        if self.capture.keeps_content:
+                            arguments, removed, _ = self.capture.value(part.get("input"))
+                            call["truncated"] = call["truncated"] or removed
                         call["parts"].append(
                             {"type": "tool_call", "id": part["id"], "name": part.get("name"), "arguments": object_or_string(arguments)}
                         )
@@ -180,7 +192,7 @@ class Builder:
         # The evidence is what the model received. Claude Code's own toolUseResult can hold more,
         # such as the whole original file of an edit, which the model never saw
         saved = transcript.persisted_output(self.transcript_path, part, entry.get("toolUseResult"))
-        result: Any = saved if saved is not None else tool_result_text(part)
+        result: Any = saved[0] if saved is not None else tool_result_text(part)
         span: Dict[str, Any] = {
             "span_id": span_id("tool", call_id),
             "parent_span_id": parent_span_id,
@@ -201,14 +213,14 @@ class Builder:
         arguments, removed_in, count_in = self.capture.value(tool["input"])
         result, removed_out, count_out = self.capture.value(result)
         span["payload"] = {"arguments": object_or_string(arguments), "result": object_or_string(result)}
-        span["is_truncated"] = removed_in or removed_out
+        span["is_truncated"] = removed_in or removed_out or (saved is not None and saved[1])
         if count_in + count_out:
             span["attributes"]["emet.redactions"] = count_in + count_out
         if failed:
             span["error_message"] = str(self.capture.value(tool_result_text(part))[0])[:ERROR_MESSAGE_MAX]
         return span
 
-    def model_span(self, call: Dict[str, Any], parent_span_id: str, opening: Optional[Dict[str, Any]], final: bool) -> Dict[str, Any]:
+    def model_span(self, call: Dict[str, Any], parent_span_id: str, opening: Optional[Opening], final: bool) -> Dict[str, Any]:
         usage = call["usage"] if isinstance(call["usage"], dict) else {}
         cache = usage.get("cache_creation") or {}
         details = usage.get("output_tokens_details") or {}
@@ -234,7 +246,8 @@ class Builder:
             "payload": {},
         }
         if self.capture.keeps_content:
-            inputs = ([opening] if opening else []) + call["inputs"]
+            inputs = ([opening[0]] if opening else []) + call["inputs"]
+            span["is_truncated"] = call["truncated"] or bool(opening and opening[1])
             span["payload"] = {
                 "input_messages": inputs,
                 "output_messages": [{"role": "assistant", "parts": call["parts"], "finish_reason": call["stop_reason"]}],
@@ -265,7 +278,7 @@ class Builder:
         )
         opening = None
         if items and items[0][1].get("type") == "user":
-            opening = self.message("user", transcript.text_of(items[0][1]))
+            opening = self.message("user", transcript.text_of(items[0][1]), transcript.has_binary(items[0][1]))
             items = items[1:]
         self.thread(items, agent_span_id, opening, built, main=False)
         built.agents.append(AgentThread(agent_id=agent_id, path=str(path), parent_span_id=agent_span_id, offset=offset))

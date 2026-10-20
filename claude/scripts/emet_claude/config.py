@@ -11,6 +11,9 @@ DEFAULT_ENDPOINT = "https://app.emet.so"
 CAPTURE_MODES = ("sanitized", "full", "metadata")
 DEFAULT_CAPTURE_MODE = "sanitized"
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+# An Emet key is an 8 character public prefix, a dot and a secret
+KEY_PREFIX_LENGTH = 8
+KEY_SECRET_MIN_LENGTH = 16
 
 
 @dataclass(frozen=True)
@@ -31,9 +34,11 @@ class Config:
 
     @property
     def key_hint(self) -> str:
-        """Returns enough of the key to tell keys apart, never the secret part."""
-        prefix = self.api_key.split(".", 1)[0]
-        return f"{prefix[:8]}…" if prefix else ""
+        """Returns the public prefix of an Emet key (the part before the dot) to tell keys apart, and nothing of any other value."""
+        prefix, dot, secret = self.api_key.partition(".")
+        if dot and len(prefix) == KEY_PREFIX_LENGTH and len(secret) >= KEY_SECRET_MIN_LENGTH:
+            return f"{prefix}…"
+        return "set" if self.api_key else ""
 
 
 def option(name: str, environ: Mapping[str, str]) -> str:
@@ -52,9 +57,13 @@ def load(environ: Mapping[str, str] = os.environ) -> Config:
 
 def endpoint_problem(endpoint: str) -> Optional[str]:
     """Requires HTTPS, except on this machine, so traces never cross a network in clear text."""
-    parts = urlsplit(endpoint)
-    if parts.scheme == "https" and parts.hostname:
+    try:
+        parts = urlsplit(endpoint)
+        hostname = parts.hostname
+    except ValueError:
+        return f"The endpoint {endpoint!r} is not a valid URL."
+    if parts.scheme == "https" and hostname:
         return None
-    if parts.scheme == "http" and parts.hostname in LOCAL_HOSTS:
+    if parts.scheme == "http" and hostname in LOCAL_HOSTS:
         return None
     return f"The endpoint must be an https:// URL, not {endpoint!r}."

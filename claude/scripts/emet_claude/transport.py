@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -52,20 +54,34 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
 
 
 def queue_name(envelope: Dict[str, Any]) -> str:
+    """Names a queued envelope so that names sort in the order they were queued."""
     first = envelope["spans"][0]["span_id"] if envelope.get("spans") else ""
     key = f"{envelope.get('trace_id')}/{first}".encode()
-    return hashlib.sha256(key).hexdigest()[:24] + ".json"
+    return f"{time.time_ns():020d}-{hashlib.sha256(key).hexdigest()[:16]}.json"
+
+
+def queued(root: Path) -> List[Path]:
+    return sorted((root / "queue").glob("*.json"))
+
+
+def remove(path: Path) -> None:
+    # Another worker may have removed it first
+    with contextlib.suppress(FileNotFoundError):
+        path.unlink()
 
 
 def enqueue(root: Path, envelope: Dict[str, Any]) -> None:
-    queue = root / "queue"
-    storage.write_json(queue / queue_name(envelope), envelope)
-    files = sorted(queue.glob("*.json"), key=lambda path: path.stat().st_mtime)
-    total = sum(path.stat().st_size for path in files)
+    storage.write_json(root / "queue" / queue_name(envelope), envelope)
+    files = queued(root)
+    sizes = {}
+    for path in files:
+        with contextlib.suppress(FileNotFoundError):
+            sizes[path] = path.stat().st_size
+    total = sum(sizes.values())
     while files and (len(files) > QUEUE_MAX_FILES or total > QUEUE_MAX_BYTES):
         oldest = files.pop(0)
-        total -= oldest.stat().st_size
-        oldest.unlink()
+        total -= sizes.get(oldest, 0)
+        remove(oldest)
         storage.log(root, f"queue full, dropped {oldest.name}")
 
 
@@ -105,17 +121,21 @@ class Sender:
         return outcomes
 
     def flush(self) -> int:
-        """Retries queued envelopes, oldest first. Returns how many are still queued."""
-        files = sorted((self.root / "queue").glob("*.json"), key=lambda path: path.stat().st_mtime)
-        for index, path in enumerate(files):
-            envelope = storage.read_json(path, None)
-            if not isinstance(envelope, dict):
-                path.unlink()
-                continue
-            outcome = post(self.config, envelope)
-            storage.log(self.root, f"retry {envelope.get('trace_id')} -> {describe(outcome)}")
-            if not outcome.delivered and not outcome.final:
-                self.blocked = True
-                return len(files) - index
-            path.unlink()
-        return 0
+        """Retries queued envelopes, oldest first. Returns how many are still queued.
+
+        The queue is shared by every session, so one worker at a time flushes it.
+        """
+        with storage.locked(self.root / "queue.lock"):
+            files = queued(self.root)
+            for index, path in enumerate(files):
+                envelope = storage.read_json(path, None)
+                if not isinstance(envelope, dict):
+                    remove(path)
+                    continue
+                outcome = post(self.config, envelope)
+                storage.log(self.root, f"retry {envelope.get('trace_id')} -> {describe(outcome)}")
+                if not outcome.delivered and not outcome.final:
+                    self.blocked = True
+                    return len(files) - index
+                remove(path)
+            return 0

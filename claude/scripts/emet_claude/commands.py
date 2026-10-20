@@ -20,6 +20,8 @@ FLUSH_WAIT_S = 1.0
 # Subagent transcripts followed per session, newest kept
 MAX_TRACKED_AGENTS = 200
 HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
+# Hooks that fire only once the current turn is over
+TURN_END_MODES = ("stop", "session-end")
 
 
 def entry_script() -> str:
@@ -52,21 +54,23 @@ def status_path(root: Path) -> Path:
 
 def update_status(root: Path, config: Config, **fields: Any) -> None:
     """Records what the setup and status skills report. Never holds the key or any session content."""
-    status = storage.read_json(status_path(root), {})
-    if not isinstance(status, dict):
-        status = {}
-    status.update(
-        plugin_version=VERSION,
-        endpoint=config.endpoint,
-        tenant_ref=config.tenant_ref,
-        capture_mode=config.capture_mode,
-        key_hint=config.key_hint,
-        problem=config.problem,
-        queued=len(list((root / "queue").glob("*.json"))),
-        updated_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    )
-    status.update(fields)
-    storage.write_json(status_path(root), status)
+    # Workers for different sessions share this file
+    with storage.locked(root / "status.lock"):
+        status = storage.read_json(status_path(root), {})
+        if not isinstance(status, dict):
+            status = {}
+        status.update(
+            plugin_version=VERSION,
+            endpoint=config.endpoint,
+            tenant_ref=config.tenant_ref,
+            capture_mode=config.capture_mode,
+            key_hint=config.key_hint,
+            problem=config.problem,
+            queued=len(transport.queued(root)),
+            updated_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        )
+        status.update(fields)
+        storage.write_json(status_path(root), status)
 
 
 def check_key(root: Path, config: Config) -> None:
@@ -109,8 +113,17 @@ def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
         agents.pop(next(iter(agents)))
 
 
-def process(hook_input: Mapping[str, Any], environ: Mapping[str, str] = os.environ, wait: float = FLUSH_WAIT_S) -> None:
-    """Sends every finished turn and subagent update since the last run of this session."""
+def process(
+    hook_input: Mapping[str, Any],
+    environ: Mapping[str, str] = os.environ,
+    wait: float = FLUSH_WAIT_S,
+    turn_ended: bool = True,
+) -> None:
+    """Sends every finished turn and subagent update since the last run of this session.
+
+    turn_ended says the hook fired because the current turn ended (Stop, SessionEnd). Otherwise
+    (SubagentStop, SessionStart) the last turn may still be running and is left for a later run.
+    """
     config = load(environ)
     root = storage.data_dir(environ)
     session_id = str(hook_input.get("session_id") or "")
@@ -132,8 +145,8 @@ def process(hook_input: Mapping[str, Any], environ: Mapping[str, str] = os.envir
         entries, end = transcript.read_entries(path, int(state.get("offset") or 0))
         head, turns = transcript.split_turns(entries)
         offset = end
-        # The last prompt may still be waiting for its answer; read it again next time
-        if turns and not transcript.answered(turns[-1]):
+        # The last turn may still be running, or its prompt still waiting for an answer; read it again next time
+        if turns and (not turn_ended or not transcript.answered(turns[-1])):
             offset = turns[-1][0][0]
             turns = turns[:-1]
 
@@ -174,7 +187,7 @@ def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -
         hook_input = json.loads(raw or b"{}")
         if mode == "session-start":
             check_key(root, load(environ))
-        process(hook_input if isinstance(hook_input, dict) else {}, environ)
+        process(hook_input if isinstance(hook_input, dict) else {}, environ, turn_ended=mode in TURN_END_MODES)
     except Exception as error:  # noqa: BLE001 - an exporter failure must never reach the session
         storage.log(root, f"worker error {type(error).__name__}")
 
