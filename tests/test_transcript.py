@@ -6,7 +6,7 @@ from emet_claude import transcript as tr
 def test_reads_from_offset_and_skips_partial_last_line(transcript):
     first = transcript.prompt("hello")
     transcript.text("msg_1", "hi")
-    with open(transcript.path, "a") as handle:
+    with open(transcript.path, "a", encoding="utf-8", newline="\n") as handle:
         handle.write('{"type": "user", "message"')
     entries, offset = tr.read_entries(transcript.path, 0)
     assert entries[0][1]["uuid"] == first["uuid"]
@@ -23,7 +23,7 @@ def test_restarts_when_the_file_shrank(transcript):
 
 
 def test_ignores_non_message_entries_and_bad_json(transcript):
-    with open(transcript.path, "a") as handle:
+    with open(transcript.path, "a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps({"type": "summary", "summary": "x"}) + "\n")
         handle.write("not json\n")
     transcript.prompt("hello")

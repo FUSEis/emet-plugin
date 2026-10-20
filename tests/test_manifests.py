@@ -11,7 +11,7 @@ PLUGIN = ROOT / "claude"
 
 
 def load(path):
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_versions_agree():
@@ -22,7 +22,7 @@ def test_versions_agree():
 
 
 def test_changelog_has_the_current_version():
-    assert f"## [{VERSION}]" in (ROOT / "CHANGELOG.md").read_text()
+    assert f"## [{VERSION}]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
 def test_marketplace_points_at_the_plugin():

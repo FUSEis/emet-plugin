@@ -34,7 +34,7 @@ class Transcript:
         entry.setdefault("gitBranch", "main")
         entry.setdefault("version", "2.1.294")
         self.last_uuid = entry["uuid"]
-        with open(path or self.path, "a") as handle:
+        with open(path or self.path, "a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(entry) + "\n")
         return entry
 
@@ -111,7 +111,7 @@ class Transcript:
         folder = self.folder / "tool-results"
         folder.mkdir(exist_ok=True)
         path = folder / name
-        path.write_text(text)
+        path.write_bytes(text.encode("utf-8"))
         return path
 
     def hook_input(self) -> Dict[str, Any]:

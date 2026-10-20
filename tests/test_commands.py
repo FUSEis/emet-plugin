@@ -17,7 +17,7 @@ def run(transcript, environ):
 
 
 def status(environ):
-    return json.loads((Path(environ["CLAUDE_PLUGIN_DATA"]) / "status.json").read_text())
+    return json.loads((Path(environ["CLAUDE_PLUGIN_DATA"]) / "status.json").read_text(encoding="utf-8"))
 
 
 def finished_turn(transcript, text="What is 2 + 2?", answer="4"):
@@ -146,7 +146,7 @@ def test_status_and_log_never_hold_the_key_or_content(transcript, environ, emet)
     run(transcript, environ)
     root = Path(environ["CLAUDE_PLUGIN_DATA"])
     for name in ("status.json", "emet.log"):
-        text = (root / name).read_text()
+        text = (root / name).read_text(encoding="utf-8")
         assert API_KEY not in text and "ZyxwVuts" not in text
         assert "secret" not in text
     assert status(environ)["key_hint"] == "Abcd1234…"
@@ -184,7 +184,7 @@ def test_unknown_mode_is_ignored():
 
 def test_worker_errors_are_logged_not_raised(environ):
     commands.run_worker("stop", b"not json", environ)
-    log = (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text()
+    log = (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
     assert "worker error JSONDecodeError" in log
 
 
