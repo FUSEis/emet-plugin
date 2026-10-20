@@ -1,0 +1,53 @@
+# Development tooling only. The plugin itself runs on the Python standard library and installs nothing.
+[project]
+name = "emet-plugin"
+version = "0.1.0"
+description = "Plugins that send AI agent traces to Emet for claim verification"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+
+[dependency-groups]
+dev = [
+    "mypy==1.18.2",
+    "pytest==8.4.2",
+    "pytest-cov==7.0.0",
+    "ruff==0.14.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["claude/scripts/emet_claude"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+
+[tool.ruff]
+line-length = 140
+target-version = "py39"
+src = ["claude/scripts", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "SIM", "RUF"]
+ignore = [
+    "UP006", "UP035", "UP045", "UP007",  # typing.List and Optional keep Python 3.9 support explicit
+    "RUF001", "RUF002", "RUF003",        # the ellipsis character is intended in user-facing text
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S603", "S108", "B011"]
+"claude/scripts/emet_claude/commands.py" = ["S603"]
+"claude/scripts/emet_claude/transport.py" = ["S310"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+mypy_path = "claude/scripts"
+files = ["claude/scripts"]

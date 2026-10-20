@@ -1,16 +1,20 @@
 {
-  "name": "emet-plugins",
+  "name": "emet-plugin",
   "owner": {
-    "name": "Emet"
+    "name": "Emet",
+    "url": "https://emet.so"
   },
   "metadata": {
-    "description": "Emet plugins that send coding-agent traces to Emet for claim verification"
+    "description": "Emet plugins that send AI agent traces to Emet for claim verification"
   },
   "plugins": [
     {
       "name": "emet",
       "source": "./claude",
-      "description": "Sends each Claude Code turn to Emet so its claims can be checked against the tool results that produced them"
+      "description": "Sends each Claude Code turn to Emet, which checks the claims in the answer against the tool results behind them.",
+      "version": "0.1.0",
+      "category": "monitoring",
+      "homepage": "https://emet.so"
     }
   ]
 }
