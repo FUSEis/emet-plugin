@@ -4,7 +4,7 @@ Plugins that send coding-agent turns to [Emet](https://emet.so), so the claims a
 
 | Folder | Host | Status |
 |---|---|---|
-| `claude-code/` | Claude Code | Spike (EM-331) |
+| `claude/` | Claude Code | Spike (EM-331) |
 
 Each plugin folder is self-contained, because Anthropic's directory installs only the plugin folder.
 
@@ -12,7 +12,7 @@ Each plugin folder is self-contained, because Anthropic's directory installs onl
 
 ```bash
 export EMET_ENDPOINT=http://localhost:8031 EMET_API_KEY=... EMET_TENANT_REF=engineering
-claude --plugin-dir ./claude-code
+claude --plugin-dir ./claude
 ```
 
 Or install it from this repo as a marketplace:

@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "emet",
-      "source": "./claude-code",
+      "source": "./claude",
       "description": "Sends each Claude Code turn to Emet so its claims can be checked against the tool results that produced them"
     }
   ]
