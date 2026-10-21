@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- The first model call of a turn or subagent now starts when its prompt was sent, so its duration includes the wait for the first response. It used to start at the first response.
+- Model spans now report how many secrets were redacted from their output, and the turn or agent span reports those redacted from its prompt. Before, only tool spans reported a count.
+
 ## [0.1.0] - 2026-10-20
 
 First release of the Claude Code plugin.

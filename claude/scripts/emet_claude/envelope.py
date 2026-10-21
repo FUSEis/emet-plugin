@@ -109,8 +109,8 @@ def for_turn(
     text = transcript.prompt_text(first)
     built = Built()
     opening = builder.message("user", text, transcript.has_binary(first))
-    builder.thread(turn[1:], "turn", opening, built, main=True)
     timestamps = [str(entry["timestamp"]) for _, entry in turn if entry.get("timestamp")]
+    builder.thread(turn[1:], "turn", opening, built, main=True, since=str(first.get("timestamp") or ""))
     root: Dict[str, Any] = {
         "span_id": "turn",
         "name": "claude_code.turn",
@@ -121,6 +121,8 @@ def for_turn(
             "claude_code.prompt_source": str(first.get("promptSource") or ("compaction" if first.get("isCompactSummary") else ""))
         },
     }
+    if opening[2]:
+        root["attributes"]["emet.redactions"] = opening[2]
     title = ""
     if transcript.by_person(first) and capture.keeps_content:
         title = capture.text(text)[0].strip().splitlines()[0][:TITLE_MAX] if text.strip() else ""
