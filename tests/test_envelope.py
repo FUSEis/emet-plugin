@@ -129,6 +129,35 @@ def test_sanitized_mode_redacts_secrets_in_tool_results(transcript):
     assert "ghp_" not in json.dumps(spans)
 
 
+def test_first_model_call_starts_when_the_prompt_was_sent(transcript):
+    prompt = simple_turn(transcript)
+    spans = spans_of(build(transcript)[0])
+    first = next(span for span in spans if span["span_id"] == "model.msg_1")
+    assert first["started_at"] == prompt["timestamp"] < first["ended_at"]
+
+
+def test_redactions_are_counted_where_they_happen(transcript):
+    token = "ghp_" + "b" * 36
+    transcript.prompt(f"is {token} still valid?")
+    transcript.tool_use("msg_1", "toolu_1", "Bash", {"command": f"curl -H 'Authorization: token {token}' https://api.github.com/user"})
+    transcript.tool_result("toolu_1", "401")
+    transcript.text("msg_2", f"No, {token} was rejected.")
+    spans = spans_of(build(transcript)[0])
+    count = {span["span_id"]: span.get("attributes", {}).get("emet.redactions", 0) for span in spans}
+    # Each secret is counted once: the prompt on the turn, the command on its tool span, the answer on its model call
+    assert count == {"turn": 1, "model.msg_1": 0, "tool.toolu_1": 1, "model.msg_2": 1}
+    assert token not in json.dumps(spans)
+
+
+@pytest.mark.parametrize("mode", ["full", "metadata"])
+def test_only_sanitized_mode_reports_redactions(transcript, mode):
+    token = "ghp_" + "b" * 36
+    transcript.prompt(f"is {token} still valid?")
+    transcript.text("msg_1", f"No, {token} was rejected.")
+    spans = spans_of(build(transcript, mode)[0])
+    assert all("emet.redactions" not in span.get("attributes", {}) for span in spans)
+
+
 def test_full_mode_sends_content_as_is(transcript):
     transcript.prompt("show env")
     transcript.tool_use("msg_1", "toolu_1", "Bash", {"command": "cat .env"})
@@ -238,6 +267,8 @@ def test_subagent_spans_nest_under_the_launching_call(transcript):
     assert not any(span["is_final_output"] for span in inner if span["kind"] == "model")
     first_inner = next(span for span in inner if span["span_id"] == "model.msg_s1")
     assert first_inner["payload"]["input_messages"][0]["parts"][0]["content"] == "Find the config"
+    # The subagent's first call starts when its prompt was written, as does the agent span
+    assert first_inner["started_at"] == agent["started_at"] < first_inner["ended_at"]
     assert built.agents[0].agent_id == "a1" and built.agents[0].offset == agent_path.stat().st_size
 
 

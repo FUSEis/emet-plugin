@@ -11,8 +11,8 @@ from . import content, transcript
 from .transcript import Entry
 
 SPAN_ID_MAX = 64
-# A message as sent, and whether content was left out of it
-Opening = Tuple[Dict[str, Any], bool]
+# A message as sent, whether content was left out of it, and how many secrets were redacted
+Opening = Tuple[Dict[str, Any], bool, int]
 ERROR_MESSAGE_MAX = 2000
 
 
@@ -42,12 +42,12 @@ class Capture:
             value = content.walk_strings(value, scrub)
         return value, removed, redactions
 
-    def text(self, text: str) -> Tuple[str, bool]:
-        """Returns the text as sent and whether binary content was removed from it."""
+    def text(self, text: str) -> Tuple[str, bool, int]:
+        """Returns the text as sent, whether binary content was removed from it, and how many secrets were redacted."""
         if not self.keeps_content:
-            return "", False
-        value, removed, _ = self.value(text)
-        return str(value), removed
+            return "", False, 0
+        value, removed, redactions = self.value(text)
+        return str(value), removed, redactions
 
 
 @dataclass
@@ -99,9 +99,9 @@ class Builder:
         return self._subagents
 
     def message(self, role: str, text: str, binary: bool = False) -> Opening:
-        """Returns a message and whether content was left out of it, such as an image the user attached."""
-        sent, removed = self.capture.text(text)
-        return {"role": role, "parts": [{"type": "text", "content": sent}]}, (removed or binary) and self.capture.keeps_content
+        """Returns a message, whether content was left out of it (such as an image the user attached) and its redaction count."""
+        sent, removed, redactions = self.capture.text(text)
+        return {"role": role, "parts": [{"type": "text", "content": sent}]}, (removed or binary) and self.capture.keeps_content, redactions
 
     def thread(
         self,
@@ -110,13 +110,15 @@ class Builder:
         opening: Optional[Opening],
         built: Built,
         main: bool,
+        since: str = "",
     ) -> None:
-        """Adds the model and tool spans of one thread of entries under parent_span_id."""
+        """Adds the model and tool spans of one thread of entries under parent_span_id. since is when the
+        thread's opening message was sent, which is when its first model call started."""
         calls: List[Dict[str, Any]] = []
         by_id: Dict[str, Dict[str, Any]] = {}
         tool_calls: Dict[str, Dict[str, Any]] = {}
         pending: List[Dict[str, Any]] = []
-        previous_ts = str(items[0][1].get("timestamp") or "") if items else ""
+        previous_ts = since or (str(items[0][1].get("timestamp") or "") if items else "")
 
         for _, entry in items:
             timestamp = str(entry.get("timestamp") or previous_ts)
@@ -136,6 +138,7 @@ class Builder:
                         "inputs": pending,
                         "parts": [],
                         "truncated": False,
+                        "redactions": 0,
                     }
                     pending = []
                     by_id[message_id] = call
@@ -145,12 +148,14 @@ class Builder:
                 call["stop_reason"] = message.get("stop_reason") or call["stop_reason"]
                 for part in transcript.content_parts(entry):
                     if part.get("type") == "text" and part.get("text"):
-                        sent, removed = self.capture.text(part["text"])
+                        sent, removed, redactions = self.capture.text(part["text"])
                         call["parts"].append({"type": "text", "content": sent})
                         call["truncated"] = call["truncated"] or removed
+                        call["redactions"] += redactions
                     elif part.get("type") == "tool_use" and part.get("id"):
                         arguments = None
                         if self.capture.keeps_content:
+                            # Counted on the tool span, which carries these arguments too
                             arguments, removed, _ = self.capture.value(part.get("input"))
                             call["truncated"] = call["truncated"] or removed
                         call["parts"].append(
@@ -252,6 +257,9 @@ class Builder:
                 "input_messages": inputs,
                 "output_messages": [{"role": "assistant", "parts": call["parts"], "finish_reason": call["stop_reason"]}],
             }
+            # Counts the text written in this call; the prompt is counted on the turn, tool arguments on the tool span
+            if call["redactions"]:
+                span["attributes"] = {"emet.redactions": call["redactions"]}
         return span
 
     def agent(self, call_id: str, tool: Dict[str, Any], built: Built) -> None:
@@ -265,20 +273,20 @@ class Builder:
         agent_span_id = span_id("agent", agent_id)
         timestamps = [str(entry["timestamp"]) for _, entry in items if entry.get("timestamp")]
         started = timestamps[0] if timestamps else tool["started_at"]
-        built.spans.append(
-            {
-                "span_id": agent_span_id,
-                "parent_span_id": span_id("tool", call_id),
-                "name": f"invoke_agent {meta.get('agentType') or 'subagent'}".strip(),
-                "kind": "agent",
-                "started_at": started,
-                "ended_at": max(timestamps[-1], started) if timestamps else started,
-                "attributes": {"claude_code.agent_type": str(meta.get("agentType") or "")},
-            }
-        )
+        span: Dict[str, Any] = {
+            "span_id": agent_span_id,
+            "parent_span_id": span_id("tool", call_id),
+            "name": f"invoke_agent {meta.get('agentType') or 'subagent'}".strip(),
+            "kind": "agent",
+            "started_at": started,
+            "ended_at": max(timestamps[-1], started) if timestamps else started,
+            "attributes": {"claude_code.agent_type": str(meta.get("agentType") or "")},
+        }
+        built.spans.append(span)
         opening = None
         if items and items[0][1].get("type") == "user":
+            # Its redactions are counted on the Agent tool span, whose arguments hold the same prompt
             opening = self.message("user", transcript.text_of(items[0][1]), transcript.has_binary(items[0][1]))
             items = items[1:]
-        self.thread(items, agent_span_id, opening, built, main=False)
+        self.thread(items, agent_span_id, opening, built, main=False, since=started)
         built.agents.append(AgentThread(agent_id=agent_id, path=str(path), parent_span_id=agent_span_id, offset=offset))
