@@ -2,6 +2,8 @@
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from emet_claude import VERSION
@@ -59,12 +61,30 @@ def test_users_set_only_the_key_team_and_capture_mode():
     assert set(options) == {"api_key", "tenant_ref", "capture_mode"}
 
 
-def test_no_internal_host_is_published():
-    skipped = {".git", ".venv", ".mypy_cache", ".ruff_cache", ".pytest_cache", "__pycache__"}
-    for path in ROOT.rglob("*"):
-        if skipped.intersection(path.relative_to(ROOT).parts) or not path.is_file() or path == Path(__file__):
+# Every host a published file names; anything else, such as an internal Emet, must not ship
+PUBLIC_HOSTS = {
+    "app.emet.so",
+    "emet.so",
+    "github.com",
+    "code.claude.com",
+    "docs.astral.sh",
+    "keepachangelog.com",
+    "semver.org",
+    "www.apache.org",
+    "hooks.slack.com",
+    "localhost",
+    "127.0.0.1",
+}
+
+
+def test_published_files_name_only_public_hosts():
+    tracked = subprocess.run([str(shutil.which("git")), "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout.decode()
+    for name in filter(None, tracked.split("\0")):
+        if name.startswith("tests/") or name == "uv.lock":
             continue
-        assert "staging" not in path.read_text(encoding="utf-8", errors="ignore").lower(), path
+        text = (ROOT / name).read_text(encoding="utf-8", errors="ignore").replace("\\.", ".")
+        for host in re.findall(r"https?://([A-Za-z0-9.-]+)", text):
+            assert host.lower() in PUBLIC_HOSTS, f"{name} names {host}"
 
 
 def test_the_key_is_sensitive():

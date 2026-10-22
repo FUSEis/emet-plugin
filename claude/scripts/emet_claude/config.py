@@ -50,20 +50,21 @@ def load(environ: Mapping[str, str] = os.environ) -> Config:
     return Config(
         api_key=option("API_KEY", environ),
         tenant_ref=option("TENANT_REF", environ),
+        # Development only: points the hook at a local Emet (see CONTRIBUTING.md)
         endpoint=(option("ENDPOINT", environ) or DEFAULT_ENDPOINT).rstrip("/"),
         capture_mode=mode if mode in CAPTURE_MODES else DEFAULT_CAPTURE_MODE,
     )
 
 
 def endpoint_problem(endpoint: str) -> Optional[str]:
-    """Requires HTTPS, except on this machine, so traces never cross a network in clear text."""
+    """Allows only Emet, or an Emet on this machine for development, so nothing in the environment can send the key elsewhere."""
+    if endpoint == DEFAULT_ENDPOINT:
+        return None
     try:
         parts = urlsplit(endpoint)
         hostname = parts.hostname
     except ValueError:
         return f"The endpoint {endpoint!r} is not a valid URL."
-    if parts.scheme == "https" and hostname:
+    if parts.scheme in ("http", "https") and hostname in LOCAL_HOSTS:
         return None
-    if parts.scheme == "http" and hostname in LOCAL_HOSTS:
-        return None
-    return f"The endpoint must be an https:// URL, not {endpoint!r}."
+    return f"Only {DEFAULT_ENDPOINT} or a local Emet can receive traces, not {endpoint!r}."

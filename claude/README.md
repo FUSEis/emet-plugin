@@ -20,8 +20,8 @@ Requirements: Claude Code 2.1.271 or later, and `python3` 3.9 or later on the `P
 
 | Option | Required | Default | What it does |
 | --- | --- | --- | --- |
-| `api_key` | yes | | Your Emet application key, from its **Keys** page. Kept in the macOS Keychain, or in Claude Code's credentials file (`~/.claude/.credentials.json`, readable only by you) where there is no keychain. |
-| `tenant_ref` | yes | | Team ID: the External ID of your team on Emet's **Teams** page. |
+| `api_key` | yes | | Your Emet application key, from **Applications**, then **Manage keys**. Kept in Claude Code's secure credential store (the Keychain on macOS), never in `settings.json`. |
+| `tenant_ref` | yes | | Team ID: the External ID of your team, from **Teams** in Emet. |
 | `capture_mode` | no | `sanitized` | How much content is sent; see below. |
 
 ## Use it
@@ -51,7 +51,7 @@ For each finished turn, one trace:
 
 ## Where data goes and what stays local
 
-The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`), readable only by you:
+The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses any other destination, whatever the environment says. It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`), readable only by you:
 
 - `state/`: how far each session's transcript has been read.
 - `queue/`: turns that could not be delivered yet, retried oldest first on the next turn. At most 500 turns or 256 MB; the oldest are dropped beyond that.

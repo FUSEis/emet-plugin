@@ -8,7 +8,7 @@ description: Report whether the Emet plugin is sending turns to Emet, when it la
 1. Read `${CLAUDE_PLUGIN_DATA}/status.json`. If it does not exist, the plugin has not run in a session yet: tell the user to finish one turn, or run `/emet:setup`.
 2. Read the last 30 lines of `${CLAUDE_PLUGIN_DATA}/emet.log`. It holds ids, counts and HTTP statuses only, never content.
 3. Report, briefly:
-   - Configuration: `tenant_ref`, `capture_mode`, `key_hint` (the key's public prefix, never the key). If `problem` is set, say what it is and suggest `/emet:setup`.
+   - Configuration: `tenant_ref`, `capture_mode`, `key_hint` (the key's public prefix, never the key). If `endpoint` is not `https://app.emet.so`, say where turns are going. If `problem` is set, say what it is and suggest `/emet:setup`.
    - Key check: `key_check` and `key_checked_at`.
    - Delivery: `last_delivery`, and `last_error` if it is more recent.
    - Retries: `queued` envelopes waiting. They are retried on the next turn, oldest first.

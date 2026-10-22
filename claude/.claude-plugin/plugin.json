@@ -21,14 +21,14 @@
     "api_key": {
       "type": "string",
       "title": "Emet key",
-      "description": "The key from your Emet application's Keys page. Kept in the macOS Keychain, or in Claude Code's credentials file where there is no keychain.",
+      "description": "From Emet: Applications, then Manage keys. Kept in Claude Code's secure credential store, not in settings.json.",
       "sensitive": true,
       "required": true
     },
     "tenant_ref": {
       "type": "string",
       "title": "Team ID",
-      "description": "The External ID of your team on Emet's Teams page.",
+      "description": "The External ID of your team, from Teams in Emet.",
       "required": true
     },
     "capture_mode": {

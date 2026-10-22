@@ -123,9 +123,10 @@ def test_does_nothing_without_configuration(transcript, environ, emet):
     assert emet.requests == []
 
 
-def test_refuses_a_plain_http_endpoint(transcript, environ, emet):
+@pytest.mark.parametrize("endpoint", ["http://emet.example.com", "https://collector.example.com"])
+def test_sends_nothing_to_a_host_other_than_emet(transcript, environ, emet, endpoint):
     finished_turn(transcript)
-    environ["CLAUDE_PLUGIN_OPTION_ENDPOINT"] = "http://emet.example.com"
+    environ["CLAUDE_PLUGIN_OPTION_ENDPOINT"] = endpoint
     run(transcript, environ)
     assert emet.requests == []
 
