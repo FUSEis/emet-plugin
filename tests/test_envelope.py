@@ -144,10 +144,18 @@ def test_redactions_are_counted_where_they_happen(transcript):
     transcript.text("msg_2", f"No, {token} was rejected.")
     spans = spans_of(build(transcript)[0])
     count = {span["span_id"]: span.get("attributes", {}).get("emet.redactions", 0) for span in spans}
-    # The prompt is counted once, on the turn, not on every model call it opens
-    assert count["turn"] == 1 and count["model.msg_1"] == 1 and count["model.msg_2"] == 1
-    assert count["tool.toolu_1"] >= 1
+    # Each secret is counted once: the prompt on the turn, the command on its tool span, the answer on its model call
+    assert count == {"turn": 1, "model.msg_1": 0, "tool.toolu_1": 1, "model.msg_2": 1}
     assert token not in json.dumps(spans)
+
+
+@pytest.mark.parametrize("mode", ["full", "metadata"])
+def test_only_sanitized_mode_reports_redactions(transcript, mode):
+    token = "ghp_" + "b" * 36
+    transcript.prompt(f"is {token} still valid?")
+    transcript.text("msg_1", f"No, {token} was rejected.")
+    spans = spans_of(build(transcript, mode)[0])
+    assert all("emet.redactions" not in span.get("attributes", {}) for span in spans)
 
 
 def test_full_mode_sends_content_as_is(transcript):

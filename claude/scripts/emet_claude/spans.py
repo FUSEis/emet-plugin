@@ -155,9 +155,9 @@ class Builder:
                     elif part.get("type") == "tool_use" and part.get("id"):
                         arguments = None
                         if self.capture.keeps_content:
-                            arguments, removed, redactions = self.capture.value(part.get("input"))
+                            # Counted on the tool span, which carries these arguments too
+                            arguments, removed, _ = self.capture.value(part.get("input"))
                             call["truncated"] = call["truncated"] or removed
-                            call["redactions"] += redactions
                         call["parts"].append(
                             {"type": "tool_call", "id": part["id"], "name": part.get("name"), "arguments": object_or_string(arguments)}
                         )
@@ -257,7 +257,7 @@ class Builder:
                 "input_messages": inputs,
                 "output_messages": [{"role": "assistant", "parts": call["parts"], "finish_reason": call["stop_reason"]}],
             }
-            # Counts the output only; the opening message is counted once, on the turn or agent span
+            # Counts the text written in this call; the prompt is counted on the turn, tool arguments on the tool span
             if call["redactions"]:
                 span["attributes"] = {"emet.redactions": call["redactions"]}
         return span
@@ -285,9 +285,8 @@ class Builder:
         built.spans.append(span)
         opening = None
         if items and items[0][1].get("type") == "user":
+            # Its redactions are counted on the Agent tool span, whose arguments hold the same prompt
             opening = self.message("user", transcript.text_of(items[0][1]), transcript.has_binary(items[0][1]))
-            if opening[2]:
-                span["attributes"]["emet.redactions"] = opening[2]
             items = items[1:]
         self.thread(items, agent_span_id, opening, built, main=False, since=started)
         built.agents.append(AgentThread(agent_id=agent_id, path=str(path), parent_span_id=agent_span_id, offset=offset))
