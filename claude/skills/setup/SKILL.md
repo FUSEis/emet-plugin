@@ -26,7 +26,10 @@ Right after `claude plugin install`, Claude Code reports options that are not se
 
 1. Read `${CLAUDE_PLUGIN_DATA}/status.json`.
    - It does not exist, `problem` says the key or team is missing, or the user wants to change an option: go to step 2.
-   - `problem` names an endpoint: something in the environment sets `CLAUDE_PLUGIN_OPTION_ENDPOINT` to a host other than Emet, and the plugin refuses to send. Ask the user to remove it (a shell profile, or an `env` entry in a `.claude/settings.json`) and restart Claude Code.
+   - `problem` names an endpoint: `CLAUDE_PLUGIN_OPTION_ENDPOINT` points at a host other than Emet, and the plugin refuses to send. It comes from one of these; ask the user to remove it and restart Claude Code:
+     - an `endpoint` saved by version 0.1.0, under `pluginConfigs` > `emet@emet-plugin` > `options` in `~/.claude/settings.json` (the user deletes that one line);
+     - an `env` entry in a `.claude/settings.json`;
+     - an export in a shell profile.
    - Otherwise go to step 3.
 2. Tell the user to run this in Claude Code, fill in the fields and choose **Save configuration**:
 
