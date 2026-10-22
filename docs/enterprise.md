@@ -38,7 +38,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 
 ## 3. The key
 
-The Emet key is a sensitive option. Each developer enters it once with `/plugin configure emet@emet-plugin`, which stores it in their system keychain. Until a key is set, the plugin sends nothing and `/emet:status` says so.
+The Emet key is a sensitive option. Each developer enters it once with `/plugin configure emet@emet-plugin`, which keeps it in the macOS Keychain, or in Claude Code's credentials file where there is no keychain. Until a key is set, the plugin sends nothing and `/emet:status` says so.
 
 Use one key per team, issued from the Emet application's **Keys** page, so that a key can be revoked without affecting other teams.
 
@@ -59,7 +59,7 @@ Images and binary content are never sent in any mode.
 ## What your security review will want
 
 - The hook is one Python package in [`claude/scripts/`](../claude/scripts/), standard library only, a few hundred lines. It runs with the developer's permissions, like any hook.
-- It sends only to the configured `endpoint`, and only over HTTPS (plain HTTP is accepted for `localhost` alone).
+- It sends only to Emet (`https://app.emet.so`), and only over HTTPS.
 - It reads the session transcript, saved tool outputs and subagent transcripts in Claude Code's own project folder, and nothing outside it.
 - It writes only to its own data folder, with owner-only permissions. The status file and log never hold content or the key.
 - [claude/README.md](../claude/README.md#what-is-sent) lists every field it sends in each mode.

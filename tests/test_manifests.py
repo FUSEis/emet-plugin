@@ -54,6 +54,19 @@ def test_capture_mode_choices_match_the_code():
     assert option["default"] == DEFAULT_CAPTURE_MODE
 
 
+def test_users_set_only_the_key_team_and_capture_mode():
+    options = load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]
+    assert set(options) == {"api_key", "tenant_ref", "capture_mode"}
+
+
+def test_no_internal_host_is_published():
+    skipped = {".git", ".venv", ".mypy_cache", ".ruff_cache", ".pytest_cache", "__pycache__"}
+    for path in ROOT.rglob("*"):
+        if skipped.intersection(path.relative_to(ROOT).parts) or not path.is_file() or path == Path(__file__):
+            continue
+        assert "staging" not in path.read_text(encoding="utf-8", errors="ignore").lower(), path
+
+
 def test_the_key_is_sensitive():
     assert load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]["api_key"]["sensitive"] is True
 

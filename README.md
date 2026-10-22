@@ -15,16 +15,24 @@ Paste this into Claude Code:
 ```text
 Install the Emet plugin for Claude Code from https://github.com/FUSEis/emet-plugin.
 
-1. Run `claude plugin marketplace add FUSEis/emet-plugin`.
-2. Ask me for my Emet team ID, then run
-   `claude plugin install emet@emet-plugin --config tenant_ref=<team ID>`.
-3. Do not ask me for my Emet key, and never read, print or store it. Tell me to run
-   `/plugin configure emet@emet-plugin` in Claude Code, enter the key there,
-   and restart Claude Code.
-4. After I restart, run `/emet:setup` and tell me whether the key was accepted.
+The plugin has three options:
+- Emet key (required, secret): from the Keys page of my Emet application.
+- Team ID (required): the External ID of my team on Emet's Teams page. It is sent as tenant_ref.
+- Capture mode (optional): sanitized by default, which sends content with secrets redacted.
+  Leave it unless I ask; full sends content as is, metadata sends no content.
+
+1. Ask me for my Emet Team ID. Do not ask for anything else.
+2. Run `claude plugin marketplace add FUSEis/emet-plugin`.
+3. Run `claude plugin install emet@emet-plugin --config tenant_ref=<Team ID>`.
+   The installer then says some options are not set. That is expected: only the key
+   is missing, and capture mode has a default.
+4. Never ask me for the key, and never read, print or store it. Tell me to run
+   `/plugin configure emet@emet-plugin` in Claude Code, type the key into the
+   Emet key field, save, and restart Claude Code.
+5. After I restart, run `/emet:setup` and tell me whether Emet accepted the key.
 ```
 
-The key is typed only into Claude Code's own configuration dialog, which keeps it in the system keychain, so it never appears in the conversation.
+The key is typed only into Claude Code's own configuration dialog, which keeps it in the macOS Keychain (or Claude Code's credentials file where there is no keychain), so it never appears in the conversation.
 
 ## Install by hand
 
@@ -36,7 +44,7 @@ In Claude Code:
 /plugin configure emet@emet-plugin
 ```
 
-Enter your Emet key and team ID, restart Claude Code, then run `/emet:setup` to check the connection.
+Enter your Emet key and your team's External ID (from Emet's Teams page), restart Claude Code, then run `/emet:setup` to check the connection.
 
 For a whole organization, an administrator can install and configure the plugin for every developer through managed settings: see [docs/enterprise.md](docs/enterprise.md).
 

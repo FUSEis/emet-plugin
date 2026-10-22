@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- The Emet endpoint is no longer a plugin option. The plugin sends only to `https://app.emet.so`, and `/plugin configure` asks for the key, the Team ID and the capture mode.
+- `/emet:setup` and the install prompt in the README name each option, say where the Team ID comes from (the External ID on Emet's Teams page), and explain that only the key is left to set after install.
+
+### Fixed
+
+- Where the key is kept: the macOS Keychain, or Claude Code's credentials file where there is no keychain. It was described as always the system keychain.
+
 ## [0.1.0] - 2026-10-20
 
 First release of the Claude Code plugin.
