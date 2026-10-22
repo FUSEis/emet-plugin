@@ -20,9 +20,8 @@ Requirements: Claude Code 2.1.271 or later, and `python3` 3.9 or later on the `P
 
 | Option | Required | Default | What it does |
 | --- | --- | --- | --- |
-| `api_key` | yes | | Your Emet application key. Stored in the system keychain. |
-| `tenant_ref` | yes | | The external ID of the Emet team these sessions belong to. |
-| `endpoint` | no | `https://app.emet.so` | The Emet API. Must be `https://`, except `localhost`. |
+| `api_key` | yes | | Your Emet application key, from **Applications**, then **Manage keys**. Kept in Claude Code's secure credential store (the Keychain on macOS), never in `settings.json`. |
+| `tenant_ref` | yes | | Team ID: the External ID of your team, from **Teams** in Emet. |
 | `capture_mode` | no | `sanitized` | How much content is sent; see below. |
 
 ## Use it
@@ -52,7 +51,7 @@ For each finished turn, one trace:
 
 ## Where data goes and what stays local
 
-The plugin sends only to the `endpoint` you set, over HTTPS. It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`), readable only by you:
+The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses any other destination, whatever the environment says. It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`), readable only by you:
 
 - `state/`: how far each session's transcript has been read.
 - `queue/`: turns that could not be delivered yet, retried oldest first on the next turn. At most 500 turns or 256 MB; the oldest are dropped beyond that.
@@ -78,7 +77,7 @@ A turn still waiting for its answer is read again next time, and a background su
 
 ## Troubleshooting
 
-Run `/emet:status`. It reads `status.json` and the log and explains the most recent problem. The usual causes are a missing or revoked key (`401` or `403`), a network or proxy blocking the endpoint, or an `endpoint` that is not `https://`.
+Run `/emet:status`. It reads `status.json` and the log and explains the most recent problem. The usual causes are a missing or revoked key (`401` or `403`), or a network or proxy blocking `app.emet.so`.
 
 ## License
 

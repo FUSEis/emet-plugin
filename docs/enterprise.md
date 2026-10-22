@@ -1,6 +1,6 @@
 # Rolling out Emet to an organization
 
-An administrator can install and configure the Emet plugin for every developer at once, through Claude Code's [managed settings](https://code.claude.com/docs/en/plugins/org). Developers then get the plugin at their next session start, already configured, with nothing to type.
+An administrator can install and configure the Emet plugin for every developer at once, through Claude Code's [managed settings](https://code.claude.com/docs/en/plugins/org). Developers then get the plugin at their next session start, already configured; each developer only enters the Emet key.
 
 ## 1. Pick a version
 
@@ -24,7 +24,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
   "pluginConfigs": {
     "emet@emet-plugin": {
       "options": {
-        "tenant_ref": "your-emet-team-id",
+        "tenant_ref": "your-team-external-id",
         "capture_mode": "sanitized"
       }
     }
@@ -33,18 +33,18 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 ```
 
 - `enabledPlugins: true` in managed settings turns the plugin on for everyone, and developers cannot turn it off.
-- Options in managed `pluginConfigs` take precedence over a developer's own, so the team and capture mode cannot be changed locally. A project's `.claude/settings.json` cannot set `pluginConfigs` at all, so a cloned repository cannot redirect traces elsewhere.
+- Options in managed `pluginConfigs` take precedence over a developer's own, so the team and capture mode cannot be changed locally. A project's `.claude/settings.json` cannot set `pluginConfigs` at all, and the plugin refuses any destination other than Emet, so a cloned repository cannot redirect traces elsewhere.
 - If you use `strictKnownMarketplaces`, add `{ "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.0" }` to the allowlist. An allowlist entry matches only the same `ref`.
 
 ## 3. The key
 
-The Emet key is a sensitive option. Each developer enters it once with `/plugin configure emet@emet-plugin`, which stores it in their system keychain. Until a key is set, the plugin sends nothing and `/emet:status` says so.
+The Emet key is a sensitive option. Each developer enters it once with `/plugin configure emet@emet-plugin`, which keeps it in Claude Code's secure credential store (the Keychain on macOS). Until a key is set, the plugin sends nothing and `/emet:status` says so.
 
-Use one key per team, issued from the Emet application's **Keys** page, so that a key can be revoked without affecting other teams.
+Use one key per team, issued from the Emet application (**Applications**, then **Manage keys**), so that a key can be revoked without affecting other teams.
 
 ## 4. Check it
 
-On a developer machine, after a session start, `/emet:status` should show the team, the capture mode you set and `key_check: accepted`. Turns appear in Emet under **Conversations** once they are checked.
+On a developer machine, after a session start, `/emet:status` should show the team, the capture mode you set and `key_check: accepted`. After one finished turn it should show a `last_delivery`, and the conversation should appear in Emet under **Conversations** with your team's name. A conversation with no team means the Team ID matches no External ID.
 
 ## Choosing a capture mode
 
@@ -59,7 +59,7 @@ Images and binary content are never sent in any mode.
 ## What your security review will want
 
 - The hook is one Python package in [`claude/scripts/`](../claude/scripts/), standard library only, a few hundred lines. It runs with the developer's permissions, like any hook.
-- It sends only to the configured `endpoint`, and only over HTTPS (plain HTTP is accepted for `localhost` alone).
+- It sends only to Emet (`https://app.emet.so`), over HTTPS, and refuses any other destination. The one exception is an Emet on the same machine, for plugin development.
 - It reads the session transcript, saved tool outputs and subagent transcripts in Claude Code's own project folder, and nothing outside it.
 - It writes only to its own data folder, with owner-only permissions. The status file and log never hold content or the key.
 - [claude/README.md](../claude/README.md#what-is-sent) lists every field it sends in each mode.

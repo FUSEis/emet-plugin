@@ -8,7 +8,7 @@ Include the plugin version (`plugin.json`), the Claude Code version, your operat
 
 ## Scope
 
-In scope: anything in this repository, for example a way to make the plugin send data somewhere other than the configured endpoint, send content in `metadata` mode, leak the Emet key, read files outside Claude Code's project folder, or write outside its own data folder.
+In scope: anything in this repository, for example a way to make the plugin send data somewhere other than Emet, send content in `metadata` mode, leak the Emet key, read files outside Claude Code's project folder, or write outside its own data folder.
 
 Out of scope: secrets that the `sanitized` redaction patterns do not recognize. Redaction is best effort and documented as such; use `metadata` mode where that matters. Suggestions for new patterns are welcome as ordinary issues, without the secret.
 

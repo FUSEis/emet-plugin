@@ -2,6 +2,8 @@
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from emet_claude import VERSION
@@ -52,6 +54,37 @@ def test_capture_mode_choices_match_the_code():
     option = load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]["capture_mode"]
     assert set(option["options"]) == set(CAPTURE_MODES)
     assert option["default"] == DEFAULT_CAPTURE_MODE
+
+
+def test_users_set_only_the_key_team_and_capture_mode():
+    options = load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]
+    assert set(options) == {"api_key", "tenant_ref", "capture_mode"}
+
+
+# Every host a published file names; anything else, such as an internal Emet, must not ship
+PUBLIC_HOSTS = {
+    "app.emet.so",
+    "emet.so",
+    "github.com",
+    "code.claude.com",
+    "docs.astral.sh",
+    "keepachangelog.com",
+    "semver.org",
+    "www.apache.org",
+    "hooks.slack.com",
+    "localhost",
+    "127.0.0.1",
+}
+
+
+def test_published_files_name_only_public_hosts():
+    tracked = subprocess.run([str(shutil.which("git")), "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout.decode()
+    for name in filter(None, tracked.split("\0")):
+        if name.startswith("tests/") or name == "uv.lock":
+            continue
+        text = (ROOT / name).read_text(encoding="utf-8", errors="ignore").replace("\\.", ".")
+        for host in re.findall(r"https?://([A-Za-z0-9.-]+)", text):
+            assert host.lower() in PUBLIC_HOSTS, f"{name} names {host}"
 
 
 def test_the_key_is_sensitive():

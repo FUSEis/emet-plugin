@@ -15,16 +15,25 @@ Paste this into Claude Code:
 ```text
 Install the Emet plugin for Claude Code from https://github.com/FUSEis/emet-plugin.
 
-1. Run `claude plugin marketplace add FUSEis/emet-plugin`.
-2. Ask me for my Emet team ID, then run
-   `claude plugin install emet@emet-plugin --config tenant_ref=<team ID>`.
-3. Do not ask me for my Emet key, and never read, print or store it. Tell me to run
-   `/plugin configure emet@emet-plugin` in Claude Code, enter the key there,
-   and restart Claude Code.
-4. After I restart, run `/emet:setup` and tell me whether the key was accepted.
+It needs:
+- Team ID (required): the External ID of my team in Emet, under Teams in the sidebar.
+  The plugin sends it as `tenant_ref`.
+- Emet key (required, secret): from my Emet application, under Applications, then
+  Manage keys. I enter it myself.
+- Capture mode (optional): `sanitized` by default, which sends prompts, answers and tool
+  results with secrets redacted. Keep it unless I ask; `metadata` sends no content.
+
+1. Ask me for my Team ID, and nothing else.
+2. Run `claude plugin marketplace add FUSEis/emet-plugin`.
+3. Run `claude plugin install emet@emet-plugin --config tenant_ref=<Team ID>`.
+   It reports options that are not set yet. That is expected: only the key is left.
+4. Never ask me for the key, and never read, print or store it. Tell me to:
+   - run `/plugin configure emet@emet-plugin`, type the key into the Emet key field and save;
+   - restart Claude Code;
+   - run `/emet:setup` in the new session to check that Emet accepts the key.
 ```
 
-The key is typed only into Claude Code's own configuration dialog, which keeps it in the system keychain, so it never appears in the conversation.
+The key is typed only into Claude Code's own configuration dialog, which keeps it in Claude Code's secure credential store (the Keychain on macOS), so it never appears in the conversation.
 
 ## Install by hand
 
@@ -36,7 +45,7 @@ In Claude Code:
 /plugin configure emet@emet-plugin
 ```
 
-Enter your Emet key and team ID, restart Claude Code, then run `/emet:setup` to check the connection.
+Enter your Emet key (Applications, then Manage keys, in Emet) and your team's External ID (Teams in Emet), restart Claude Code, then run `/emet:setup` to check the connection.
 
 For a whole organization, an administrator can install and configure the plugin for every developer through managed settings: see [docs/enterprise.md](docs/enterprise.md).
 

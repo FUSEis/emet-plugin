@@ -6,19 +6,19 @@ def test_reads_plugin_options():
         {
             "CLAUDE_PLUGIN_OPTION_API_KEY": " abc.def ",
             "CLAUDE_PLUGIN_OPTION_TENANT_REF": "team",
-            "CLAUDE_PLUGIN_OPTION_ENDPOINT": "https://emet.example.com/",
+            "CLAUDE_PLUGIN_OPTION_ENDPOINT": "http://localhost:8000/",
             "CLAUDE_PLUGIN_OPTION_CAPTURE_MODE": "FULL",
         }
     )
     assert config.api_key == "abc.def"
-    assert config.endpoint == "https://emet.example.com"
+    assert config.endpoint == "http://localhost:8000"
     assert config.capture_mode == "full"
     assert config.problem is None
 
 
 def test_defaults():
     config = load({})
-    assert config.endpoint == DEFAULT_ENDPOINT
+    assert config.endpoint == DEFAULT_ENDPOINT == "https://app.emet.so"
     assert config.capture_mode == "sanitized"
     assert config.problem == "No Emet key is set."
 
@@ -31,10 +31,13 @@ def test_missing_team_is_a_problem():
     assert load({"CLAUDE_PLUGIN_OPTION_API_KEY": "k"}).problem == "No team is set."
 
 
-def test_endpoint_must_be_https_unless_local():
+def test_only_emet_or_a_local_emet_receives_traces():
     assert endpoint_problem("https://app.emet.so") is None
     assert endpoint_problem("http://localhost:8000") is None
     assert endpoint_problem("http://127.0.0.1:8000") is None
+    assert endpoint_problem("http://[::1]:8000") is None
+    assert "local Emet" in endpoint_problem("https://collector.example.com")
+    assert endpoint_problem("https://app.emet.so.example.com") is not None
     assert endpoint_problem("http://app.emet.so") is not None
     assert endpoint_problem("ftp://app.emet.so") is not None
     assert endpoint_problem("app.emet.so") is not None
