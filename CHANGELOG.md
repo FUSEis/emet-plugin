@@ -4,9 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-22
+
 ### Changed
 
-- The Emet endpoint is no longer a plugin option. The plugin sends only to `https://app.emet.so` and refuses any other host, including one set through the environment. An `endpoint` saved with 0.1.0 other than `https://app.emet.so` stops the plugin from sending until it is removed; `/emet:setup` says how. `/plugin configure` asks for the key, the Team ID and the capture mode.
+- The Emet endpoint is no longer a plugin option. The plugin sends only to `https://app.emet.so` and refuses any other host, including one set through the environment; the only exception is an Emet on the same machine, for plugin development. An `endpoint` saved with 0.1.0 other than `https://app.emet.so` stops the plugin from sending until it is removed; `/emet:setup` says how. `/plugin configure` asks for the key, the Team ID and the capture mode.
 - The install prompt in the README and `/emet:setup` say where each value is in Emet, that only the key is left to set after install, and to run `/emet:setup` again after the restart. `/emet:setup` also explains that an accepted key does not check the Team ID, and how to confirm the team.
 
 ### Fixed
@@ -32,5 +34,6 @@ First release of the Claude Code plugin.
 - `/emet:setup` and `/emet:status` skills.
 - Managed-settings guide for organization rollouts.
 
-[Unreleased]: https://github.com/FUSEis/emet-plugin/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/FUSEis/emet-plugin/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/FUSEis/emet-plugin/compare/v0.1.0...v0.1.2
 [0.1.0]: https://github.com/FUSEis/emet-plugin/releases/tag/v0.1.0
