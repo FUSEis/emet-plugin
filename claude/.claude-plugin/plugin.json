@@ -1,7 +1,7 @@
 {
   "name": "emet",
   "displayName": "Emet",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Sends each Claude Code turn to Emet, which checks the claims in the answer against the tool results behind them.",
   "author": {
     "name": "Emet",

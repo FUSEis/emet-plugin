@@ -14,7 +14,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 {
   "extraKnownMarketplaces": {
     "emet-plugin": {
-      "source": { "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.0" },
+      "source": { "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.2" },
       "autoUpdate": false
     }
   },
@@ -34,7 +34,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 
 - `enabledPlugins: true` in managed settings turns the plugin on for everyone, and developers cannot turn it off.
 - Options in managed `pluginConfigs` take precedence over a developer's own, so the team and capture mode cannot be changed locally. A project's `.claude/settings.json` cannot set `pluginConfigs` at all, and the plugin refuses any destination other than Emet, so a cloned repository cannot redirect traces elsewhere.
-- If you use `strictKnownMarketplaces`, add `{ "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.0" }` to the allowlist. An allowlist entry matches only the same `ref`.
+- If you use `strictKnownMarketplaces`, add `{ "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.2" }` to the allowlist. An allowlist entry matches only the same `ref`.
 
 ## 3. The key
 

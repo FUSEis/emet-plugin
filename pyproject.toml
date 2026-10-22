@@ -1,7 +1,7 @@
 # Development tooling only. The plugin itself runs on the Python standard library and installs nothing.
 [project]
 name = "emet-plugin"
-version = "0.1.0"
+version = "0.1.2"
 description = "Plugins that send AI agent traces to Emet for claim verification"
 requires-python = ">=3.9"
 license = "Apache-2.0"

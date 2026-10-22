@@ -20,7 +20,9 @@ def test_versions_agree():
     plugin = load(PLUGIN / ".claude-plugin" / "plugin.json")
     marketplace = load(ROOT / ".claude-plugin" / "marketplace.json")
     (entry,) = marketplace["plugins"]
-    assert plugin["version"] == VERSION == entry["version"]
+    project = re.search(r'^version = "(.+)"$', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M)
+    assert project is not None
+    assert plugin["version"] == VERSION == entry["version"] == project.group(1)
 
 
 def test_changelog_has_the_current_version():
