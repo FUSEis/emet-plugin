@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from conftest import API_KEY
-from emet_claude import commands, storage, transport
+from emet_claude import commands, config, storage, transport
 from helpers import Transcript
 
 
@@ -267,44 +267,55 @@ def sign_in(environ, account):
     (folder / ".claude.json").write_text(json.dumps({"oauthAccount": account}), encoding="utf-8")
 
 
-def report_link(emet, index):
-    return f"{emet.url}/conversations?selected={emet.conversations[index]}"
+def report_link(emet, index, session_id="session-1"):
+    return f"{emet.url}/conversations?q={session_id}&selected={emet.conversations[index]}"
 
 
 def test_sends_the_claude_account_email_as_the_person(transcript, environ, emet):
-    sign_in(environ, {"emailAddress": "ada@example.com"})
+    sign_in(environ, {"emailAddress": " ada@example.com "})
     finished_turn(transcript)
     run(transcript, environ)
     assert emet.envelopes[0]["enduser_ref"] == "ada@example.com"
-    assert status(environ)["enduser_source"] == "claude account"
+    assert status(environ)["enduser_source"] == config.FROM_CLAUDE_ACCOUNT
 
 
 def test_the_email_setting_wins_over_the_claude_account(transcript, environ, emet):
     sign_in(environ, {"emailAddress": "personal@example.com"})
-    environ["CLAUDE_PLUGIN_OPTION_USER_EMAIL"] = "ada@work.example.com"
+    environ["CLAUDE_PLUGIN_OPTION_EMET_EMAIL"] = "ada@work.example.com"
     finished_turn(transcript)
     run(transcript, environ)
     assert emet.envelopes[0]["enduser_ref"] == "ada@work.example.com"
-    assert status(environ)["enduser_source"] == "setting"
+    assert status(environ)["enduser_source"] == config.FROM_SETTING
 
 
 @pytest.mark.parametrize("account", [None, {}, {"emailAddress": "not an email"}, "ada@example.com"])
-def test_sends_no_person_without_a_claude_account(transcript, environ, emet, account):
+def test_sends_no_person_without_a_signed_in_account(transcript, environ, emet, account):
     sign_in(environ, account)
     finished_turn(transcript)
     run(transcript, environ)
     assert emet.envelopes[0]["enduser_ref"] == ""
+    assert status(environ)["enduser_note"] == "no signed-in Claude account"
 
 
-def test_an_unreadable_account_file_sends_no_person_and_says_why(transcript, environ, emet):
-    folder = Path(environ["CLAUDE_CONFIG_DIR"])
-    folder.mkdir()
-    (folder / ".claude.json").write_text("{not json", encoding="utf-8")
+def test_sends_no_person_without_an_account_file_and_logs_nothing(transcript, environ, emet):
     finished_turn(transcript)
     run(transcript, environ)
     assert emet.envelopes[0]["enduser_ref"] == ""
+    assert status(environ)["enduser_note"] == "no Claude account file"
+    assert "sign-in" not in (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("text", ["{not json", "[]"])
+def test_an_unreadable_account_file_sends_no_person_and_says_why(transcript, environ, emet, text):
+    folder = Path(environ["CLAUDE_CONFIG_DIR"])
+    folder.mkdir()
+    (folder / ".claude.json").write_text(text, encoding="utf-8")
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == ""
+    assert status(environ)["enduser_note"] == "Claude account file unreadable"
     log = (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
-    assert "sign-in email unreadable JSONDecodeError" in log
+    assert "sign-in email unreadable" in log
 
 
 def test_status_links_the_latest_report_of_each_session(transcript, environ, emet):
@@ -315,7 +326,17 @@ def test_status_links_the_latest_report_of_each_session(transcript, environ, eme
     run(transcript, environ)
     (recent,) = status(environ)["recent"]
     assert recent["session_id"] == transcript.session_id
+    assert recent["repository"] == "acme-app"
     assert recent["report_url"] == report_link(emet, 1)
+
+
+def test_status_keeps_the_last_five_sessions(tmp_path, environ, emet):
+    for index in range(7):
+        session = Transcript(tmp_path, f"session-{index}")
+        finished_turn(session)
+        run(session, environ)
+    sessions = [item["session_id"] for item in status(environ)["recent"]]
+    assert sessions == ["session-6", "session-5", "session-4", "session-3", "session-2"]
 
 
 def test_a_run_that_sends_nothing_keeps_the_newest_link_first(tmp_path, environ, emet):
@@ -341,6 +362,24 @@ def test_a_queued_turn_gets_its_link_when_it_is_retried(transcript, environ, eme
     assert recent["report_url"] == report_link(emet, 0)
 
 
+def test_a_long_reply_still_gives_the_link(transcript, environ, emet):
+    # A metadata-mode batch of 500 tool calls, each listed twice
+    emet.gaps = [f"tool.toolu_{index:024d}" for index in range(500)]
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 0)
+
+
+def test_a_reply_without_a_conversation_keeps_the_sessions_earlier_link(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ)
+    emet.reply = "not-a-uuid"
+    finished_turn(transcript, "next", "ok")
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 0)
+    assert status(environ)["queued"] == 0
+
+
 def test_a_reply_without_a_conversation_still_counts_as_delivered(transcript, environ, emet):
     emet.reply = "not-a-uuid"
     finished_turn(transcript)
@@ -359,3 +398,35 @@ def test_a_cut_off_reply_still_counts_as_delivered(transcript, environ, emet, mo
     run(transcript, environ)
     assert len(emet.requests) == 1
     assert status(environ)["queued"] == 0
+    assert status(environ)["last_delivery"]["status"] == 202
+    assert status(environ)["last_delivery"]["report_url"] == ""
+
+
+def test_a_rejected_key_is_the_last_error(transcript, environ, emet):
+    emet.statuses = [401]
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["last_error"]["detail"] == "401 key rejected"
+    assert "last_delivery" not in status(environ)
+
+
+def test_a_failed_retry_is_the_last_error(transcript, environ, emet):
+    emet.statuses = [503, 503]
+    finished_turn(transcript)
+    run(transcript, environ)
+    run(transcript, environ)
+    assert status(environ)["last_error"]["detail"].startswith("503")
+    assert status(environ)["queued"] == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"", b"[]", b"null", b'"x"', b'{"conversation": null}', b'{"conversation": {}}', b"\xff\xfe", b'{"conversation": "nope"}'],
+)
+def test_a_reply_without_a_valid_conversation_gives_no_id(body):
+    assert transport.accepted_conversation(body) == ""
+
+
+def test_the_conversation_id_is_normalized():
+    raw = "0F0E6C6E4A8E4D479B4C3C9F2F1D8A11"
+    assert transport.accepted_conversation(json.dumps({"conversation": raw}).encode()) == "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"

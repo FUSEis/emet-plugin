@@ -31,7 +31,7 @@
       "description": "The External ID of your team, from Teams in Emet.",
       "required": true
     },
-    "user_email": {
+    "emet_email": {
       "type": "string",
       "title": "Your Emet email",
       "description": "Optional. Leave blank to use the email you sign in to Claude with. Set it when that is not the email of your Emet account."

@@ -8,9 +8,9 @@ description: Link the Emet reports of the latest turns, and report whether the p
 1. Read `${CLAUDE_PLUGIN_DATA}/status.json`. If it does not exist, the plugin has not run in a session yet: tell the user to finish one turn, or run `/emet:setup`.
 2. Read the last 30 lines of `${CLAUDE_PLUGIN_DATA}/emet.log`. It holds ids, counts and HTTP statuses only, never content.
 3. Report, briefly:
-   - Reports: the `report_url` of each entry in `recent`, newest first, with its time. Each opens that session's conversation in Emet. If `recent` is empty, no turn has been delivered yet.
+   - Reports: the `report_url` of each entry in `recent`, newest first, with its `repository` and time. Each opens that session's conversation in Emet, for a member of the user's Emet organization; if it does not open, their Emet administrator invites the email in `enduser_ref`. An entry with no `report_url` was delivered, but Emet's reply gave no link. If `recent` is empty, no turn has been delivered yet.
    - Configuration: `tenant_ref`, `capture_mode`, `key_hint` (the key's public prefix, never the key). If `endpoint` is not `https://app.emet.so`, say where turns are going. If `problem` is set, say what it is and suggest `/emet:setup`.
-   - Person: `enduser_ref` and `enduser_source` (`claude account` or `setting`). If it is empty, turns reach Emet with no person; suggest setting **Your Emet email** with `/emet:setup`.
+   - Person: `enduser_ref` and `enduser_source` (`claude account` or `setting`). If it is empty, turns reach Emet with no person: give `enduser_note` (why no email was found) and suggest setting **Your Emet email** with `/emet:setup`.
    - Key check: `key_check` and `key_checked_at`.
    - Delivery: `last_delivery`, and `last_error` if it is more recent.
    - Retries: `queued` envelopes waiting. They are retried on the next turn, oldest first.

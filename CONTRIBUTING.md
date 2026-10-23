@@ -27,7 +27,7 @@ The hook log is in the plugin's data folder (`~/.claude/plugins/data/emet-inline
 - **No runtime dependencies.** Anything outside the standard library would have to be installed on every developer machine.
 - **Python 3.9 compatible.** It is what macOS ships. CI runs the tests on 3.9 and on the latest release.
 - **Never block the session.** Hooks return at once; all network work happens in the detached worker, and every failure there is logged, not raised.
-- **Never log content or the key.** The log and status file hold ids, counts and HTTP statuses only. A test checks this.
+- **Never log content or the key.** The log holds ids, counts and HTTP statuses only; the status file also holds report links and the email sent. A test checks this.
 - **Say when content is cut.** Any tool result that is not sent complete is marked `is_truncated`, which Emet needs to avoid verifying a claim against partial evidence.
 - **Tests use synthetic transcripts** built in `tests/helpers.py`. Never commit a real session transcript; they hold private content.
 - A change to what is sent, or to the transcript parsing, needs a test and a `CHANGELOG.md` entry under **Unreleased**.
@@ -39,5 +39,5 @@ The hook log is in the plugin's data folder (`~/.claude/plugins/data/emet-inline
 ## Releases
 
 1. Move the **Unreleased** entries in `CHANGELOG.md` under the new version.
-2. Set the version in `claude/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `claude/scripts/emet_claude/__init__.py` and `pyproject.toml`, then run `uv lock` (a test keeps them equal).
+2. Set the version in `claude/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `claude/scripts/emet_claude/__init__.py` and `pyproject.toml`, and the `ref` pins in `docs/enterprise.md`, then run `uv lock` (tests keep them equal).
 3. Merge, then push a tag `vX.Y.Z` on `main`. The release workflow checks the version and publishes the GitHub release with the changelog entry.

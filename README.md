@@ -27,14 +27,16 @@ What it needs:
 Rules: never ask me for the key, and never read, print or store it. Do not edit
 settings.json files.
 
-1. Run `claude plugin list`. If `emet@emet-plugin` is installed, skip to step 4.
+1. Run `claude plugin list`. If `emet@emet-plugin` is installed, run
+   `claude plugin marketplace update emet-plugin` and
+   `claude plugin update emet@emet-plugin`, then skip to step 4.
 2. Run `claude auth status --text`. If I'm signed in with a Claude account, show
    me its email and ask whether it is the email of my Emet account. If it is not,
    or I'm not signed in with a Claude account, ask me for my Emet email.
 3. Ask me for my Team ID, then run:
    - `claude plugin marketplace add FUSEis/emet-plugin`
    - `claude plugin install emet@emet-plugin --config tenant_ref=<Team ID>`,
-     adding `--config user_email=<email>` if I gave one.
+     adding `--config emet_email=<email>` if I gave one.
    It reports options that are not set yet. That is expected: the key is left.
 4. Tell me, in one short list, to:
    - run `/plugin configure emet@emet-plugin`, type the key into the Emet key

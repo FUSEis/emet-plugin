@@ -22,7 +22,7 @@ Requirements: Claude Code 2.1.271 or later, and `python3` 3.9 or later on the `P
 | --- | --- | --- | --- |
 | `emet_key` | yes | | Your team's Emet key, from **Applications**, then **Manage keys**. Kept in Claude Code's secure credential store (the Keychain on macOS), never in `settings.json`. |
 | `tenant_ref` | yes | | Team ID: the External ID of your team, from **Teams** in Emet. |
-| `user_email` | no | your Claude sign-in | Your Emet email, so Emet attributes your turns to you. Leave it blank to use the email you sign in to Claude with; set it when you use an API key, Bedrock, Vertex AI or a gateway, or when the two emails differ. |
+| `emet_email` | no | your Claude sign-in | Your Emet email, so Emet attributes your turns to you. Leave it blank to use the email you sign in to Claude with; set it when you use an API key, Bedrock, Vertex AI or a gateway, or when the two emails differ. |
 | `capture_mode` | no | `sanitized` | How much content is sent; see below. |
 
 In an organization, an administrator usually sets all of these for everyone, and there is nothing to enter: see [docs/enterprise.md](https://github.com/FUSEis/emet-plugin/blob/main/docs/enterprise.md).
@@ -42,7 +42,7 @@ For each finished turn, one trace:
 | Model name, token counts (input, output, cache, thinking), stop reason, timings | yes | yes | yes |
 | Tool names, call ids, success or error | yes | yes | yes |
 | Repository folder name, git branch, Claude Code version | yes | yes | yes |
-| Your email (see `user_email`), so Emet can attribute the turn to you | yes | yes | yes |
+| Your email (see `emet_email`), so Emet can attribute the turn to you | yes | yes | yes |
 | Your prompt and Claude's answers | redacted | yes | no |
 | Tool arguments and the tool results Claude received | redacted | yes | no |
 | Subagent prompts, calls and results | redacted | yes | no |
@@ -72,7 +72,7 @@ The plugin registers four hooks (`SessionStart`, `Stop`, `SubagentStop`, `Sessio
 3. applies the capture mode, then sends the turn to `POST /api/v1/traces/` with the key as a bearer token;
 4. queues the turn if Emet cannot be reached, and retries it on the next run.
 
-A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. `SessionStart` also checks that Emet accepts the key, without sending a trace. Unless `user_email` is set, each run reads the signed-in email from Claude Code's account file (`~/.claude.json`).
+A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. `SessionStart` also checks that Emet accepts the key, without sending a trace. Unless `emet_email` is set, each run reads the signed-in email from Claude Code's account file (`~/.claude.json`), keeping only `oauthAccount.emailAddress`.
 
 ## Turn it off
 

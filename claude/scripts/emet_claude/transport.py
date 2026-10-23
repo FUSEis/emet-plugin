@@ -12,7 +12,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from . import VERSION, storage
 from .config import Config
@@ -22,6 +22,17 @@ TIMEOUT_S = 15
 QUEUE_MAX_FILES = 500
 QUEUE_MAX_BYTES = 256 * 1024 * 1024
 RETRYABLE = (408, 425, 429)
+# Emet's 202 lists the tool spans that carried no content, up to one per span of a batch
+MAX_REPLY_BYTES = 128 * 1024
+
+
+@dataclass(frozen=True)
+class Accepted:
+    """An envelope Emet accepted, with what /emet:status shows about it."""
+
+    session_id: str
+    repository: str
+    outcome: Outcome
 
 
 @dataclass(frozen=True)
@@ -40,7 +51,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
         f"{config.endpoint}/api/v1/traces/",
         data=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {config.api_key}",
+            "Authorization": f"Bearer {config.emet_key}",
             "Content-Type": "application/json",
             "User-Agent": f"emet-claude-code/{VERSION}",
         },
@@ -51,7 +62,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
             # Delivered once Emet answered; the body only adds the report link
             reply = b""
             with contextlib.suppress(OSError, http.client.HTTPException):
-                reply = response.read(4096)
+                reply = response.read(MAX_REPLY_BYTES)
             return Outcome(response.status, True, True, "", accepted_conversation(reply))
     except urllib.error.HTTPError as error:
         body = error.read(500).decode("utf-8", "replace")
@@ -127,13 +138,15 @@ class Sender:
         self.root = root
         self.config = config
         self.blocked = False
-        # (session id, outcome) of every envelope Emet accepted in this run, queued ones included
-        self.accepted: List[Tuple[str, Outcome]] = []
+        # Every envelope Emet accepted in this run, queued ones included
+        self.accepted: List[Accepted] = []
         self.failures: List[Outcome] = []
 
     def record(self, envelope: Dict[str, Any], outcome: Outcome) -> None:
         if outcome.delivered:
-            self.accepted.append((str(envelope.get("conversation_id") or ""), outcome))
+            resource = envelope.get("resource")
+            repository = str(resource.get("vcs.repository.name") or "") if isinstance(resource, dict) else ""
+            self.accepted.append(Accepted(str(envelope.get("conversation_id") or ""), repository, outcome))
         else:
             self.failures.append(outcome)
 

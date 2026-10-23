@@ -12,8 +12,8 @@ CONFIG = Config("Abcd1234.ZyxwVuts98765432QwertyUiop123456", "engineering", "htt
 
 
 def build(transcript, mode="sanitized"):
-    config = Config(CONFIG.api_key, CONFIG.tenant_ref, CONFIG.endpoint, mode)
-    builder = Builder(transcript.path, Capture(mode, secrets=(config.api_key,)))
+    config = Config(CONFIG.emet_key, CONFIG.tenant_ref, CONFIG.endpoint, mode)
+    builder = Builder(transcript.path, Capture(mode, secrets=(config.emet_key,)))
     _, turns = tr.split_turns(tr.read_entries(transcript.path, 0)[0])
     return [envelope.for_turn(config, builder, transcript.session_id, turn, "/work/acme-app") for turn in turns]
 

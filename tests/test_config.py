@@ -10,7 +10,7 @@ def test_reads_plugin_options():
             "CLAUDE_PLUGIN_OPTION_CAPTURE_MODE": "FULL",
         }
     )
-    assert config.api_key == "abc.def"
+    assert config.emet_key == "abc.def"
     assert config.endpoint == "http://localhost:8000"
     assert config.capture_mode == "full"
     assert config.problem is None
@@ -60,6 +60,13 @@ def test_malformed_endpoint_is_a_problem_not_a_crash():
 
 
 def test_a_typed_email_is_the_person():
-    config = load({"CLAUDE_PLUGIN_OPTION_USER_EMAIL": " ada@example.com "})
+    config = load({"CLAUDE_PLUGIN_OPTION_EMET_EMAIL": " ada@example.com "})
     assert (config.enduser_ref, config.enduser_source) == ("ada@example.com", "setting")
     assert load({}).enduser_ref == ""
+
+
+def test_a_key_under_another_name_is_not_used():
+    assert (
+        load({"CLAUDE_PLUGIN_OPTION_API_KEY": "Abcd1234.secretsecretsecret12", "CLAUDE_PLUGIN_OPTION_TENANT_REF": "t"}).problem
+        == "No Emet key is set."
+    )

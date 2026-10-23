@@ -127,6 +127,8 @@ class FakeEmet:
         # The conversation uuid each accepted request was answered with; a fresh one per request unless reply is set
         self.conversations: List[str] = []
         self.reply: Optional[str] = None
+        # Span ids listed as missing content in each 202, as Emet does for a metadata-mode batch
+        self.gaps: List[str] = []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -138,7 +140,8 @@ class FakeEmet:
                 reply = b"{}"
                 if status == 202:
                     owner.conversations.append(owner.reply or str(uuid.uuid4()))
-                    reply = json.dumps({"conversation": owner.conversations[-1]}).encode()
+                    gaps = {"missing_tool_arguments": owner.gaps, "missing_tool_results": owner.gaps}
+                    reply = json.dumps({"conversation": owner.conversations[-1], "gaps": gaps}).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(reply)))
