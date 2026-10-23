@@ -27,9 +27,11 @@ What it needs:
 Rules: never ask me for the key, and never read, print or store it. Do not edit
 settings.json files.
 
-1. Run `claude plugin list`. If `emet@emet-plugin` is installed, run
-   `claude plugin marketplace update emet-plugin` and
-   `claude plugin update emet@emet-plugin`, then skip to step 4.
+1. Run `claude plugin list`. If `emet@emet-plugin` is installed, note its
+   version, run `claude plugin marketplace update emet-plugin` and
+   `claude plugin update emet@emet-plugin`. If it was older than 0.1.3, skip
+   to step 4 (the key has to be entered again). Otherwise skip to the last
+   bullet of step 4.
 2. Run `claude auth status --text`. If I'm signed in with a Claude account, show
    me its email and ask whether it is the email of my Emet account. If it is not,
    or I'm not signed in with a Claude account, ask me for my Emet email.

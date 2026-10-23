@@ -411,11 +411,13 @@ def test_a_rejected_key_is_the_last_error(transcript, environ, emet):
 
 
 def test_a_failed_retry_is_the_last_error(transcript, environ, emet):
-    emet.statuses = [503, 503]
+    emet.statuses = [503, 429]
     finished_turn(transcript)
     run(transcript, environ)
+    # Only the retry can answer 429
     run(transcript, environ)
-    assert status(environ)["last_error"]["detail"].startswith("503")
+    assert len(emet.requests) == 2
+    assert status(environ)["last_error"]["detail"].startswith("429")
     assert status(environ)["queued"] == 1
 
 
@@ -430,3 +432,78 @@ def test_a_reply_without_a_valid_conversation_gives_no_id(body):
 def test_the_conversation_id_is_normalized():
     raw = "0F0E6C6E4A8E4D479B4C3C9F2F1D8A11"
     assert transport.accepted_conversation(json.dumps({"conversation": raw}).encode()) == "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
+
+
+def test_reads_the_account_file_in_the_home_folder_by_default(transcript, environ, emet, tmp_path, monkeypatch):
+    environ.pop("CLAUDE_CONFIG_DIR")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    sign_in({"CLAUDE_CONFIG_DIR": str(tmp_path / "home")}, {"emailAddress": "ada@example.com"})
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == "ada@example.com"
+
+
+def test_the_report_link_searches_for_the_session():
+    from urllib.parse import parse_qs, urlsplit
+
+    link = commands.report_url(config.load({}), "a session&id", "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11")
+    parts = urlsplit(link)
+    assert (parts.scheme, parts.netloc, parts.path) == ("https", "app.emet.so", "/conversations")
+    assert parse_qs(parts.query) == {"q": ["a session&id"], "selected": ["0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"]}
+    assert commands.report_url(config.load({}), "s", "") == ""
+
+
+def test_a_session_that_delivers_again_moves_first_once(tmp_path, environ, emet):
+    first, second = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    for session in (first, second):
+        finished_turn(session)
+        run(session, environ)
+    finished_turn(first, "again", "ok")
+    run(first, environ)
+    recent = status(environ)["recent"]
+    assert [item["session_id"] for item in recent] == ["session-0", "session-1"]
+    assert recent[0]["report_url"] == report_link(emet, 2, "session-0")
+
+
+def test_another_sessions_retry_gets_that_sessions_link(tmp_path, environ, emet):
+    queued, current = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    emet.statuses = [503]
+    finished_turn(queued)
+    run(queued, environ)
+    # The other session's worker flushes the shared queue first, then sends its own turn
+    finished_turn(current)
+    run(current, environ)
+    recent = {item["session_id"]: item for item in status(environ)["recent"]}
+    assert recent["session-0"]["report_url"] == report_link(emet, 0, "session-0")
+    assert recent["session-1"]["report_url"] == report_link(emet, 1, "session-1")
+    assert status(environ)["recent"][0]["session_id"] == "session-1"
+
+
+def test_a_run_that_delivers_and_fails_reports_both(transcript, environ, emet):
+    emet.statuses = [503]
+    finished_turn(transcript)
+    run(transcript, environ)
+    # The retry is accepted, then the new turn is refused for good
+    emet.statuses = [202, 400]
+    finished_turn(transcript, "next", "ok")
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 0)
+    assert status(environ)["last_error"]["detail"].startswith("400")
+
+
+def test_a_deeply_nested_reply_gives_no_id():
+    assert transport.accepted_conversation(b"[" * 100_000) == ""
+
+
+def test_full_mode_still_never_sends_the_emet_key(transcript, environ, emet):
+    environ["CLAUDE_PLUGIN_OPTION_CAPTURE_MODE"] = "full"
+    transcript.prompt("print the environment")
+    transcript.tool_use("msg_1", "toolu_env", "Bash", {"command": "env"})
+    transcript.tool_result("toolu_env", f"CLAUDE_PLUGIN_OPTION_EMET_KEY={API_KEY}\nAWS_SECRET_ACCESS_KEY=abc")
+    transcript.text("msg_2", "done")
+    run(transcript, environ)
+    sent = json.dumps(emet.envelopes)
+    assert API_KEY not in sent
+    assert "[REDACTED:emet_key]" in sent
+    # Everything else is sent as is in full mode
+    assert "AWS_SECRET_ACCESS_KEY=abc" in sent

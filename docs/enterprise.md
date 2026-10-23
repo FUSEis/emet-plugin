@@ -4,7 +4,7 @@ An administrator can install and configure the Emet plugin for every developer a
 
 ## 1. Prepare Emet
 
-- **The key:** in Emet, open **Applications**, then **Manage keys**, and issue one key for the team. Every developer on the team sends with it.
+- **The key:** in Emet, open **Applications**, then **Manage keys**, and mint one key for the team, choosing the team in its **Team** field. Every developer on the team sends with it. A key pinned to a team sends only to that team, whatever Team ID a machine reports; a key left unpinned can send to any team of your organization.
 - **The Team ID:** the **External ID** of the team, under **Teams** in Emet.
 - **The developers:** Emet attributes a turn to a person by matching their email against the members of your Emet organization. Invite each developer to Emet with the email they sign in to Claude with. A developer who is not a member still sends turns; they appear under the team, with no person, and the developer cannot open the report links the plugin shows them.
 - **Tell the developers:** before the rollout, tell them that each turn goes to Emet under their name, with the capture mode you chose, and link [what is sent](../claude/README.md#what-is-sent). Developers cannot turn the plugin off.
@@ -13,7 +13,7 @@ An administrator can install and configure the Emet plugin for every developer a
 
 Pin a release tag so that a new version reaches developers only when you move the pin. Releases and their notes are on the [releases page](https://github.com/FUSEis/emet-plugin/releases); each one lists what changed in what the plugin sends.
 
-Version 0.1.3 renamed the key option from `api_key` to `emet_key`. Moving the pin across it, in either direction, needs the key under the name that version reads: `CLAUDE_PLUGIN_OPTION_EMET_KEY` from 0.1.3, `CLAUDE_PLUGIN_OPTION_API_KEY` before it. Until then the plugin sends nothing, and `/emet:status` says no key is set.
+Version 0.1.3 renamed the key option from `api_key` to `emet_key`. Moving the pin across it, in either direction, needs the key under the name that version reads: `CLAUDE_PLUGIN_OPTION_EMET_KEY` from 0.1.3, `CLAUDE_PLUGIN_OPTION_API_KEY` before it. Replace the old entry rather than adding the new one next to it: `env` reaches every plugin, and a plugin with its own `api_key` option would take the Emet key under the old name. Until the name matches, the plugin sends nothing, and `/emet:status` says no key is set.
 
 ## 3. Add the managed settings
 
@@ -45,7 +45,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 ```
 
 - `enabledPlugins: true` in managed settings turns the plugin on for everyone, and developers cannot turn it off.
-- Options in managed `pluginConfigs` take precedence over a developer's own, so the team and capture mode cannot be changed locally. A project's `.claude/settings.json` cannot set `pluginConfigs` at all, and the plugin refuses any destination other than Emet, so a cloned repository cannot redirect traces elsewhere.
+- Options in managed `pluginConfigs` take precedence over a developer's own, so the team and capture mode cannot be changed locally. A project's `.claude/settings.json` cannot set `pluginConfigs` at all, and the plugin refuses any destination other than Emet. A project's `env` can still set an option nobody else set, such as a key on a machine that has none; with the key and options in managed settings, a cloned repository cannot change where traces go or how much they hold.
 - The key goes in `env` because `pluginConfigs` cannot hold a secret option. Claude Code reads it when it starts and passes it to the plugin's hooks. A key a developer saved with `/plugin configure` takes precedence over it, so ask developers not to enter one.
 - If you use `strictKnownMarketplaces`, add `{ "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.3" }` to the allowlist. An allowlist entry matches only the same `ref`.
 - For developers on several Emet teams, deliver one profile per group, each with its own Team ID and key.
@@ -53,17 +53,19 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 ### What a key in managed settings means
 
 - The managed settings file is readable by the developer on their own machine, and `env` values reach every command Claude Code runs. The key is not kept in the system keychain on this route.
-- The Emet key can only send traces to your organization; it cannot read reports or anything else. Anyone holding it could send turns that would appear as your team's, under any member's name (see section 4).
+- The Emet key can only send traces to your organization; it cannot read reports or anything else. Anyone holding it could send turns that would appear as your team's (or any team's, if the key is not pinned), under any member's name (see section 4). In every capture mode the plugin replaces the key with `[REDACTED:emet_key]` wherever it appears in what is sent, such as a command that prints the environment.
 
 To rotate the key:
 
 1. Issue a new key in Emet and put it in the managed settings.
 2. Ask developers to restart Claude Code, which reads `env` only when it starts. A developer who saved a key with `/plugin configure` enters the new one there instead, since a saved key takes precedence and cannot be cleared.
-3. Revoke the old key once everyone has restarted. Emet refuses turns sent with a revoked key, and the plugin does not retry them, so a session still running on the old key loses its turns from then on. `/emet:status` on that machine shows `401 key rejected`.
+3. Check a few machines: `/emet:status` shows `key_hint`, the public start of the key in use, to compare with the new key's. Then revoke the old key; you choose when. Emet refuses turns sent with a revoked key, and the plugin does not retry them, so a session still running on the old key loses its turns from then on, and restarting does not send them again. `/emet:status` on that machine shows `401 key rejected`.
 
 If that does not fit your policy, leave `env` out and have each developer enter the key once with `/plugin configure emet@emet-plugin`, which keeps it in Claude Code's secure credential store (the Keychain on macOS). Everything else in the managed settings stays the same.
 
 ## 4. Who ran each turn
+
+Attribution needs nothing from developers who sign in to Claude with a Claude account. Developers on an API key, Bedrock, Vertex AI or a gateway each set their email once (below).
 
 The plugin reads the email of the Claude account a developer is signed in to, from Claude Code's own account file (`~/.claude.json`, or the one in `CLAUDE_CONFIG_DIR`), and sends it as `enduser_ref`, which Emet matches to a member of your organization. Nothing is entered.
 
@@ -77,7 +79,7 @@ On one developer machine, after a session start, `/emet:status` should show:
 
 - the team and capture mode you set, and `key_check: accepted`;
 - the email being sent and where it came from (the Claude account, or the setting);
-- after one finished turn, a `last_delivery` with a link to the conversation in Emet, which opens for a developer who is a member of your Emet organization.
+- after one finished turn, a `last_delivery` with a link to the conversation in Emet, which opens for a developer who is a member of your Emet organization, once Emet has checked the turn.
 
 The conversation should appear under **Conversations** with your team's name and the developer. A conversation with no team means the Team ID matches no External ID; one with no person means the email matches no member.
 

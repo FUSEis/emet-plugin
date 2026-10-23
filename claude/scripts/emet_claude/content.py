@@ -44,13 +44,19 @@ BINARY_TYPES = ("image", "document")
 BASE64_RUN = re.compile(r"^(?=[^a-z]*[a-z])(?=[^A-Z]*[A-Z])(?=[^0-9]*[0-9])[A-Za-z0-9+/\r\n]{4096,}={0,2}\s*$")
 
 
-def redact(text: str, extra_secrets: Tuple[str, ...] = ()) -> Tuple[str, int]:
-    """Returns the text with secrets replaced by [REDACTED:kind], and how many were replaced."""
+def redact_known(text: str, secrets: Tuple[str, ...]) -> Tuple[str, int]:
+    """Returns the text with these exact secrets (the Emet key) replaced, and how many were replaced."""
     count = 0
-    for secret in extra_secrets:
+    for secret in secrets:
         if secret and secret in text:
             count += text.count(secret)
             text = text.replace(secret, "[REDACTED:emet_key]")
+    return text, count
+
+
+def redact(text: str, extra_secrets: Tuple[str, ...] = ()) -> Tuple[str, int]:
+    """Returns the text with secrets replaced by [REDACTED:kind], and how many were replaced."""
+    text, count = redact_known(text, extra_secrets)
     for kind, pattern, keep in SECRET_PATTERNS:
 
         def replace(match: re.Match[str], kind: str = kind, keep: int = keep) -> str:

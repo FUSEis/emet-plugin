@@ -17,6 +17,8 @@ MAX_BATCH_BYTES = 24 * 1024 * 1024
 # A single tool result is clipped only when it alone would not fit a batch
 MAX_RESULT_CHARS = 16 * 1024 * 1024
 TITLE_MAX = 255
+# The resource attribute naming the repository, which /emet:status also shows
+REPOSITORY_ATTRIBUTE = "vcs.repository.name"
 
 
 def size_of(value: Any) -> int:
@@ -58,7 +60,7 @@ def resource(config: Config, first: transcript.Entry, cwd: str) -> Dict[str, Any
         "emet.plugin.name": "emet-claude-code",
         "emet.plugin.version": VERSION,
         "emet.capture_mode": config.capture_mode,
-        "vcs.repository.name": Path(cwd or first.get("cwd") or "").name,
+        REPOSITORY_ATTRIBUTE: Path(cwd or first.get("cwd") or "").name,
         "vcs.ref.head.name": str(first.get("gitBranch") or ""),
     }
 

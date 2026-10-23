@@ -16,14 +16,17 @@ from typing import Any, Dict, List
 
 from . import VERSION, storage
 from .config import Config
+from .envelope import REPOSITORY_ATTRIBUTE
 
 TIMEOUT_S = 15
 # Bounds the queue so an unreachable endpoint cannot fill the disk
 QUEUE_MAX_FILES = 500
 QUEUE_MAX_BYTES = 256 * 1024 * 1024
 RETRYABLE = (408, 425, 429)
-# Emet's 202 lists the tool spans that carried no content, up to one per span of a batch
+# Emet's 202 lists the tool spans that carried no content, up to two entries per tool span of a batch
 MAX_REPLY_BYTES = 128 * 1024
+# A repository folder name as /emet:status shows it
+REPOSITORY_MAX = 100
 
 
 @dataclass(frozen=True)
@@ -41,8 +44,8 @@ class Outcome:
     delivered: bool
     final: bool
     detail: str
-    # Emet's public id of the conversation an accepted batch landed on
-    conversation: str = ""
+    # Emet's public id of the conversation an accepted batch landed on, not the session id
+    conversation_uuid: str = ""
 
 
 def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
@@ -77,7 +80,7 @@ def accepted_conversation(body: bytes) -> str:
     try:
         accepted = json.loads(body)
         return str(uuid.UUID(str(accepted["conversation"])))
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, RecursionError):
         return ""
 
 
@@ -145,19 +148,17 @@ class Sender:
     def record(self, envelope: Dict[str, Any], outcome: Outcome) -> None:
         if outcome.delivered:
             resource = envelope.get("resource")
-            repository = str(resource.get("vcs.repository.name") or "") if isinstance(resource, dict) else ""
+            repository = str(resource.get(REPOSITORY_ATTRIBUTE) or "")[:REPOSITORY_MAX] if isinstance(resource, dict) else ""
             self.accepted.append(Accepted(str(envelope.get("conversation_id") or ""), repository, outcome))
         else:
             self.failures.append(outcome)
 
-    def send(self, envelopes: List[Dict[str, Any]]) -> List[Outcome]:
-        outcomes: List[Outcome] = []
+    def send(self, envelopes: List[Dict[str, Any]]) -> None:
         for envelope in envelopes:
             if self.blocked:
                 enqueue(self.root, envelope)
                 continue
             outcome = post(self.config, envelope)
-            outcomes.append(outcome)
             self.record(envelope, outcome)
             storage.log(
                 self.root, f"trace {envelope['trace_id']} spans={len(envelope['spans'])} end={envelope['end']} -> {describe(outcome)}"
@@ -165,7 +166,6 @@ class Sender:
             if not outcome.delivered and not outcome.final:
                 enqueue(self.root, envelope)
                 self.blocked = True
-        return outcomes
 
     def flush(self) -> int:
         """Retries queued envelopes, oldest first. Returns how many are still queued.

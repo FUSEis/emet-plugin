@@ -53,15 +53,16 @@ def spawn_worker(mode: str, raw: bytes) -> None:
 
 
 def signed_in_email(environ: Mapping[str, str], root: Optional[Path] = None) -> Tuple[str, str]:
-    """Returns the email of the signed-in Claude account and "", or "" and why there is none.
+    """Returns (email, "") for the signed-in Claude account, or ("", why there is none).
 
-    Read from Claude Code's account file; no path from the environment is ever run.
+    Reads Claude Code's account file instead of running claude, since settings env can override CLAUDE_CODE_EXECPATH.
     """
     path = Path(environ.get("CLAUDE_CONFIG_DIR") or Path.home()) / ".claude.json"
     try:
         account = json.loads(path.read_text(encoding="utf-8")).get("oauthAccount")
     except FileNotFoundError:
         return "", "no Claude account file"
+    # AttributeError: the file holds a JSON list or string, which has no .get
     except (OSError, ValueError, AttributeError) as error:
         if root is not None:
             storage.log(root, f"sign-in email unreadable {type(error).__name__}")
@@ -83,22 +84,28 @@ def load_with_sign_in(environ: Mapping[str, str]) -> Config:
     return replace(config, enduser_ref=email, enduser_source=FROM_CLAUDE_ACCOUNT)
 
 
-def report_url(config: Config, session_id: str, conversation: str) -> str:
+def report_url(config: Config, session_id: str, conversation_uuid: str) -> str:
     """Links the conversation in Emet. The search narrows the list to it, so Emet never selects another one instead."""
-    if not conversation:
+    if not conversation_uuid:
         return ""
-    return f"{config.endpoint}/conversations?{urlencode({'q': session_id, 'selected': conversation})}"
+    return f"{config.endpoint}/conversations?{urlencode({'q': session_id, 'selected': conversation_uuid})}"
 
 
 def remember(recent: List[Dict[str, Any]], delivery: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Puts a session's newest delivery first, keeping its earlier link when Emet's reply had none."""
-    others = []
-    for item in recent:
-        if item.get("session_id") != delivery["session_id"]:
-            others.append(item)
-        elif not delivery["report_url"]:
-            delivery = dict(delivery, report_url=item.get("report_url") or "")
+    session_id = delivery["session_id"]
+    earlier = next((item for item in recent if item.get("session_id") == session_id), None)
+    if earlier and not delivery["report_url"]:
+        delivery = dict(delivery, report_url=earlier.get("report_url") or "")
+    others = [item for item in recent if item.get("session_id") != session_id]
     return [delivery, *others][:RECENT_DELIVERIES]
+
+
+def last_error(sender: transport.Sender) -> Dict[str, Any]:
+    """Returns the status fields for this run's latest failure, or none when nothing failed."""
+    if not sender.failures:
+        return {}
+    return {"last_error": {"at": storage.now(), "detail": transport.describe(sender.failures[-1])}}
 
 
 def status_path(root: Path) -> Path:
@@ -126,7 +133,7 @@ def update_status(root: Path, config: Config, accepted: Sequence[transport.Accep
             key_hint=config.key_hint,
             problem=config.problem,
             queued=len(transport.queued(root)),
-            updated_at=now(),
+            updated_at=storage.now(),
         )
         status.update(fields)
         recent = [item for item in status.get("recent") or [] if isinstance(item, dict)]
@@ -134,18 +141,14 @@ def update_status(root: Path, config: Config, accepted: Sequence[transport.Accep
             delivery = {
                 "session_id": item.session_id,
                 "repository": item.repository,
-                "at": now(),
+                "at": storage.now(),
                 "status": item.outcome.status,
-                "report_url": report_url(config, item.session_id, item.outcome.conversation),
+                "report_url": report_url(config, item.session_id, item.outcome.conversation_uuid),
             }
             recent = remember(recent, delivery)
             status["last_delivery"] = recent[0]
         status["recent"] = recent
         storage.write_json(status_path(root), status)
-
-
-def now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
 def check_key(root: Path, config: Config) -> None:
@@ -163,7 +166,7 @@ def check_key(root: Path, config: Config) -> None:
     else:
         result = f"unexpected {outcome.status}"
     storage.log(root, f"key check -> {result}")
-    update_status(root, config, key_check=result, key_checked_at=now())
+    update_status(root, config, key_check=result, key_checked_at=storage.now())
 
 
 def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
@@ -244,8 +247,7 @@ def process(
 
         state["offset"] = offset
         storage.write_json(state_file, state)
-        errors = {"last_error": {"at": now(), "detail": transport.describe(sender.failures[-1])}} if sender.failures else {}
-        update_status(root, config, sender.accepted, **errors)
+        update_status(root, config, sender.accepted, **last_error(sender))
 
 
 def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -> None:

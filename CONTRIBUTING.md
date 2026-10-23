@@ -40,4 +40,4 @@ The hook log is in the plugin's data folder (`~/.claude/plugins/data/emet-inline
 
 1. Move the **Unreleased** entries in `CHANGELOG.md` under the new version.
 2. Set the version in `claude/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `claude/scripts/emet_claude/__init__.py` and `pyproject.toml`, and the `ref` pins in `docs/enterprise.md`, then run `uv lock` (tests keep them equal).
-3. Merge, then push a tag `vX.Y.Z` on `main`. The release workflow checks the version and publishes the GitHub release with the changelog entry.
+3. Merge, then at once push a tag `vX.Y.Z` on `main` (the admin guide on `main` already pins it). The release workflow checks the version and publishes the GitHub release with the changelog entry.
