@@ -4,16 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-23
+
 ### Added
 
-- Each turn is attributed to the person who ran it. The plugin sends the email the developer signs in to Claude with as `enduser_ref`, which Emet matches to a member of the organization. The new optional **Your Emet email** option (`user_email`) overrides it, for an API key, Bedrock, Vertex AI or a gateway, or when the two emails differ.
+- Each turn is attributed to the person who ran it. The plugin sends the email the developer signs in to Claude with, read from Claude Code's account file, as `enduser_ref`, which Emet matches to a member of the organization. The new optional **Your Emet email** option (`user_email`) overrides it, for an API key, Bedrock, Vertex AI or a gateway, or when the two emails differ.
 - `/emet:status` links the Emet report of the latest turn of the last five sessions, and shows who turns are sent as. `/emet:setup` gives the report link once a turn has been delivered.
 - `docs/enterprise.md` describes a rollout where developers enter nothing: the team's key goes in the managed settings `env`, next to the Team ID and capture mode in `pluginConfigs`.
 
 ### Changed
 
-- The key option is now `emet_key` (it was `api_key`), so a key in managed settings reaches only this plugin: another plugin with an `api_key` option would also receive `CLAUDE_PLUGIN_OPTION_API_KEY`. After updating, enter the key again with `/plugin configure emet@emet-plugin`.
-- The install prompt in the README checks what is already installed, asks for the email only when Claude Code has no Claude sign-in, and ends with `/emet:setup` in the new session.
+- The key option is now `emet_key` (it was `api_key`). A key in managed settings `env` is passed to every plugin's hooks, so under the old name another plugin with its own `api_key` option would have taken the Emet key as its own. `env` values still reach every command Claude Code runs; `docs/enterprise.md` explains what that means and the keychain alternative. After updating, enter the key again with `/plugin configure emet@emet-plugin`.
+- The install prompt in the README checks what is already installed, confirms that the Claude sign-in email is the Emet one (and asks for the Emet email when it is not, or there is no sign-in), and ends with `/emet:setup` in the new session.
 
 ## [0.1.2] - 2026-10-22
 
@@ -45,6 +47,7 @@ First release of the Claude Code plugin.
 - `/emet:setup` and `/emet:status` skills.
 - Managed-settings guide for organization rollouts.
 
-[Unreleased]: https://github.com/FUSEis/emet-plugin/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/FUSEis/emet-plugin/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/FUSEis/emet-plugin/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/FUSEis/emet-plugin/compare/v0.1.0...v0.1.2
 [0.1.0]: https://github.com/FUSEis/emet-plugin/releases/tag/v0.1.0

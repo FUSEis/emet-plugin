@@ -72,7 +72,7 @@ The plugin registers four hooks (`SessionStart`, `Stop`, `SubagentStop`, `Sessio
 3. applies the capture mode, then sends the turn to `POST /api/v1/traces/` with the key as a bearer token;
 4. queues the turn if Emet cannot be reached, and retries it on the next run.
 
-A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. `SessionStart` also checks that Emet accepts the key, without sending a trace. Unless `user_email` is set, each run reads the signed-in email with `claude auth status --json`.
+A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. `SessionStart` also checks that Emet accepts the key, without sending a trace. Unless `user_email` is set, each run reads the signed-in email from Claude Code's account file (`~/.claude.json`).
 
 ## Turn it off
 

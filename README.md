@@ -28,8 +28,9 @@ Rules: never ask me for the key, and never read, print or store it. Do not edit
 settings.json files.
 
 1. Run `claude plugin list`. If `emet@emet-plugin` is installed, skip to step 4.
-2. Run `claude auth status --text`. If I'm not signed in with a Claude account,
-   ask me for my Emet email as well.
+2. Run `claude auth status --text`. If I'm signed in with a Claude account, show
+   me its email and ask whether it is the email of my Emet account. If it is not,
+   or I'm not signed in with a Claude account, ask me for my Emet email.
 3. Ask me for my Team ID, then run:
    - `claude plugin marketplace add FUSEis/emet-plugin`
    - `claude plugin install emet@emet-plugin --config tenant_ref=<Team ID>`,

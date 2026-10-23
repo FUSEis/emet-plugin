@@ -12,7 +12,7 @@
       "name": "emet",
       "source": "./claude",
       "description": "Sends each Claude Code turn to Emet, which checks the claims in the answer against the tool results behind them.",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "category": "monitoring",
       "homepage": "https://emet.so"
     }

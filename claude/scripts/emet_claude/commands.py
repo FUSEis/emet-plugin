@@ -10,7 +10,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import VERSION, envelope, storage, transcript, transport
 from .config import Config, load
@@ -23,7 +23,6 @@ MAX_TRACKED_AGENTS = 200
 HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
 # Hooks that fire only once the current turn is over
 TURN_END_MODES = ("stop", "session-end")
-AUTH_STATUS_TIMEOUT_S = 10
 # Deliveries listed by /emet:status
 RECENT_DELIVERIES = 5
 
@@ -52,23 +51,21 @@ def spawn_worker(mode: str, raw: bytes) -> None:
         worker.stdin.close()
 
 
-def signed_in_email(environ: Mapping[str, str]) -> str:
-    """Returns the email of the Claude account Claude Code is signed in to, or "" without one (API key, Bedrock, Vertex)."""
-    executable = environ.get("CLAUDE_CODE_EXECPATH")
-    if not executable:
-        return ""
+def signed_in_email(environ: Mapping[str, str], root: Optional[Path] = None) -> str:
+    """Returns the email of the Claude account Claude Code is signed in to, or "" without one (API key, Bedrock, Vertex).
+
+    Read from Claude Code's own account file rather than by running claude, so no path from the environment is ever executed.
+    """
+    path = Path(environ.get("CLAUDE_CONFIG_DIR") or Path.home()) / ".claude.json"
     try:
-        result = subprocess.run(
-            [executable, "auth", "status", "--json"],
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            timeout=AUTH_STATUS_TIMEOUT_S,
-            check=False,
-        )
-        status = json.loads(result.stdout or b"{}")
-    except (OSError, ValueError, subprocess.SubprocessError):
+        account = json.loads(path.read_text(encoding="utf-8")).get("oauthAccount")
+    except FileNotFoundError:
         return ""
-    email = status.get("email") if isinstance(status, dict) and status.get("loggedIn") else None
+    except (OSError, ValueError, AttributeError) as error:
+        if root is not None:
+            storage.log(root, f"sign-in email unreadable {type(error).__name__}")
+        return ""
+    email = account.get("emailAddress") if isinstance(account, dict) else None
     return email.strip() if isinstance(email, str) and "@" in email else ""
 
 
@@ -77,7 +74,7 @@ def settings(environ: Mapping[str, str]) -> Config:
     config = load(environ)
     if config.problem or config.enduser_ref:
         return config
-    email = signed_in_email(environ)
+    email = signed_in_email(environ, storage.data_dir(environ))
     return replace(config, enduser_ref=email, enduser_source="claude account") if email else config
 
 
@@ -89,8 +86,11 @@ def status_path(root: Path) -> Path:
     return root / "status.json"
 
 
-def update_status(root: Path, config: Config, **fields: Any) -> None:
-    """Records what the setup and status skills report. Never holds the key or any session content."""
+def update_status(root: Path, config: Config, accepted: Sequence[Tuple[str, transport.Outcome]] = (), **fields: Any) -> None:
+    """Records what the setup and status skills report. Never holds the key or any session content.
+
+    accepted lists the deliveries of this run, so a run that delivered nothing leaves another session's newer link in place.
+    """
     # Workers for different sessions share this file
     with storage.locked(root / "status.lock"):
         status = storage.read_json(status_path(root), {})
@@ -106,10 +106,20 @@ def update_status(root: Path, config: Config, **fields: Any) -> None:
             key_hint=config.key_hint,
             problem=config.problem,
             queued=len(transport.queued(root)),
-            updated_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            updated_at=now(),
         )
         status.update(fields)
+        recent = [item for item in status.get("recent") or [] if isinstance(item, dict)]
+        for session_id, outcome in accepted:
+            delivery = {"at": now(), "status": outcome.status, "report_url": report_url(config, outcome.conversation)}
+            status["last_delivery"] = delivery
+            recent = [{"session_id": session_id, **delivery}, *(item for item in recent if item.get("session_id") != session_id)]
+        status["recent"] = recent[:RECENT_DELIVERIES]
         storage.write_json(status_path(root), status)
+
+
+def now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
 def check_key(root: Path, config: Config) -> None:
@@ -127,20 +137,15 @@ def check_key(root: Path, config: Config) -> None:
     else:
         result = f"unexpected {outcome.status}"
     storage.log(root, f"key check -> {result}")
-    update_status(root, config, key_check=result, key_checked_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+    update_status(root, config, key_check=result, key_checked_at=now())
 
 
 def deliver(sender: transport.Sender, envelopes: List[Dict[str, Any]], state: Dict[str, Any]) -> None:
-    outcomes = sender.send(envelopes)
-    for outcome in outcomes:
+    for outcome in sender.send(envelopes):
         if outcome.delivered:
-            state["last_delivery"] = {
-                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "status": outcome.status,
-                "report_url": report_url(sender.config, outcome.conversation),
-            }
+            state["last_delivery"] = {"at": now(), "status": outcome.status}
         else:
-            state["last_error"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "detail": transport.describe(outcome)}
+            state["last_error"] = {"at": now(), "detail": transport.describe(outcome)}
 
 
 def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
@@ -221,21 +226,8 @@ def process(
 
         state["offset"] = offset
         storage.write_json(state_file, state)
-        update_status(root, config, last_delivery=state.get("last_delivery"), last_error=state.get("last_error"))
-        remember(root, session_id, state.get("last_delivery"))
-
-
-def remember(root: Path, session_id: str, delivery: Optional[Dict[str, Any]]) -> None:
-    """Keeps the latest delivery of the last few sessions for /emet:status, newest first."""
-    if not delivery:
-        return
-    with storage.locked(root / "status.lock"):
-        status = storage.read_json(status_path(root), {})
-        if not isinstance(status, dict):
-            return
-        recent = [item for item in status.get("recent") or [] if isinstance(item, dict) and item.get("session_id") != session_id]
-        status["recent"] = [{"session_id": session_id, **delivery}, *recent][:RECENT_DELIVERIES]
-        storage.write_json(status_path(root), status)
+        errors = {"last_error": {"at": now(), "detail": transport.describe(sender.failures[-1])}} if sender.failures else {}
+        update_status(root, config, sender.accepted, **errors)
 
 
 def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -> None:

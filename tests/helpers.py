@@ -124,7 +124,9 @@ class FakeEmet:
     def __init__(self) -> None:
         self.requests: List[Dict[str, Any]] = []
         self.statuses: List[int] = []
-        self.conversation = "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
+        # The conversation uuid each accepted request was answered with; a fresh one per request unless reply is set
+        self.conversations: List[str] = []
+        self.reply: Optional[str] = None
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -133,11 +135,15 @@ class FakeEmet:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 owner.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
                 status = owner.statuses.pop(0) if owner.statuses else 202
+                reply = b"{}"
+                if status == 202:
+                    owner.conversations.append(owner.reply or str(uuid.uuid4()))
+                    reply = json.dumps({"conversation": owner.conversations[-1]}).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(reply)))
                 self.end_headers()
-                accepted = {"conversation": owner.conversation} if status == 202 else {}
-                self.wfile.write(json.dumps(accepted).encode())
+                self.wfile.write(reply)
 
             def log_message(self, *args: Any) -> None:
                 pass

@@ -1,3 +1,4 @@
+import http.client
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import pytest
 
 from conftest import API_KEY
 from emet_claude import commands, storage, transport
+from helpers import Transcript
 
 
 def run(transcript, environ):
@@ -258,26 +260,27 @@ def test_existing_data_folders_are_made_private(tmp_path):
     assert stat.S_IMODE((tmp_path / "queue").stat().st_mode) == 0o700
 
 
-def fake_claude(tmp_path, answer):
-    """Writes a stand-in for the claude executable that prints the given auth status."""
-    script = tmp_path / "claude"
-    script.write_text(f"#!{sys.executable}\nimport json\nprint(json.dumps({answer!r}))\n", encoding="utf-8")
-    script.chmod(0o700)
-    return str(script)
+def sign_in(environ, account):
+    """Writes the account Claude Code would keep in its config folder."""
+    folder = Path(environ["CLAUDE_CONFIG_DIR"])
+    folder.mkdir(exist_ok=True)
+    (folder / ".claude.json").write_text(json.dumps({"oauthAccount": account}), encoding="utf-8")
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX executable script")
-def test_sends_the_claude_account_email_as_the_person(transcript, environ, emet, tmp_path):
-    environ["CLAUDE_CODE_EXECPATH"] = fake_claude(tmp_path, {"loggedIn": True, "email": "ada@example.com"})
+def report_link(emet, index):
+    return f"{emet.url}/conversations?selected={emet.conversations[index]}"
+
+
+def test_sends_the_claude_account_email_as_the_person(transcript, environ, emet):
+    sign_in(environ, {"emailAddress": "ada@example.com"})
     finished_turn(transcript)
     run(transcript, environ)
     assert emet.envelopes[0]["enduser_ref"] == "ada@example.com"
     assert status(environ)["enduser_source"] == "claude account"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX executable script")
-def test_the_email_setting_wins_over_the_claude_account(transcript, environ, emet, tmp_path):
-    environ["CLAUDE_CODE_EXECPATH"] = fake_claude(tmp_path, {"loggedIn": True, "email": "personal@example.com"})
+def test_the_email_setting_wins_over_the_claude_account(transcript, environ, emet):
+    sign_in(environ, {"emailAddress": "personal@example.com"})
     environ["CLAUDE_PLUGIN_OPTION_USER_EMAIL"] = "ada@work.example.com"
     finished_turn(transcript)
     run(transcript, environ)
@@ -285,37 +288,74 @@ def test_the_email_setting_wins_over_the_claude_account(transcript, environ, eme
     assert status(environ)["enduser_source"] == "setting"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX executable script")
-@pytest.mark.parametrize("answer", [{"loggedIn": False, "email": "ada@example.com"}, {"loggedIn": True, "authMethod": "api_key"}])
-def test_sends_no_person_without_a_claude_sign_in(transcript, environ, emet, tmp_path, answer):
-    environ["CLAUDE_CODE_EXECPATH"] = fake_claude(tmp_path, answer)
+@pytest.mark.parametrize("account", [None, {}, {"emailAddress": "not an email"}, "ada@example.com"])
+def test_sends_no_person_without_a_claude_account(transcript, environ, emet, account):
+    sign_in(environ, account)
     finished_turn(transcript)
     run(transcript, environ)
     assert emet.envelopes[0]["enduser_ref"] == ""
 
 
-def test_an_unusable_claude_executable_sends_no_person(transcript, environ, emet, tmp_path):
-    environ["CLAUDE_CODE_EXECPATH"] = str(tmp_path / "missing")
+def test_an_unreadable_account_file_sends_no_person_and_says_why(transcript, environ, emet):
+    folder = Path(environ["CLAUDE_CONFIG_DIR"])
+    folder.mkdir()
+    (folder / ".claude.json").write_text("{not json", encoding="utf-8")
     finished_turn(transcript)
     run(transcript, environ)
     assert emet.envelopes[0]["enduser_ref"] == ""
+    log = (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+    assert "sign-in email unreadable JSONDecodeError" in log
 
 
 def test_status_links_the_latest_report_of_each_session(transcript, environ, emet):
     finished_turn(transcript)
     run(transcript, environ)
-    link = f"{emet.url}/conversations?selected={emet.conversation}"
-    assert status(environ)["last_delivery"]["report_url"] == link
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 0)
     finished_turn(transcript, "next", "ok")
     run(transcript, environ)
     (recent,) = status(environ)["recent"]
     assert recent["session_id"] == transcript.session_id
-    assert recent["report_url"] == link
+    assert recent["report_url"] == report_link(emet, 1)
+
+
+def test_a_run_that_sends_nothing_keeps_the_newest_link_first(tmp_path, environ, emet):
+    older, newer = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    for session in (older, newer):
+        finished_turn(session)
+        run(session, environ)
+    # The older session runs again with nothing new to send
+    run(older, environ)
+    assert [item["session_id"] for item in status(environ)["recent"]] == ["session-1", "session-0"]
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 1)
+
+
+def test_a_queued_turn_gets_its_link_when_it_is_retried(transcript, environ, emet):
+    emet.statuses = [503]
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["recent"] == []
+    # Nothing new to send: only the retry delivers
+    run(transcript, environ)
+    (recent,) = status(environ)["recent"]
+    assert recent["session_id"] == transcript.session_id
+    assert recent["report_url"] == report_link(emet, 0)
 
 
 def test_a_reply_without_a_conversation_still_counts_as_delivered(transcript, environ, emet):
-    emet.conversation = "not-a-uuid"
+    emet.reply = "not-a-uuid"
     finished_turn(transcript)
     run(transcript, environ)
     assert status(environ)["last_delivery"]["report_url"] == ""
+    assert status(environ)["queued"] == 0
+
+
+def test_a_cut_off_reply_still_counts_as_delivered(transcript, environ, emet, monkeypatch):
+    def cut_off(self, amount=None):
+        raise http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(http.client.HTTPResponse, "read", cut_off)
+    finished_turn(transcript)
+    run(transcript, environ)
+    run(transcript, environ)
+    assert len(emet.requests) == 1
     assert status(environ)["queued"] == 0

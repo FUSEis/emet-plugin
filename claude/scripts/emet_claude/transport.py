@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import http.client
 import json
 import time
 import urllib.error
@@ -11,7 +12,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from . import VERSION, storage
 from .config import Config
@@ -49,7 +50,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
             # Delivered once Emet answered; the body only adds the report link
             reply = b""
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(OSError, http.client.HTTPException):
                 reply = response.read(4096)
             return Outcome(response.status, True, True, "", accepted_conversation(reply))
     except urllib.error.HTTPError as error:
@@ -126,6 +127,15 @@ class Sender:
         self.root = root
         self.config = config
         self.blocked = False
+        # (session id, outcome) of every envelope Emet accepted in this run, queued ones included
+        self.accepted: List[Tuple[str, Outcome]] = []
+        self.failures: List[Outcome] = []
+
+    def record(self, envelope: Dict[str, Any], outcome: Outcome) -> None:
+        if outcome.delivered:
+            self.accepted.append((str(envelope.get("conversation_id") or ""), outcome))
+        else:
+            self.failures.append(outcome)
 
     def send(self, envelopes: List[Dict[str, Any]]) -> List[Outcome]:
         outcomes: List[Outcome] = []
@@ -135,6 +145,7 @@ class Sender:
                 continue
             outcome = post(self.config, envelope)
             outcomes.append(outcome)
+            self.record(envelope, outcome)
             storage.log(
                 self.root, f"trace {envelope['trace_id']} spans={len(envelope['spans'])} end={envelope['end']} -> {describe(outcome)}"
             )
@@ -156,6 +167,7 @@ class Sender:
                     remove(path)
                     continue
                 outcome = post(self.config, envelope)
+                self.record(envelope, outcome)
                 storage.log(self.root, f"retry {envelope.get('trace_id')} -> {describe(outcome)}")
                 if not outcome.delivered and not outcome.final:
                     self.blocked = True

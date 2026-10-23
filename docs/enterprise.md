@@ -57,9 +57,9 @@ If that does not fit your policy, leave `env` out and have each developer enter 
 
 ## 4. Who ran each turn
 
-The plugin reads the email of the Claude account a developer is signed in to (`claude auth status`) and sends it as `enduser_ref`, which Emet matches to a member of your organization. Nothing is entered.
+The plugin reads the email of the Claude account a developer is signed in to, from Claude Code's own account file (`~/.claude.json`, or the one in `CLAUDE_CONFIG_DIR`), and sends it as `enduser_ref`, which Emet matches to a member of your organization. Nothing is entered.
 
-It cannot do that when Claude Code runs on an API key, Amazon Bedrock, Google Vertex AI or a gateway, since there is no Claude account. Those developers, and anyone whose Claude email differs from their Emet email, set **Your Emet email** once with `/plugin configure emet@emet-plugin`.
+It cannot do that when Claude Code runs on an API key, Amazon Bedrock, Google Vertex AI or a gateway without a Claude sign-in, since there is no Claude account. Those developers, and anyone whose Claude email differs from their Emet email, set **Your Emet email** once with `/plugin configure emet@emet-plugin`.
 
 ## 5. Check it
 
@@ -85,6 +85,6 @@ Images and binary content are never sent in any mode.
 
 - The hook is one Python package in [`claude/scripts/`](../claude/scripts/), standard library only, a few hundred lines. It runs with the developer's permissions, like any hook.
 - It sends only to Emet (`https://app.emet.so`), over HTTPS, and refuses any other destination. The one exception is an Emet on the same machine, for plugin development.
-- It reads the session transcript, saved tool outputs and subagent transcripts in Claude Code's own project folder, and nothing outside it. To find the developer's email it runs `claude auth status --json` with the Claude Code executable that started it.
+- It reads the session transcript, saved tool outputs and subagent transcripts in Claude Code's own project folder, and nothing outside it, except the signed-in account's email in Claude Code's account file. It runs no other program.
 - It writes only to its own data folder, with owner-only permissions. The status file and log never hold content or the key.
 - [claude/README.md](../claude/README.md#what-is-sent) lists every field it sends in each mode.
