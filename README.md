@@ -31,7 +31,7 @@ settings.json files.
    version, run `claude plugin marketplace update emet-plugin` and
    `claude plugin update emet@emet-plugin`. If it was older than 0.1.3, skip
    to step 4 (the key has to be entered again). Otherwise skip to the last
-   bullet of step 4.
+   two bullets of step 4.
 2. Run `claude auth status --text`. If I'm signed in with a Claude account, show
    me its email and ask whether it is the email of my Emet account. If it is not,
    or I'm not signed in with a Claude account, ask me for my Emet email.

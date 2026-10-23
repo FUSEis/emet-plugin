@@ -499,11 +499,31 @@ def test_full_mode_still_never_sends_the_emet_key(transcript, environ, emet):
     environ["CLAUDE_PLUGIN_OPTION_CAPTURE_MODE"] = "full"
     transcript.prompt("print the environment")
     transcript.tool_use("msg_1", "toolu_env", "Bash", {"command": "env"})
-    transcript.tool_result("toolu_env", f"CLAUDE_PLUGIN_OPTION_EMET_KEY={API_KEY}\nAWS_SECRET_ACCESS_KEY=abc")
+    # The administrator's key reaches commands even when the hook sends with one the developer saved
+    other_key = "Zyxw9876.Abcdefghijklmnopqrstuvwxyz123456"
+    transcript.tool_result("toolu_env", f"CLAUDE_PLUGIN_OPTION_EMET_KEY={API_KEY}\nOLD={other_key}\nAWS_SECRET_ACCESS_KEY=abc")
     transcript.text("msg_2", "done")
     run(transcript, environ)
     sent = json.dumps(emet.envelopes)
-    assert API_KEY not in sent
+    assert API_KEY not in sent and other_key not in sent
     assert "[REDACTED:emet_key]" in sent
     # Everything else is sent as is in full mode
     assert "AWS_SECRET_ACCESS_KEY=abc" in sent
+    tool = next(span for span in emet.spans() if span["span_id"] == "tool.toolu_env")
+    assert tool["attributes"]["emet.redactions"] == 2
+
+
+def test_a_long_folder_name_is_cut_in_status(transcript, environ, emet):
+    finished_turn(transcript)
+    commands.process(dict(transcript.hook_input(), cwd="/work/" + "a" * 300), environ, wait=0)
+    assert len(status(environ)["recent"][0]["repository"]) == transport.REPOSITORY_MAX
+
+
+def test_a_damaged_recent_list_is_replaced(transcript, environ, emet):
+    root = Path(environ["CLAUDE_PLUGIN_DATA"])
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "status.json").write_text(json.dumps({"recent": ["x", 3, None]}), encoding="utf-8")
+    finished_turn(transcript)
+    run(transcript, environ)
+    (recent,) = status(environ)["recent"]
+    assert recent["session_id"] == transcript.session_id

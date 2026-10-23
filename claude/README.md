@@ -25,7 +25,7 @@ Requirements: Claude Code 2.1.271 or later, and `python3` 3.9 or later on the `P
 | `emet_email` | no | your Claude sign-in | Your Emet email, so Emet attributes your turns to you. Leave it blank to use the email you sign in to Claude with; set it when you use an API key, Bedrock, Vertex AI or a gateway, or when the two emails differ. |
 | `capture_mode` | no | `sanitized` | How much content is sent; see below. |
 
-In an organization, an administrator usually sets all of these for everyone, and there is nothing to enter: see [docs/enterprise.md](https://github.com/FUSEis/emet-plugin/blob/main/docs/enterprise.md).
+In an organization, an administrator usually sets the key, the Team ID and the capture mode for everyone. You only set your email, if you do not sign in to Claude with the email of your Emet account: see [docs/enterprise.md](https://github.com/FUSEis/emet-plugin/blob/main/docs/enterprise.md).
 
 ## Use it
 
@@ -47,7 +47,7 @@ For each finished turn, one trace:
 | Tool arguments and the tool results Claude received | redacted | yes | no |
 | Subagent prompts, calls and results | redacted | yes | no |
 
-- **Redaction** (`sanitized`) replaces API keys and tokens (Anthropic, OpenAI, AWS, GitHub, GitLab, Slack, Stripe, Google, npm, Emet), JWTs, private keys, bearer tokens, passwords in URLs and `SECRET=`-style assignments with `[REDACTED:kind]`. It is pattern-based: it cannot catch a secret in a format it does not know, so choose `metadata` where that matters. The plugin's own Emet key is replaced in every mode, `full` included.
+- **Redaction** (`sanitized`) replaces API keys and tokens (Anthropic, OpenAI, AWS, GitHub, GitLab, Slack, Stripe, Google, npm, Emet), JWTs, private keys, bearer tokens, passwords in URLs and `SECRET=`-style assignments with `[REDACTED:kind]`. It is pattern-based: it cannot catch a secret in a format it does not know, so choose `metadata` where that matters. Emet keys are replaced in every mode, `full` included.
 - **Images and other binary content** are never sent in any mode. A placeholder such as `[image content not shown: image/png, 412 KB]` takes their place, and the span is marked truncated so Emet does not treat it as complete.
 - **What Claude saw, not more.** Tool results are sent as Claude received them, except that output Claude Code saved to disk because it was too large is sent in full.
 - **Nothing else.** Thinking blocks, system prompts, tool definitions and files Claude did not read are not sent.

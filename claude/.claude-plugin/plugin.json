@@ -39,7 +39,7 @@
     "capture_mode": {
       "type": "string",
       "title": "Capture mode",
-      "description": "sanitized sends content with secrets redacted, full sends content as is, metadata sends no content (Emet cannot check claims).",
+      "description": "sanitized sends content with secrets redacted, full sends content as is except Emet keys, metadata sends no content (Emet cannot check claims).",
       "options": [
         "sanitized",
         "full",

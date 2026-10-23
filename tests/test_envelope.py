@@ -150,7 +150,7 @@ def test_redactions_are_counted_where_they_happen(transcript):
 
 
 @pytest.mark.parametrize("mode", ["full", "metadata"])
-def test_only_sanitized_mode_reports_redactions(transcript, mode):
+def test_only_sanitized_mode_redacts_other_secrets(transcript, mode):
     token = "ghp_" + "b" * 36
     transcript.prompt(f"is {token} still valid?")
     transcript.text("msg_1", f"No, {token} was rejected.")
