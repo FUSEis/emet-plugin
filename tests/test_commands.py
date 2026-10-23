@@ -118,7 +118,7 @@ def test_the_queue_is_bounded(tmp_path, monkeypatch):
 
 def test_does_nothing_without_configuration(transcript, environ, emet):
     finished_turn(transcript)
-    environ.pop("CLAUDE_PLUGIN_OPTION_API_KEY")
+    environ.pop("CLAUDE_PLUGIN_OPTION_EMET_KEY")
     run(transcript, environ)
     assert emet.requests == []
 
@@ -204,8 +204,8 @@ def test_hook_mode_hands_off_to_the_worker(monkeypatch, environ):
 
 
 def test_hook_mode_without_configuration_only_records_the_problem(monkeypatch, environ):
-    environ.pop("CLAUDE_PLUGIN_OPTION_API_KEY")
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_API_KEY", raising=False)
+    environ.pop("CLAUDE_PLUGIN_OPTION_EMET_KEY")
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_EMET_KEY", raising=False)
     spawned = []
     monkeypatch.setattr(commands, "spawn_worker", lambda mode, raw: spawned.append(mode))
     hook_stdin(monkeypatch, environ, b"{}")
@@ -256,3 +256,66 @@ def test_existing_data_folders_are_made_private(tmp_path):
     storage.data_dir({"CLAUDE_PLUGIN_DATA": str(tmp_path)})
     assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
     assert stat.S_IMODE((tmp_path / "queue").stat().st_mode) == 0o700
+
+
+def fake_claude(tmp_path, answer):
+    """Writes a stand-in for the claude executable that prints the given auth status."""
+    script = tmp_path / "claude"
+    script.write_text(f"#!{sys.executable}\nimport json\nprint(json.dumps({answer!r}))\n", encoding="utf-8")
+    script.chmod(0o700)
+    return str(script)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable script")
+def test_sends_the_claude_account_email_as_the_person(transcript, environ, emet, tmp_path):
+    environ["CLAUDE_CODE_EXECPATH"] = fake_claude(tmp_path, {"loggedIn": True, "email": "ada@example.com"})
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == "ada@example.com"
+    assert status(environ)["enduser_source"] == "claude account"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable script")
+def test_the_email_setting_wins_over_the_claude_account(transcript, environ, emet, tmp_path):
+    environ["CLAUDE_CODE_EXECPATH"] = fake_claude(tmp_path, {"loggedIn": True, "email": "personal@example.com"})
+    environ["CLAUDE_PLUGIN_OPTION_USER_EMAIL"] = "ada@work.example.com"
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == "ada@work.example.com"
+    assert status(environ)["enduser_source"] == "setting"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable script")
+@pytest.mark.parametrize("answer", [{"loggedIn": False, "email": "ada@example.com"}, {"loggedIn": True, "authMethod": "api_key"}])
+def test_sends_no_person_without_a_claude_sign_in(transcript, environ, emet, tmp_path, answer):
+    environ["CLAUDE_CODE_EXECPATH"] = fake_claude(tmp_path, answer)
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == ""
+
+
+def test_an_unusable_claude_executable_sends_no_person(transcript, environ, emet, tmp_path):
+    environ["CLAUDE_CODE_EXECPATH"] = str(tmp_path / "missing")
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == ""
+
+
+def test_status_links_the_latest_report_of_each_session(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ)
+    link = f"{emet.url}/conversations?selected={emet.conversation}"
+    assert status(environ)["last_delivery"]["report_url"] == link
+    finished_turn(transcript, "next", "ok")
+    run(transcript, environ)
+    (recent,) = status(environ)["recent"]
+    assert recent["session_id"] == transcript.session_id
+    assert recent["report_url"] == link
+
+
+def test_a_reply_without_a_conversation_still_counts_as_delivered(transcript, environ, emet):
+    emet.conversation = "not-a-uuid"
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == ""
+    assert status(environ)["queued"] == 0

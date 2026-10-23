@@ -8,6 +8,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
@@ -28,6 +29,8 @@ class Outcome:
     delivered: bool
     final: bool
     detail: str
+    # Emet's public id of the conversation an accepted batch landed on
+    conversation: str = ""
 
 
 def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
@@ -44,13 +47,26 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
     )
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-            return Outcome(response.status, True, True, "")
+            # Delivered once Emet answered; the body only adds the report link
+            reply = b""
+            with contextlib.suppress(OSError):
+                reply = response.read(4096)
+            return Outcome(response.status, True, True, "", accepted_conversation(reply))
     except urllib.error.HTTPError as error:
         body = error.read(500).decode("utf-8", "replace")
         final = error.code < 500 and error.code not in RETRYABLE
         return Outcome(error.code, False, final, body)
     except (urllib.error.URLError, OSError) as error:
         return Outcome(0, False, False, type(error).__name__)
+
+
+def accepted_conversation(body: bytes) -> str:
+    """Returns the conversation uuid from Emet's 202 body, or "" when it has none."""
+    try:
+        accepted = json.loads(body)
+        return str(uuid.UUID(str(accepted["conversation"])))
+    except (ValueError, TypeError, KeyError):
+        return ""
 
 
 def queued(root: Path) -> List[Path]:

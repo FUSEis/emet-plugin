@@ -15,7 +15,7 @@ claude plugin validate --strict ./claude && claude plugin validate --strict .
 To try a change in a real session, load the plugin from your checkout and give it options through the environment that Claude Code would otherwise set. `CLAUDE_PLUGIN_OPTION_ENDPOINT` is not a plugin option; it points the hook at an Emet on this machine for development, and the hook refuses any other host:
 
 ```bash
-CLAUDE_PLUGIN_OPTION_API_KEY=... CLAUDE_PLUGIN_OPTION_TENANT_REF=... \
+CLAUDE_PLUGIN_OPTION_EMET_KEY=... CLAUDE_PLUGIN_OPTION_TENANT_REF=... \
 CLAUDE_PLUGIN_OPTION_ENDPOINT=http://localhost:8000 \
 claude --plugin-dir ./claude
 ```

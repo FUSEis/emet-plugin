@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Connect the Emet plugin to an Emet account (key and team) and confirm that turns reach Emet. Use when the user wants to set up, configure, connect or reconnect Emet, or change its capture mode.
+description: Connect the Emet plugin to an Emet account (key, team and email) and confirm that turns reach Emet. Use when the user wants to set up, configure, connect or reconnect Emet, or change its capture mode.
 ---
 
 # Set up Emet
@@ -12,10 +12,13 @@ Emet checks the claims in each answer against the tool results behind them. This
 | Option | Required | Where it comes from |
 | --- | --- | --- |
 | **Team ID** | yes | The **External ID** of the user's team, under **Teams** in Emet. It is sent as `tenant_ref`. |
-| **Emet key** | yes, secret | The user's Emet application, under **Applications**, then **Manage keys**. |
+| **Emet key** | yes, secret | The team's key, from the Emet application, under **Applications**, then **Manage keys**. |
+| **Your Emet email** | no | Blank by default: the plugin sends the email the user signs in to Claude with, so Emet attributes their turns to them. Set it when they use an API key, Bedrock, Vertex AI or a gateway, or when their Emet email differs. |
 | **Capture mode** | no | A picker, `sanitized` by default. See below. |
 
-Right after `claude plugin install`, Claude Code reports options that are not set yet. That is expected: when the Team ID was passed with `--config tenant_ref=...`, only the key is missing, and capture mode has a default.
+Right after `claude plugin install`, Claude Code reports options that are not set yet. That is expected: when the Team ID was passed with `--config tenant_ref=...`, only the key is missing, and the others are optional.
+
+In an organization that manages Claude Code centrally, an administrator may have set the key, the Team ID and the capture mode for everyone. Then `status.json` already shows no `problem`, and there is nothing to configure.
 
 ## Rules
 
@@ -39,12 +42,15 @@ Right after `claude plugin install`, Claude Code reports options that are not se
 
    Options apply at startup, so they then restart Claude Code and run `/emet:setup` again in the new session. This session ends with the restart, so say that plainly.
 3. Report `key_check`:
-   - `accepted`: Emet accepts the key. This does not check the Team ID. Ask the user to finish one turn, then run `/emet:status`: `last_delivery` should be set, and the conversation should appear in Emet under **Conversations** with their team's name. A conversation with no team means the Team ID matches no External ID; fix it with step 2.
+   - `accepted`: Emet accepts the key. This does not check the Team ID or the email. Then:
+     - Say who turns are sent as: `enduser_ref`, and `enduser_source` (`claude account` or `setting`). If `enduser_ref` is empty, turns arrive with no person; suggest setting **Your Emet email** with step 2.
+     - If `last_delivery` has a `report_url`, give it to the user: it opens the report of their latest turn in Emet. Otherwise ask them to finish one turn and run `/emet:status` for the link.
+     - In Emet, the conversation should show their team's name and their name. No team means the Team ID matches no External ID; no person means the email matches no member of their Emet organization. Fix either with step 2.
    - `rejected`: Emet does not accept the key. Ask the user to enter it again with step 2, checking for a missing or extra character. If it is still rejected, it is revoked or expired: they mint a new one in Emet.
    - `unreachable`: Claude Code could not reach Emet. Check the network or a proxy.
    - Not there yet: the check runs in the background when a session starts. Wait a few seconds and read `status.json` again.
    - Anything else (for example `unexpected 500`): show it to the user and suggest `/emet:status`.
-4. If the organization manages Claude Code centrally, an administrator can install the plugin and set the Team ID and capture mode for everyone; point them to `docs/enterprise.md` in https://github.com/FUSEis/emet-plugin. Each developer still enters the key.
+4. If the user sets up Emet for other people too, point them to `docs/enterprise.md` in https://github.com/FUSEis/emet-plugin: an administrator can install and configure the plugin for everyone through managed settings, key included.
 
 ## Capture modes
 

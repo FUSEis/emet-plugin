@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -22,6 +23,9 @@ MAX_TRACKED_AGENTS = 200
 HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
 # Hooks that fire only once the current turn is over
 TURN_END_MODES = ("stop", "session-end")
+AUTH_STATUS_TIMEOUT_S = 10
+# Deliveries listed by /emet:status
+RECENT_DELIVERIES = 5
 
 
 def entry_script() -> str:
@@ -48,6 +52,39 @@ def spawn_worker(mode: str, raw: bytes) -> None:
         worker.stdin.close()
 
 
+def signed_in_email(environ: Mapping[str, str]) -> str:
+    """Returns the email of the Claude account Claude Code is signed in to, or "" without one (API key, Bedrock, Vertex)."""
+    executable = environ.get("CLAUDE_CODE_EXECPATH")
+    if not executable:
+        return ""
+    try:
+        result = subprocess.run(
+            [executable, "auth", "status", "--json"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=AUTH_STATUS_TIMEOUT_S,
+            check=False,
+        )
+        status = json.loads(result.stdout or b"{}")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+    email = status.get("email") if isinstance(status, dict) and status.get("loggedIn") else None
+    return email.strip() if isinstance(email, str) and "@" in email else ""
+
+
+def settings(environ: Mapping[str, str]) -> Config:
+    """Returns the options, with the signed-in email as the person when none is set."""
+    config = load(environ)
+    if config.problem or config.enduser_ref:
+        return config
+    email = signed_in_email(environ)
+    return replace(config, enduser_ref=email, enduser_source="claude account") if email else config
+
+
+def report_url(config: Config, conversation: str) -> str:
+    return f"{config.endpoint}/conversations?selected={conversation}" if conversation else ""
+
+
 def status_path(root: Path) -> Path:
     return root / "status.json"
 
@@ -64,6 +101,8 @@ def update_status(root: Path, config: Config, **fields: Any) -> None:
             endpoint=config.endpoint,
             tenant_ref=config.tenant_ref,
             capture_mode=config.capture_mode,
+            enduser_ref=config.enduser_ref,
+            enduser_source=config.enduser_source,
             key_hint=config.key_hint,
             problem=config.problem,
             queued=len(transport.queued(root)),
@@ -95,7 +134,11 @@ def deliver(sender: transport.Sender, envelopes: List[Dict[str, Any]], state: Di
     outcomes = sender.send(envelopes)
     for outcome in outcomes:
         if outcome.delivered:
-            state["last_delivery"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "status": outcome.status}
+            state["last_delivery"] = {
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "status": outcome.status,
+                "report_url": report_url(sender.config, outcome.conversation),
+            }
         else:
             state["last_error"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "detail": transport.describe(outcome)}
 
@@ -124,7 +167,7 @@ def process(
     turn_ended says the hook fired because the current turn ended (Stop, SessionEnd). Otherwise
     (SubagentStop, SessionStart) the last turn may still be running and is left for a later run.
     """
-    config = load(environ)
+    config = settings(environ)
     root = storage.data_dir(environ)
     session_id = str(hook_input.get("session_id") or "")
     path = Path(str(hook_input.get("transcript_path") or ""))
@@ -179,6 +222,20 @@ def process(
         state["offset"] = offset
         storage.write_json(state_file, state)
         update_status(root, config, last_delivery=state.get("last_delivery"), last_error=state.get("last_error"))
+        remember(root, session_id, state.get("last_delivery"))
+
+
+def remember(root: Path, session_id: str, delivery: Optional[Dict[str, Any]]) -> None:
+    """Keeps the latest delivery of the last few sessions for /emet:status, newest first."""
+    if not delivery:
+        return
+    with storage.locked(root / "status.lock"):
+        status = storage.read_json(status_path(root), {})
+        if not isinstance(status, dict):
+            return
+        recent = [item for item in status.get("recent") or [] if isinstance(item, dict) and item.get("session_id") != session_id]
+        status["recent"] = [{"session_id": session_id, **delivery}, *recent][:RECENT_DELIVERIES]
+        storage.write_json(status_path(root), status)
 
 
 def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -> None:
@@ -186,7 +243,7 @@ def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -
     try:
         hook_input = json.loads(raw or b"{}")
         if mode == "session-start":
-            check_key(root, load(environ))
+            check_key(root, settings(environ))
         process(hook_input if isinstance(hook_input, dict) else {}, environ, turn_ended=mode in TURN_END_MODES)
     except Exception as error:  # noqa: BLE001 - an exporter failure must never reach the session
         storage.log(root, f"worker error {type(error).__name__}")

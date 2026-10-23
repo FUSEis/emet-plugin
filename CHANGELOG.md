@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Each turn is attributed to the person who ran it. The plugin sends the email the developer signs in to Claude with as `enduser_ref`, which Emet matches to a member of the organization. The new optional **Your Emet email** option (`user_email`) overrides it, for an API key, Bedrock, Vertex AI or a gateway, or when the two emails differ.
+- `/emet:status` links the Emet report of the latest turn of the last five sessions, and shows who turns are sent as. `/emet:setup` gives the report link once a turn has been delivered.
+- `docs/enterprise.md` describes a rollout where developers enter nothing: the team's key goes in the managed settings `env`, next to the Team ID and capture mode in `pluginConfigs`.
+
+### Changed
+
+- The key option is now `emet_key` (it was `api_key`), so a key in managed settings reaches only this plugin: another plugin with an `api_key` option would also receive `CLAUDE_PLUGIN_OPTION_API_KEY`. After updating, enter the key again with `/plugin configure emet@emet-plugin`.
+- The install prompt in the README checks what is already installed, asks for the email only when Claude Code has no Claude sign-in, and ends with `/emet:setup` in the new session.
+
 ## [0.1.2] - 2026-10-22
 
 ### Changed

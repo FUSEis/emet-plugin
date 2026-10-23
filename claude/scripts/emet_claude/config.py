@@ -22,6 +22,10 @@ class Config:
     tenant_ref: str
     endpoint: str
     capture_mode: str
+    # Who ran the turn, matched to an Emet member by email
+    enduser_ref: str = ""
+    # "setting" when typed in, "claude account" when read from the Claude sign-in
+    enduser_source: str = ""
 
     @property
     def problem(self) -> Optional[str]:
@@ -47,12 +51,15 @@ def option(name: str, environ: Mapping[str, str]) -> str:
 
 def load(environ: Mapping[str, str] = os.environ) -> Config:
     mode = option("CAPTURE_MODE", environ).lower()
+    email = option("USER_EMAIL", environ)
     return Config(
-        api_key=option("API_KEY", environ),
+        api_key=option("EMET_KEY", environ),
         tenant_ref=option("TENANT_REF", environ),
         # Development only: points the hook at a local Emet (see CONTRIBUTING.md)
         endpoint=(option("ENDPOINT", environ) or DEFAULT_ENDPOINT).rstrip("/"),
         capture_mode=mode if mode in CAPTURE_MODES else DEFAULT_CAPTURE_MODE,
+        enduser_ref=email,
+        enduser_source="setting" if email else "",
     )
 
 

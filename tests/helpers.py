@@ -124,6 +124,7 @@ class FakeEmet:
     def __init__(self) -> None:
         self.requests: List[Dict[str, Any]] = []
         self.statuses: List[int] = []
+        self.conversation = "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -135,7 +136,8 @@ class FakeEmet:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(b"{}")
+                accepted = {"conversation": owner.conversation} if status == 202 else {}
+                self.wfile.write(json.dumps(accepted).encode())
 
             def log_message(self, *args: Any) -> None:
                 pass

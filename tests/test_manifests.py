@@ -58,9 +58,9 @@ def test_capture_mode_choices_match_the_code():
     assert option["default"] == DEFAULT_CAPTURE_MODE
 
 
-def test_users_set_only_the_key_team_and_capture_mode():
+def test_users_set_only_the_key_team_email_and_capture_mode():
     options = load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]
-    assert set(options) == {"api_key", "tenant_ref", "capture_mode"}
+    assert set(options) == {"emet_key", "tenant_ref", "user_email", "capture_mode"}
 
 
 # Every host a published file names; anything else, such as an internal Emet, must not ship
@@ -90,7 +90,7 @@ def test_published_files_name_only_public_hosts():
 
 
 def test_the_key_is_sensitive():
-    assert load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]["api_key"]["sensitive"] is True
+    assert load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]["emet_key"]["sensitive"] is True
 
 
 def test_plugin_folder_is_self_contained():

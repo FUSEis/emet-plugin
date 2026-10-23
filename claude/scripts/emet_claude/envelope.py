@@ -81,6 +81,7 @@ def wrap(
                 "conversation_id": session_id,
                 "trace_id": trace_id,
                 "session_ref": session_id,
+                "enduser_ref": config.enduser_ref,
                 "ingestion_mode": "sdk",
                 "semconv_version": SEMCONV_VERSION,
                 "resource": resource_attrs,
