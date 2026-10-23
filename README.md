@@ -38,7 +38,8 @@ settings.json files.
 3. Ask me for my Team ID, then run:
    - `claude plugin marketplace add FUSEis/emet-plugin`
    - `claude plugin install emet@emet-plugin --config tenant_ref=<Team ID>`,
-     adding `--config emet_email=<email>` if I gave one.
+     adding `--config emet_email=<email>` if I gave one (only a plain address:
+     letters, digits, `.` `_` `%` `+` `-` and one `@`; otherwise I run it myself).
    It reports options that are not set yet. That is expected: the key is left.
 4. Tell me, in one short list, to:
    - run `/plugin configure emet@emet-plugin`, type the key into the Emet key
@@ -64,7 +65,7 @@ Enter your team's Emet key (Applications, then Manage keys, in Emet) and your te
 
 ## Install for a whole organization
 
-An administrator can install and configure the plugin for every developer at once through Claude Code's managed settings, key included, so developers enter nothing. Each turn is attributed to the developer by the email they sign in to Claude with. See [docs/enterprise.md](docs/enterprise.md).
+An administrator can install and configure the plugin for every developer at once through Claude Code's managed settings, key included, so developers enter nothing, except those without a Claude sign-in, who set their email once. Each turn is attributed to the developer by the email they sign in to Claude with. See [docs/enterprise.md](docs/enterprise.md).
 
 ## What it sends
 

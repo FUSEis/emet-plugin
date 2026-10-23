@@ -136,7 +136,8 @@ def update_status(root: Path, config: Config, accepted: Sequence[transport.Accep
             updated_at=storage.now(),
         )
         status.update(fields)
-        recent = [item for item in status.get("recent") or [] if isinstance(item, dict)]
+        saved = status.get("recent")
+        recent = [item for item in saved if isinstance(item, dict)] if isinstance(saved, list) else []
         for item in accepted:
             delivery = {
                 "session_id": item.session_id,

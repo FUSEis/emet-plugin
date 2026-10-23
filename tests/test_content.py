@@ -119,3 +119,9 @@ def test_secrets_in_keys_are_redacted():
     key = "ghp_" + "k" * 36
     walked = content.walk_strings({key: "value"}, lambda text: content.redact(text)[0])
     assert list(walked) == ["[REDACTED:github_token]"]
+
+
+def test_a_jwt_holding_a_key_shaped_run_is_redacted_whole():
+    token = "eyJhbGciOiJIUzI1NiJ9-Abcdefgh.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFt-ZSI6IkpvaG4ifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    text, _ = content.redact(f"token {token}")
+    assert text == "token [REDACTED:jwt]"

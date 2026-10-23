@@ -519,10 +519,11 @@ def test_a_long_folder_name_is_cut_in_status(transcript, environ, emet):
     assert len(status(environ)["recent"][0]["repository"]) == transport.REPOSITORY_MAX
 
 
-def test_a_damaged_recent_list_is_replaced(transcript, environ, emet):
+@pytest.mark.parametrize("damaged", [["x", 3, None], 3, True, "x"])
+def test_a_damaged_recent_list_is_replaced(transcript, environ, emet, damaged):
     root = Path(environ["CLAUDE_PLUGIN_DATA"])
     root.mkdir(parents=True, exist_ok=True)
-    (root / "status.json").write_text(json.dumps({"recent": ["x", 3, None]}), encoding="utf-8")
+    (root / "status.json").write_text(json.dumps({"recent": damaged}), encoding="utf-8")
     finished_turn(transcript)
     run(transcript, environ)
     (recent,) = status(environ)["recent"]
