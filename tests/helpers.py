@@ -124,6 +124,11 @@ class FakeEmet:
     def __init__(self) -> None:
         self.requests: List[Dict[str, Any]] = []
         self.statuses: List[int] = []
+        # The conversation uuid each accepted request was answered with; a fresh one per request unless reply is set
+        self.conversations: List[str] = []
+        self.reply: Optional[str] = None
+        # Span ids listed as missing content in each 202, as Emet does for a metadata-mode batch
+        self.gaps: List[str] = []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -132,10 +137,16 @@ class FakeEmet:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 owner.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
                 status = owner.statuses.pop(0) if owner.statuses else 202
+                reply = b"{}"
+                if status == 202:
+                    owner.conversations.append(owner.reply or str(uuid.uuid4()))
+                    gaps = {"missing_tool_arguments": owner.gaps, "missing_tool_results": owner.gaps}
+                    reply = json.dumps({"conversation": owner.conversations[-1], "gaps": gaps}).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(reply)))
                 self.end_headers()
-                self.wfile.write(b"{}")
+                self.wfile.write(reply)
 
             def log_message(self, *args: Any) -> None:
                 pass

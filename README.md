@@ -10,27 +10,43 @@
 
 ## Install with your agent
 
-Paste this into Claude Code:
+If your organization rolls Emet out through managed settings, there is nothing to install: the plugin arrives configured at your next session. Otherwise, paste this into Claude Code:
 
 ```text
-Install the Emet plugin for Claude Code from https://github.com/FUSEis/emet-plugin.
+Install the Emet plugin for Claude Code from https://github.com/FUSEis/emet-plugin
+and walk me through connecting it.
 
-It needs:
+What it needs:
 - Team ID (required): the External ID of my team in Emet, under Teams in the sidebar.
-  The plugin sends it as `tenant_ref`.
-- Emet key (required, secret): from my Emet application, under Applications, then
-  Manage keys. I enter it myself.
-- Capture mode (optional): `sanitized` by default, which sends prompts, answers and tool
-  results with secrets redacted. Keep it unless I ask; `metadata` sends no content.
+- Emet key (required, secret): my team's key, from Applications, then Manage keys,
+  in Emet. I type it in myself.
+- My Emet email (optional): only if I don't sign in to Claude with the email of my
+  Emet account, or I use Claude through an API key, Bedrock, Vertex AI or a gateway.
+- Capture mode (optional): keep the default, `sanitized`, unless I ask.
 
-1. Ask me for my Team ID, and nothing else.
-2. Run `claude plugin marketplace add FUSEis/emet-plugin`.
-3. Run `claude plugin install emet@emet-plugin --config tenant_ref=<Team ID>`.
-   It reports options that are not set yet. That is expected: only the key is left.
-4. Never ask me for the key, and never read, print or store it. Tell me to:
-   - run `/plugin configure emet@emet-plugin`, type the key into the Emet key field and save;
-   - restart Claude Code;
-   - run `/emet:setup` in the new session to check that Emet accepts the key.
+Rules: never ask me for the key, and never read, print or store it. Do not edit
+settings.json files.
+
+1. Run `claude plugin list`. If `emet@emet-plugin` is installed, note its
+   version, run `claude plugin marketplace update emet-plugin` and
+   `claude plugin update emet@emet-plugin`. If it was older than 0.1.3, skip
+   to step 4 (the key has to be entered again). Otherwise skip to the last
+   two bullets of step 4.
+2. Run `claude auth status --text`. If I'm signed in with a Claude account, show
+   me its email and ask whether it is the email of my Emet account. If it is not,
+   or I'm not signed in with a Claude account, ask me for my Emet email.
+3. Ask me for my Team ID, then run:
+   - `claude plugin marketplace add FUSEis/emet-plugin`
+   - `claude plugin install emet@emet-plugin --config tenant_ref=<Team ID>`,
+     adding `--config emet_email=<email>` if I gave one (only a plain address:
+     letters, digits, `.` `_` `%` `+` `-` and one `@`; otherwise I run it myself).
+   It reports options that are not set yet. That is expected: the key is left.
+4. Tell me, in one short list, to:
+   - run `/plugin configure emet@emet-plugin`, type the key into the Emet key
+     field and choose Save configuration;
+   - restart Claude Code (this conversation ends there);
+   - in the new session, run `/emet:setup`, which checks the key and, after my
+     first turn, links its report in Emet.
 ```
 
 The key is typed only into Claude Code's own configuration dialog, which keeps it in Claude Code's secure credential store (the Keychain on macOS), so it never appears in the conversation.
@@ -45,9 +61,11 @@ In Claude Code:
 /plugin configure emet@emet-plugin
 ```
 
-Enter your Emet key (Applications, then Manage keys, in Emet) and your team's External ID (Teams in Emet), restart Claude Code, then run `/emet:setup` to check the connection.
+Enter your team's Emet key (Applications, then Manage keys, in Emet) and your team's External ID (Teams in Emet), restart Claude Code, then run `/emet:setup` to check the connection.
 
-For a whole organization, an administrator can install and configure the plugin for every developer through managed settings: see [docs/enterprise.md](docs/enterprise.md).
+## Install for a whole organization
+
+An administrator can install and configure the plugin for every developer at once through Claude Code's managed settings, key included, so developers enter nothing, except those without a Claude sign-in, who set their email once. Each turn is attributed to the developer by the email they sign in to Claude with. See [docs/enterprise.md](docs/enterprise.md).
 
 ## What it sends
 

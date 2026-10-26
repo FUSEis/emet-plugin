@@ -6,6 +6,8 @@ import re
 from typing import Any, Callable, List, Pattern, Tuple
 
 # (kind, pattern, group to keep in front of the redaction)
+# An Emet key: an 8 character prefix, a dot and a 32 character secret
+EMET_KEY = re.compile(r"\b[A-Za-z0-9]{8}\.[A-Za-z0-9]{32}\b")
 SECRET_PATTERNS: List[Tuple[str, Pattern[str], int]] = [
     (
         "private_key",
@@ -23,8 +25,7 @@ SECRET_PATTERNS: List[Tuple[str, Pattern[str], int]] = [
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), 0),
     ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"), 0),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"), 0),
-    # An Emet key: an 8 character prefix, a dot and a 32 character secret
-    ("emet_key", re.compile(r"\b[A-Za-z0-9]{8}\.[A-Za-z0-9]{32}\b"), 0),
+    ("emet_key", EMET_KEY, 0),
     ("bearer_token", re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=\-]{16,}"), 1),
     ("url_password", re.compile(r"([a-z][a-z0-9+.\-]*://[^/\s:@]+:)[^/\s@]+(?=@)"), 1),
     # NAME=value where the name says secret, as in .env files and shell exports. The value needs a
@@ -44,13 +45,27 @@ BINARY_TYPES = ("image", "document")
 BASE64_RUN = re.compile(r"^(?=[^a-z]*[a-z])(?=[^A-Z]*[A-Z])(?=[^0-9]*[0-9])[A-Za-z0-9+/\r\n]{4096,}={0,2}\s*$")
 
 
-def redact(text: str, extra_secrets: Tuple[str, ...] = ()) -> Tuple[str, int]:
-    """Returns the text with secrets replaced by [REDACTED:kind], and how many were replaced."""
+def replace_exact(text: str, secrets: Tuple[str, ...]) -> Tuple[str, int]:
+    """Returns the text with these exact secrets (the Emet key) replaced, and how many were replaced."""
     count = 0
-    for secret in extra_secrets:
+    for secret in secrets:
         if secret and secret in text:
             count += text.count(secret)
             text = text.replace(secret, "[REDACTED:emet_key]")
+    return text, count
+
+
+def redact_known(text: str, secrets: Tuple[str, ...]) -> Tuple[str, int]:
+    """Returns the text with these exact secrets and anything shaped like an Emet key replaced, and how many were replaced."""
+    text, count = replace_exact(text, secrets)
+    text, replaced = EMET_KEY.subn("[REDACTED:emet_key]", text)
+    return text, count + replaced
+
+
+def redact(text: str, extra_secrets: Tuple[str, ...] = ()) -> Tuple[str, int]:
+    """Returns the text with secrets replaced by [REDACTED:kind], and how many were replaced."""
+    # The Emet key pattern keeps its place in SECRET_PATTERNS, after the JWT one
+    text, count = replace_exact(text, extra_secrets)
     for kind, pattern, keep in SECRET_PATTERNS:
 
         def replace(match: re.Match[str], kind: str = kind, keep: int = keep) -> str:

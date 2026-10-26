@@ -31,15 +31,15 @@ class Capture:
         """Returns the value as sent, whether binary content was removed, and how many secrets were redacted."""
         value, removed = content.strip_binary(value)
         redactions = 0
-        if self.mode == "sanitized":
 
-            def scrub(text: str) -> str:
-                nonlocal redactions
-                text, count = content.redact(text, self.secrets)
-                redactions += count
-                return text
+        def scrub(text: str) -> str:
+            nonlocal redactions
+            # full mode still never sends the Emet key, which managed settings put in every command's environment
+            text, count = content.redact(text, self.secrets) if self.mode == "sanitized" else content.redact_known(text, self.secrets)
+            redactions += count
+            return text
 
-            value = content.walk_strings(value, scrub)
+        value = content.walk_strings(value, scrub)
         return value, removed, redactions
 
     def text(self, text: str) -> Tuple[str, bool, int]:

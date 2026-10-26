@@ -20,15 +20,18 @@ Requirements: Claude Code 2.1.271 or later, and `python3` 3.9 or later on the `P
 
 | Option | Required | Default | What it does |
 | --- | --- | --- | --- |
-| `api_key` | yes | | Your Emet application key, from **Applications**, then **Manage keys**. Kept in Claude Code's secure credential store (the Keychain on macOS), never in `settings.json`. |
+| `emet_key` | yes | | Your team's Emet key, from **Applications**, then **Manage keys**. Kept in Claude Code's secure credential store (the Keychain on macOS), never in `settings.json`. |
 | `tenant_ref` | yes | | Team ID: the External ID of your team, from **Teams** in Emet. |
+| `emet_email` | no | your Claude sign-in | Your Emet email, so Emet attributes your turns to you. Leave it blank to use the email you sign in to Claude with; set it when you use an API key, Bedrock, Vertex AI or a gateway, or when the two emails differ. |
 | `capture_mode` | no | `sanitized` | How much content is sent; see below. |
+
+In an organization, an administrator usually sets the key, the Team ID and the capture mode for everyone. You only set your email, if you do not sign in to Claude with the email of your Emet account: see [docs/enterprise.md](https://github.com/FUSEis/emet-plugin/blob/main/docs/enterprise.md).
 
 ## Use it
 
 - **Every turn, automatically.** Work as usual. When a turn ends, the plugin sends it in the background and the session never waits. Open Emet's **Conversations** page to see each answer's claims and verdicts.
 - **`/emet:setup`**: connects the plugin to your Emet key and team, and confirms Emet accepts the key.
-- **`/emet:status`**: shows whether turns are reaching Emet, when the last one was delivered, what is queued for retry, and what any error means.
+- **`/emet:status`**: links the Emet report of your latest turns, and shows whether turns are reaching Emet, who they are sent as, what is queued for retry, and what any error means.
 
 ## What is sent
 
@@ -39,11 +42,12 @@ For each finished turn, one trace:
 | Model name, token counts (input, output, cache, thinking), stop reason, timings | yes | yes | yes |
 | Tool names, call ids, success or error | yes | yes | yes |
 | Repository folder name, git branch, Claude Code version | yes | yes | yes |
+| Your email (see `emet_email`), so Emet can attribute the turn to you | yes | yes | yes |
 | Your prompt and Claude's answers | redacted | yes | no |
 | Tool arguments and the tool results Claude received | redacted | yes | no |
 | Subagent prompts, calls and results | redacted | yes | no |
 
-- **Redaction** (`sanitized`) replaces API keys and tokens (Anthropic, OpenAI, AWS, GitHub, GitLab, Slack, Stripe, Google, npm, Emet), JWTs, private keys, bearer tokens, passwords in URLs and `SECRET=`-style assignments with `[REDACTED:kind]`. It is pattern-based: it cannot catch a secret in a format it does not know, so choose `metadata` where that matters.
+- **Redaction** (`sanitized`) replaces API keys and tokens (Anthropic, OpenAI, AWS, GitHub, GitLab, Slack, Stripe, Google, npm, Emet), JWTs, private keys, bearer tokens, passwords in URLs and `SECRET=`-style assignments with `[REDACTED:kind]`. It is pattern-based: it cannot catch a secret in a format it does not know, so choose `metadata` where that matters. Emet keys are replaced in every mode, `full` included.
 - **Images and other binary content** are never sent in any mode. A placeholder such as `[image content not shown: image/png, 412 KB]` takes their place, and the span is marked truncated so Emet does not treat it as complete.
 - **What Claude saw, not more.** Tool results are sent as Claude received them, except that output Claude Code saved to disk because it was too large is sent in full.
 - **Nothing else.** Thinking blocks, system prompts, tool definitions and files Claude did not read are not sent.
@@ -55,7 +59,7 @@ The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses an
 
 - `state/`: how far each session's transcript has been read.
 - `queue/`: turns that could not be delivered yet, retried oldest first on the next turn. At most 500 turns or 256 MB; the oldest are dropped beyond that.
-- `status.json` and `emet.log`: what `/emet:status` reports. They hold ids, counts and HTTP statuses, never content or the key.
+- `status.json` and `emet.log`: what `/emet:status` reports. They hold ids, counts, HTTP statuses, report links and the email sent, never content or the key.
 
 Emet's handling of the data it receives is covered by the [Emet privacy policy](https://emet.so/privacy).
 
@@ -68,7 +72,7 @@ The plugin registers four hooks (`SessionStart`, `Stop`, `SubagentStop`, `Sessio
 3. applies the capture mode, then sends the turn to `POST /api/v1/traces/` with the key as a bearer token;
 4. queues the turn if Emet cannot be reached, and retries it on the next run.
 
-A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. `SessionStart` also checks that Emet accepts the key, without sending a trace.
+A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. `SessionStart` also checks that Emet accepts the key, without sending a trace. Unless `emet_email` is set, each run reads the signed-in email from Claude Code's account file (`~/.claude.json`), keeping only `oauthAccount.emailAddress`.
 
 ## Turn it off
 

@@ -58,9 +58,9 @@ def test_capture_mode_choices_match_the_code():
     assert option["default"] == DEFAULT_CAPTURE_MODE
 
 
-def test_users_set_only_the_key_team_and_capture_mode():
+def test_users_set_only_the_key_team_email_and_capture_mode():
     options = load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]
-    assert set(options) == {"api_key", "tenant_ref", "capture_mode"}
+    assert set(options) == {"emet_key", "tenant_ref", "emet_email", "capture_mode"}
 
 
 # Every host a published file names; anything else, such as an internal Emet, must not ship
@@ -90,7 +90,25 @@ def test_published_files_name_only_public_hosts():
 
 
 def test_the_key_is_sensitive():
-    assert load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]["api_key"]["sensitive"] is True
+    assert load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]["emet_key"]["sensitive"] is True
+
+
+def test_the_email_is_optional_and_not_secret():
+    option = load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]["emet_email"]
+    assert not option.get("sensitive") and not option.get("required")
+
+
+def test_the_admin_guide_pins_the_current_release():
+    pins = re.findall(r'"ref": "(v[^"]+)"', (ROOT / "docs" / "enterprise.md").read_text(encoding="utf-8"))
+    assert pins and set(pins) == {f"v{VERSION}"}
+
+
+def test_the_skills_name_the_person_sources_the_code_reports():
+    from emet_claude.config import FROM_CLAUDE_ACCOUNT, FROM_SETTING
+
+    for skill in ("setup", "status"):
+        text = (PLUGIN / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+        assert f"`{FROM_CLAUDE_ACCOUNT}`" in text and f"`{FROM_SETTING}`" in text, skill
 
 
 def test_plugin_folder_is_self_contained():

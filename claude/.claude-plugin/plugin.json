@@ -1,7 +1,7 @@
 {
   "name": "emet",
   "displayName": "Emet",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Sends each Claude Code turn to Emet, which checks the claims in the answer against the tool results behind them.",
   "author": {
     "name": "Emet",
@@ -18,7 +18,7 @@
     "emet"
   ],
   "userConfig": {
-    "api_key": {
+    "emet_key": {
       "type": "string",
       "title": "Emet key",
       "description": "From Emet: Applications, then Manage keys. Kept in Claude Code's secure credential store, not in settings.json.",
@@ -31,10 +31,15 @@
       "description": "The External ID of your team, from Teams in Emet.",
       "required": true
     },
+    "emet_email": {
+      "type": "string",
+      "title": "Your Emet email",
+      "description": "Optional. Leave blank to use the email you sign in to Claude with. Set it when that is not the email of your Emet account."
+    },
     "capture_mode": {
       "type": "string",
       "title": "Capture mode",
-      "description": "sanitized sends content with secrets redacted, full sends content as is, metadata sends no content (Emet cannot check claims).",
+      "description": "sanitized sends content with secrets redacted, full sends content as is except Emet keys, metadata sends no content (Emet cannot check claims).",
       "options": [
         "sanitized",
         "full",

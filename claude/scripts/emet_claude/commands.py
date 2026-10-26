@@ -8,11 +8,13 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import urlencode
 
 from . import VERSION, envelope, storage, transcript, transport
-from .config import Config, load
+from .config import FROM_CLAUDE_ACCOUNT, Config, load
 from .spans import Builder, Capture
 
 # Claude Code writes the transcript asynchronously; give it a moment to flush the turn that just ended
@@ -22,6 +24,8 @@ MAX_TRACKED_AGENTS = 200
 HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
 # Hooks that fire only once the current turn is over
 TURN_END_MODES = ("stop", "session-end")
+# Deliveries listed by /emet:status
+RECENT_DELIVERIES = 5
 
 
 def entry_script() -> str:
@@ -48,12 +52,71 @@ def spawn_worker(mode: str, raw: bytes) -> None:
         worker.stdin.close()
 
 
+def signed_in_email(environ: Mapping[str, str], root: Optional[Path] = None) -> Tuple[str, str]:
+    """Returns (email, "") for the signed-in Claude account, or ("", why there is none).
+
+    Reads Claude Code's account file instead of running claude, since settings env can override CLAUDE_CODE_EXECPATH.
+    """
+    path = Path(environ.get("CLAUDE_CONFIG_DIR") or Path.home()) / ".claude.json"
+    try:
+        account = json.loads(path.read_text(encoding="utf-8")).get("oauthAccount")
+    except FileNotFoundError:
+        return "", "no Claude account file"
+    # AttributeError: the file holds a JSON list or string, which has no .get
+    except (OSError, ValueError, AttributeError) as error:
+        if root is not None:
+            storage.log(root, f"sign-in email unreadable {type(error).__name__}")
+        return "", "Claude account file unreadable"
+    email = account.get("emailAddress") if isinstance(account, dict) else None
+    if isinstance(email, str) and "@" in email:
+        return email.strip(), ""
+    return "", "no signed-in Claude account"
+
+
+def load_with_sign_in(environ: Mapping[str, str]) -> Config:
+    """Returns the options, with the signed-in email as the person when none is set."""
+    config = load(environ)
+    if config.problem or config.enduser_ref:
+        return config
+    email, note = signed_in_email(environ, storage.data_dir(environ))
+    if not email:
+        return replace(config, enduser_note=note)
+    return replace(config, enduser_ref=email, enduser_source=FROM_CLAUDE_ACCOUNT)
+
+
+def report_url(config: Config, session_id: str, conversation_uuid: str) -> str:
+    """Links the conversation in Emet. The search narrows the list to it, so Emet never selects another one instead."""
+    if not conversation_uuid:
+        return ""
+    return f"{config.endpoint}/conversations?{urlencode({'q': session_id, 'selected': conversation_uuid})}"
+
+
+def remember(recent: List[Dict[str, Any]], delivery: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Puts a session's newest delivery first, keeping its earlier link when Emet's reply had none."""
+    session_id = delivery["session_id"]
+    earlier = next((item for item in recent if item.get("session_id") == session_id), None)
+    if earlier and not delivery["report_url"]:
+        delivery = dict(delivery, report_url=earlier.get("report_url") or "")
+    others = [item for item in recent if item.get("session_id") != session_id]
+    return [delivery, *others][:RECENT_DELIVERIES]
+
+
+def last_error(sender: transport.Sender) -> Dict[str, Any]:
+    """Returns the status fields for this run's latest failure, or none when nothing failed."""
+    if not sender.failures:
+        return {}
+    return {"last_error": {"at": storage.now(), "detail": transport.describe(sender.failures[-1])}}
+
+
 def status_path(root: Path) -> Path:
     return root / "status.json"
 
 
-def update_status(root: Path, config: Config, **fields: Any) -> None:
-    """Records what the setup and status skills report. Never holds the key or any session content."""
+def update_status(root: Path, config: Config, accepted: Sequence[transport.Accepted] = (), **fields: Any) -> None:
+    """Records what the setup and status skills report. Never holds the key or any session content.
+
+    Only this run's deliveries change the links, so a run that sent nothing never hides a newer one.
+    """
     # Workers for different sessions share this file
     with storage.locked(root / "status.lock"):
         status = storage.read_json(status_path(root), {})
@@ -64,12 +127,28 @@ def update_status(root: Path, config: Config, **fields: Any) -> None:
             endpoint=config.endpoint,
             tenant_ref=config.tenant_ref,
             capture_mode=config.capture_mode,
+            enduser_ref=config.enduser_ref,
+            enduser_source=config.enduser_source,
+            enduser_note=config.enduser_note,
             key_hint=config.key_hint,
             problem=config.problem,
             queued=len(transport.queued(root)),
-            updated_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            updated_at=storage.now(),
         )
         status.update(fields)
+        saved = status.get("recent")
+        recent = [item for item in saved if isinstance(item, dict)] if isinstance(saved, list) else []
+        for item in accepted:
+            delivery = {
+                "session_id": item.session_id,
+                "repository": item.repository,
+                "at": storage.now(),
+                "status": item.outcome.status,
+                "report_url": report_url(config, item.session_id, item.outcome.conversation_uuid),
+            }
+            recent = remember(recent, delivery)
+            status["last_delivery"] = recent[0]
+        status["recent"] = recent
         storage.write_json(status_path(root), status)
 
 
@@ -88,16 +167,7 @@ def check_key(root: Path, config: Config) -> None:
     else:
         result = f"unexpected {outcome.status}"
     storage.log(root, f"key check -> {result}")
-    update_status(root, config, key_check=result, key_checked_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
-
-
-def deliver(sender: transport.Sender, envelopes: List[Dict[str, Any]], state: Dict[str, Any]) -> None:
-    outcomes = sender.send(envelopes)
-    for outcome in outcomes:
-        if outcome.delivered:
-            state["last_delivery"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "status": outcome.status}
-        else:
-            state["last_error"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "detail": transport.describe(outcome)}
+    update_status(root, config, key_check=result, key_checked_at=storage.now())
 
 
 def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
@@ -124,7 +194,7 @@ def process(
     turn_ended says the hook fired because the current turn ended (Stop, SessionEnd). Otherwise
     (SubagentStop, SessionStart) the last turn may still be running and is left for a later run.
     """
-    config = load(environ)
+    config = load_with_sign_in(environ)
     root = storage.data_dir(environ)
     session_id = str(hook_input.get("session_id") or "")
     path = Path(str(hook_input.get("transcript_path") or ""))
@@ -140,7 +210,7 @@ def process(
             state = {}
         sender = transport.Sender(root, config)
         sender.flush()
-        builder = Builder(path, Capture(config.capture_mode, secrets=(config.api_key,)))
+        builder = Builder(path, Capture(config.capture_mode, secrets=(config.emet_key,)))
 
         entries, end = transcript.read_entries(path, int(state.get("offset") or 0))
         head, turns = transcript.split_turns(entries)
@@ -153,14 +223,14 @@ def process(
         known = set((state.get("agents") or {}).keys())
         if head and state.get("last_trace"):
             envelopes, built = envelope.for_tail(config, builder, session_id, state["last_trace"], head, "turn", cwd)
-            deliver(sender, envelopes, state)
+            sender.send(envelopes)
             track(state, state["last_trace"], built)
         for turn in turns:
             # Slash commands and local shell escapes look like prompts but no model call answers them
             if not transcript.answered(turn):
                 continue
             trace_id, envelopes, built = envelope.for_turn(config, builder, session_id, turn, cwd)
-            deliver(sender, envelopes, state)
+            sender.send(envelopes)
             state["last_trace"] = trace_id
             track(state, trace_id, built)
 
@@ -172,13 +242,13 @@ def process(
             items, agent_end = transcript.read_entries(agent_path, int(agent.get("offset") or 0), sidechain=True)
             if items:
                 envelopes, built = envelope.for_tail(config, builder, session_id, agent["trace_id"], items, agent["parent_span_id"], cwd)
-                deliver(sender, envelopes, state)
+                sender.send(envelopes)
                 track(state, agent["trace_id"], built)
             agent["offset"] = agent_end
 
         state["offset"] = offset
         storage.write_json(state_file, state)
-        update_status(root, config, last_delivery=state.get("last_delivery"), last_error=state.get("last_error"))
+        update_status(root, config, sender.accepted, **last_error(sender))
 
 
 def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -> None:
@@ -186,7 +256,7 @@ def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -
     try:
         hook_input = json.loads(raw or b"{}")
         if mode == "session-start":
-            check_key(root, load(environ))
+            check_key(root, load_with_sign_in(environ))
         process(hook_input if isinstance(hook_input, dict) else {}, environ, turn_ended=mode in TURN_END_MODES)
     except Exception as error:  # noqa: BLE001 - an exporter failure must never reach the session
         storage.log(root, f"worker error {type(error).__name__}")
@@ -201,6 +271,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if mode not in HOOK_MODES:
         return 0
     raw = sys.stdin.buffer.read()
+    # Only checks that the plugin can send; the worker reads the sign-in
     config = load()
     if config.problem:
         with contextlib.suppress(OSError):

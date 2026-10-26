@@ -4,22 +4,38 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import http.client
 import json
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
 from . import VERSION, storage
 from .config import Config
+from .envelope import REPOSITORY_ATTRIBUTE
 
 TIMEOUT_S = 15
 # Bounds the queue so an unreachable endpoint cannot fill the disk
 QUEUE_MAX_FILES = 500
 QUEUE_MAX_BYTES = 256 * 1024 * 1024
 RETRYABLE = (408, 425, 429)
+# Emet's 202 lists the tool spans that carried no content, up to two entries per tool span of a batch
+MAX_REPLY_BYTES = 128 * 1024
+# A repository folder name as /emet:status shows it
+REPOSITORY_MAX = 100
+
+
+@dataclass(frozen=True)
+class Accepted:
+    """An envelope Emet accepted, with what /emet:status shows about it."""
+
+    session_id: str
+    repository: str
+    outcome: Outcome
 
 
 @dataclass(frozen=True)
@@ -28,6 +44,8 @@ class Outcome:
     delivered: bool
     final: bool
     detail: str
+    # Emet's public id of the conversation an accepted batch landed on, not the session id
+    conversation_uuid: str = ""
 
 
 def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
@@ -36,7 +54,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
         f"{config.endpoint}/api/v1/traces/",
         data=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {config.api_key}",
+            "Authorization": f"Bearer {config.emet_key}",
             "Content-Type": "application/json",
             "User-Agent": f"emet-claude-code/{VERSION}",
         },
@@ -44,13 +62,26 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
     )
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-            return Outcome(response.status, True, True, "")
+            # Delivered once Emet answered; the body only adds the report link
+            reply = b""
+            with contextlib.suppress(OSError, http.client.HTTPException):
+                reply = response.read(MAX_REPLY_BYTES)
+            return Outcome(response.status, True, True, "", accepted_conversation(reply))
     except urllib.error.HTTPError as error:
         body = error.read(500).decode("utf-8", "replace")
         final = error.code < 500 and error.code not in RETRYABLE
         return Outcome(error.code, False, final, body)
     except (urllib.error.URLError, OSError) as error:
         return Outcome(0, False, False, type(error).__name__)
+
+
+def accepted_conversation(body: bytes) -> str:
+    """Returns the conversation uuid from Emet's 202 body, or "" when it has none."""
+    try:
+        accepted = json.loads(body)
+        return str(uuid.UUID(str(accepted["conversation"])))
+    except (ValueError, TypeError, KeyError, RecursionError):
+        return ""
 
 
 def queued(root: Path) -> List[Path]:
@@ -110,22 +141,31 @@ class Sender:
         self.root = root
         self.config = config
         self.blocked = False
+        # Every envelope Emet accepted in this run, queued ones included
+        self.accepted: List[Accepted] = []
+        self.failures: List[Outcome] = []
 
-    def send(self, envelopes: List[Dict[str, Any]]) -> List[Outcome]:
-        outcomes: List[Outcome] = []
+    def record(self, envelope: Dict[str, Any], outcome: Outcome) -> None:
+        if outcome.delivered:
+            resource = envelope.get("resource")
+            repository = str(resource.get(REPOSITORY_ATTRIBUTE) or "")[:REPOSITORY_MAX] if isinstance(resource, dict) else ""
+            self.accepted.append(Accepted(str(envelope.get("conversation_id") or ""), repository, outcome))
+        else:
+            self.failures.append(outcome)
+
+    def send(self, envelopes: List[Dict[str, Any]]) -> None:
         for envelope in envelopes:
             if self.blocked:
                 enqueue(self.root, envelope)
                 continue
             outcome = post(self.config, envelope)
-            outcomes.append(outcome)
+            self.record(envelope, outcome)
             storage.log(
                 self.root, f"trace {envelope['trace_id']} spans={len(envelope['spans'])} end={envelope['end']} -> {describe(outcome)}"
             )
             if not outcome.delivered and not outcome.final:
                 enqueue(self.root, envelope)
                 self.blocked = True
-        return outcomes
 
     def flush(self) -> int:
         """Retries queued envelopes, oldest first. Returns how many are still queued.
@@ -140,6 +180,7 @@ class Sender:
                     remove(path)
                     continue
                 outcome = post(self.config, envelope)
+                self.record(envelope, outcome)
                 storage.log(self.root, f"retry {envelope.get('trace_id')} -> {describe(outcome)}")
                 if not outcome.delivered and not outcome.final:
                     self.blocked = True

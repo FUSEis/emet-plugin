@@ -31,8 +31,10 @@ def transcript(tmp_path: Path) -> Transcript:
 @pytest.fixture
 def environ(tmp_path: Path, emet: FakeEmet) -> Dict[str, str]:
     return {
-        "CLAUDE_PLUGIN_OPTION_API_KEY": API_KEY,
+        "CLAUDE_PLUGIN_OPTION_EMET_KEY": API_KEY,
         "CLAUDE_PLUGIN_OPTION_TENANT_REF": "engineering",
         "CLAUDE_PLUGIN_OPTION_ENDPOINT": emet.url,
         "CLAUDE_PLUGIN_DATA": str(tmp_path / "data"),
+        # Never the developer's own Claude account
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "claude-config"),
     }

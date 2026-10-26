@@ -67,6 +67,10 @@ def locked(path: Path) -> Iterator[None]:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
 def log(root: Path, message: str) -> None:
     """Appends one line. Never content: ids, counts and HTTP statuses only."""
     path = root / "emet.log"
@@ -75,6 +79,6 @@ def log(root: Path, message: str) -> None:
             os.replace(path, root / "emet.log.1")
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as handle:
-            handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {message}\n")
+            handle.write(f"{now()} {message}\n")
     except OSError:
         pass

@@ -1,3 +1,4 @@
+import http.client
 import io
 import json
 import os
@@ -9,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from conftest import API_KEY
-from emet_claude import commands, storage, transport
+from emet_claude import commands, config, storage, transport
+from helpers import Transcript
 
 
 def run(transcript, environ):
@@ -118,7 +120,7 @@ def test_the_queue_is_bounded(tmp_path, monkeypatch):
 
 def test_does_nothing_without_configuration(transcript, environ, emet):
     finished_turn(transcript)
-    environ.pop("CLAUDE_PLUGIN_OPTION_API_KEY")
+    environ.pop("CLAUDE_PLUGIN_OPTION_EMET_KEY")
     run(transcript, environ)
     assert emet.requests == []
 
@@ -204,8 +206,8 @@ def test_hook_mode_hands_off_to_the_worker(monkeypatch, environ):
 
 
 def test_hook_mode_without_configuration_only_records_the_problem(monkeypatch, environ):
-    environ.pop("CLAUDE_PLUGIN_OPTION_API_KEY")
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_API_KEY", raising=False)
+    environ.pop("CLAUDE_PLUGIN_OPTION_EMET_KEY")
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_EMET_KEY", raising=False)
     spawned = []
     monkeypatch.setattr(commands, "spawn_worker", lambda mode, raw: spawned.append(mode))
     hook_stdin(monkeypatch, environ, b"{}")
@@ -256,3 +258,273 @@ def test_existing_data_folders_are_made_private(tmp_path):
     storage.data_dir({"CLAUDE_PLUGIN_DATA": str(tmp_path)})
     assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
     assert stat.S_IMODE((tmp_path / "queue").stat().st_mode) == 0o700
+
+
+def sign_in(environ, account):
+    """Writes the account Claude Code would keep in its config folder."""
+    folder = Path(environ["CLAUDE_CONFIG_DIR"])
+    folder.mkdir(exist_ok=True)
+    (folder / ".claude.json").write_text(json.dumps({"oauthAccount": account}), encoding="utf-8")
+
+
+def report_link(emet, index, session_id="session-1"):
+    return f"{emet.url}/conversations?q={session_id}&selected={emet.conversations[index]}"
+
+
+def test_sends_the_claude_account_email_as_the_person(transcript, environ, emet):
+    sign_in(environ, {"emailAddress": " ada@example.com "})
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == "ada@example.com"
+    assert status(environ)["enduser_source"] == config.FROM_CLAUDE_ACCOUNT
+
+
+def test_the_email_setting_wins_over_the_claude_account(transcript, environ, emet):
+    sign_in(environ, {"emailAddress": "personal@example.com"})
+    environ["CLAUDE_PLUGIN_OPTION_EMET_EMAIL"] = "ada@work.example.com"
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == "ada@work.example.com"
+    assert status(environ)["enduser_source"] == config.FROM_SETTING
+
+
+@pytest.mark.parametrize("account", [None, {}, {"emailAddress": "not an email"}, "ada@example.com"])
+def test_sends_no_person_without_a_signed_in_account(transcript, environ, emet, account):
+    sign_in(environ, account)
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == ""
+    assert status(environ)["enduser_note"] == "no signed-in Claude account"
+
+
+def test_sends_no_person_without_an_account_file_and_logs_nothing(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == ""
+    assert status(environ)["enduser_note"] == "no Claude account file"
+    assert "sign-in" not in (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("text", ["{not json", "[]"])
+def test_an_unreadable_account_file_sends_no_person_and_says_why(transcript, environ, emet, text):
+    folder = Path(environ["CLAUDE_CONFIG_DIR"])
+    folder.mkdir()
+    (folder / ".claude.json").write_text(text, encoding="utf-8")
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == ""
+    assert status(environ)["enduser_note"] == "Claude account file unreadable"
+    log = (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+    assert "sign-in email unreadable" in log
+
+
+def test_status_links_the_latest_report_of_each_session(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 0)
+    finished_turn(transcript, "next", "ok")
+    run(transcript, environ)
+    (recent,) = status(environ)["recent"]
+    assert recent["session_id"] == transcript.session_id
+    assert recent["repository"] == "acme-app"
+    assert recent["report_url"] == report_link(emet, 1)
+
+
+def test_status_keeps_the_last_five_sessions(tmp_path, environ, emet):
+    for index in range(7):
+        session = Transcript(tmp_path, f"session-{index}")
+        finished_turn(session)
+        run(session, environ)
+    sessions = [item["session_id"] for item in status(environ)["recent"]]
+    assert sessions == ["session-6", "session-5", "session-4", "session-3", "session-2"]
+
+
+def test_a_run_that_sends_nothing_keeps_the_newest_link_first(tmp_path, environ, emet):
+    older, newer = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    for session in (older, newer):
+        finished_turn(session)
+        run(session, environ)
+    # The older session runs again with nothing new to send
+    run(older, environ)
+    assert [item["session_id"] for item in status(environ)["recent"]] == ["session-1", "session-0"]
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 1)
+
+
+def test_a_queued_turn_gets_its_link_when_it_is_retried(transcript, environ, emet):
+    emet.statuses = [503]
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["recent"] == []
+    # Nothing new to send: only the retry delivers
+    run(transcript, environ)
+    (recent,) = status(environ)["recent"]
+    assert recent["session_id"] == transcript.session_id
+    assert recent["report_url"] == report_link(emet, 0)
+
+
+def test_a_long_reply_still_gives_the_link(transcript, environ, emet):
+    # A metadata-mode batch of 500 tool calls, each listed twice
+    emet.gaps = [f"tool.toolu_{index:024d}" for index in range(500)]
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 0)
+
+
+def test_a_reply_without_a_conversation_keeps_the_sessions_earlier_link(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ)
+    emet.reply = "not-a-uuid"
+    finished_turn(transcript, "next", "ok")
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 0)
+    assert status(environ)["queued"] == 0
+
+
+def test_a_reply_without_a_conversation_still_counts_as_delivered(transcript, environ, emet):
+    emet.reply = "not-a-uuid"
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == ""
+    assert status(environ)["queued"] == 0
+
+
+def test_a_cut_off_reply_still_counts_as_delivered(transcript, environ, emet, monkeypatch):
+    def cut_off(self, amount=None):
+        raise http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(http.client.HTTPResponse, "read", cut_off)
+    finished_turn(transcript)
+    run(transcript, environ)
+    run(transcript, environ)
+    assert len(emet.requests) == 1
+    assert status(environ)["queued"] == 0
+    assert status(environ)["last_delivery"]["status"] == 202
+    assert status(environ)["last_delivery"]["report_url"] == ""
+
+
+def test_a_rejected_key_is_the_last_error(transcript, environ, emet):
+    emet.statuses = [401]
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert status(environ)["last_error"]["detail"] == "401 key rejected"
+    assert "last_delivery" not in status(environ)
+
+
+def test_a_failed_retry_is_the_last_error(transcript, environ, emet):
+    emet.statuses = [503, 429]
+    finished_turn(transcript)
+    run(transcript, environ)
+    # Only the retry can answer 429
+    run(transcript, environ)
+    assert len(emet.requests) == 2
+    assert status(environ)["last_error"]["detail"].startswith("429")
+    assert status(environ)["queued"] == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"", b"[]", b"null", b'"x"', b'{"conversation": null}', b'{"conversation": {}}', b"\xff\xfe", b'{"conversation": "nope"}'],
+)
+def test_a_reply_without_a_valid_conversation_gives_no_id(body):
+    assert transport.accepted_conversation(body) == ""
+
+
+def test_the_conversation_id_is_normalized():
+    raw = "0F0E6C6E4A8E4D479B4C3C9F2F1D8A11"
+    assert transport.accepted_conversation(json.dumps({"conversation": raw}).encode()) == "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
+
+
+def test_reads_the_account_file_in_the_home_folder_by_default(transcript, environ, emet, tmp_path, monkeypatch):
+    environ.pop("CLAUDE_CONFIG_DIR")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    sign_in({"CLAUDE_CONFIG_DIR": str(tmp_path / "home")}, {"emailAddress": "ada@example.com"})
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert emet.envelopes[0]["enduser_ref"] == "ada@example.com"
+
+
+def test_the_report_link_searches_for_the_session():
+    from urllib.parse import parse_qs, urlsplit
+
+    link = commands.report_url(config.load({}), "a session&id", "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11")
+    parts = urlsplit(link)
+    assert (parts.scheme, parts.netloc, parts.path) == ("https", "app.emet.so", "/conversations")
+    assert parse_qs(parts.query) == {"q": ["a session&id"], "selected": ["0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"]}
+    assert commands.report_url(config.load({}), "s", "") == ""
+
+
+def test_a_session_that_delivers_again_moves_first_once(tmp_path, environ, emet):
+    first, second = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    for session in (first, second):
+        finished_turn(session)
+        run(session, environ)
+    finished_turn(first, "again", "ok")
+    run(first, environ)
+    recent = status(environ)["recent"]
+    assert [item["session_id"] for item in recent] == ["session-0", "session-1"]
+    assert recent[0]["report_url"] == report_link(emet, 2, "session-0")
+
+
+def test_another_sessions_retry_gets_that_sessions_link(tmp_path, environ, emet):
+    queued, current = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    emet.statuses = [503]
+    finished_turn(queued)
+    run(queued, environ)
+    # The other session's worker flushes the shared queue first, then sends its own turn
+    finished_turn(current)
+    run(current, environ)
+    recent = {item["session_id"]: item for item in status(environ)["recent"]}
+    assert recent["session-0"]["report_url"] == report_link(emet, 0, "session-0")
+    assert recent["session-1"]["report_url"] == report_link(emet, 1, "session-1")
+    assert status(environ)["recent"][0]["session_id"] == "session-1"
+
+
+def test_a_run_that_delivers_and_fails_reports_both(transcript, environ, emet):
+    emet.statuses = [503]
+    finished_turn(transcript)
+    run(transcript, environ)
+    # The retry is accepted, then the new turn is refused for good
+    emet.statuses = [202, 400]
+    finished_turn(transcript, "next", "ok")
+    run(transcript, environ)
+    assert status(environ)["last_delivery"]["report_url"] == report_link(emet, 0)
+    assert status(environ)["last_error"]["detail"].startswith("400")
+
+
+def test_a_deeply_nested_reply_gives_no_id():
+    assert transport.accepted_conversation(b"[" * 100_000) == ""
+
+
+def test_full_mode_still_never_sends_the_emet_key(transcript, environ, emet):
+    environ["CLAUDE_PLUGIN_OPTION_CAPTURE_MODE"] = "full"
+    transcript.prompt("print the environment")
+    transcript.tool_use("msg_1", "toolu_env", "Bash", {"command": "env"})
+    # The administrator's key reaches commands even when the hook sends with one the developer saved
+    other_key = "Zyxw9876.Abcdefghijklmnopqrstuvwxyz123456"
+    transcript.tool_result("toolu_env", f"CLAUDE_PLUGIN_OPTION_EMET_KEY={API_KEY}\nOLD={other_key}\nAWS_SECRET_ACCESS_KEY=abc")
+    transcript.text("msg_2", "done")
+    run(transcript, environ)
+    sent = json.dumps(emet.envelopes)
+    assert API_KEY not in sent and other_key not in sent
+    assert "[REDACTED:emet_key]" in sent
+    # Everything else is sent as is in full mode
+    assert "AWS_SECRET_ACCESS_KEY=abc" in sent
+    tool = next(span for span in emet.spans() if span["span_id"] == "tool.toolu_env")
+    assert tool["attributes"]["emet.redactions"] == 2
+
+
+def test_a_long_folder_name_is_cut_in_status(transcript, environ, emet):
+    finished_turn(transcript)
+    commands.process(dict(transcript.hook_input(), cwd="/work/" + "a" * 300), environ, wait=0)
+    assert len(status(environ)["recent"][0]["repository"]) == transport.REPOSITORY_MAX
+
+
+@pytest.mark.parametrize("damaged", [["x", 3, None], 3, True, "x"])
+def test_a_damaged_recent_list_is_replaced(transcript, environ, emet, damaged):
+    root = Path(environ["CLAUDE_PLUGIN_DATA"])
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "status.json").write_text(json.dumps({"recent": damaged}), encoding="utf-8")
+    finished_turn(transcript)
+    run(transcript, environ)
+    (recent,) = status(environ)["recent"]
+    assert recent["session_id"] == transcript.session_id

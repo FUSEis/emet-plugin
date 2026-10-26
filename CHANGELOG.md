@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-23
+
+### Added
+
+- Each turn is attributed to the person who ran it. The plugin sends the email the developer signs in to Claude with, read from Claude Code's account file, as `enduser_ref`, which Emet matches to a member of the organization. The new optional **Your Emet email** option (`emet_email`) overrides it, for an API key, Bedrock, Vertex AI or a gateway, or when the two emails differ. The email is sent in every capture mode, `metadata` included, and is reported by the developer's machine, not proven to Emet.
+- `/emet:status` links the Emet report of the latest turn of the last five sessions, with their repository, and shows who turns are sent as, or why no email was found. `/emet:setup` gives the report link once a turn has been delivered. The link searches Emet's conversation list for the session, so it never opens another conversation.
+- `docs/enterprise.md` describes a rollout where developers enter nothing: the team's key goes in the managed settings `env`, next to the Team ID and capture mode in `pluginConfigs`.
+
+### Changed
+
+- The key option is now `emet_key` (it was `api_key`). A key in managed settings `env` is passed to every plugin's hooks, so under the old name another plugin with its own `api_key` option would have taken the Emet key as its own. `env` values still reach every command Claude Code runs; `docs/enterprise.md` explains what that means and the keychain alternative. To update, run `claude plugin marketplace update emet-plugin` and `claude plugin update emet@emet-plugin`, restart Claude Code, then enter the key again with `/plugin configure emet@emet-plugin` (unless your administrator supplies it). Administrators who supply the key through managed settings replace `CLAUDE_PLUGIN_OPTION_API_KEY` with `CLAUDE_PLUGIN_OPTION_EMET_KEY` when they move the pin.
+- In `full` mode Emet keys are now replaced with `[REDACTED:emet_key]` wherever they appear in what is sent; other content is still sent as is. With the key in managed `env`, a command that prints the environment would otherwise have sent it.
+- The install prompt in the README updates the plugin when it is already installed, confirms that the Claude sign-in email is the Emet one (and asks for the Emet email when it is not, or there is no sign-in), and ends with `/emet:setup` in the new session.
+
 ## [0.1.2] - 2026-10-22
 
 ### Changed
@@ -34,6 +48,7 @@ First release of the Claude Code plugin.
 - `/emet:setup` and `/emet:status` skills.
 - Managed-settings guide for organization rollouts.
 
-[Unreleased]: https://github.com/FUSEis/emet-plugin/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/FUSEis/emet-plugin/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/FUSEis/emet-plugin/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/FUSEis/emet-plugin/compare/v0.1.0...v0.1.2
 [0.1.0]: https://github.com/FUSEis/emet-plugin/releases/tag/v0.1.0
