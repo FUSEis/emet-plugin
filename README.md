@@ -90,6 +90,8 @@ Each plugin folder is self-contained, because Claude Code installs only the plug
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in public issues.
 
+For questions or help with a rollout, open an [issue](https://github.com/FUSEis/emet-plugin/issues) or write to support@emet.so.
+
 ## License
 
 [Apache License 2.0](LICENSE).
