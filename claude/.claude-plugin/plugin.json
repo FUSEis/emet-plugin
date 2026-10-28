@@ -9,6 +9,10 @@
   },
   "homepage": "https://emet.so",
   "repository": "https://github.com/FUSEis/emet-plugin",
+  "documentationUrl": "https://github.com/FUSEis/emet-plugin/blob/main/claude/README.md",
+  "supportUrl": "https://emet.so/contact",
+  "privacyPolicyUrl": "https://emet.so/privacy",
+  "termsOfServiceUrl": "https://emet.so/terms",
   "license": "Apache-2.0",
   "keywords": [
     "verification",
