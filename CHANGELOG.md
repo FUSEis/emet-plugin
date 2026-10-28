@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- The plugin has an icon, `claude/.claude-plugin/icon.png`, the Emet logomark, for its listing in Anthropic's plugin directory.
+
 ## [0.1.3] - 2026-10-23
 
 ### Added
