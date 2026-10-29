@@ -18,7 +18,7 @@ Once your organization is set up in Emet:
 
 1. Under **Teams**, copy your team's **External ID**: the Team ID the plugin asks for.
 2. Under **Applications**, then **Manage keys**, mint a key for the team.
-3. Invite each developer with the email they sign in to Claude with, so their turns are attributed to them.
+3. Invite each developer, so their turns are attributed to them. Use the email they sign in to Claude with. A developer without a Claude sign-in (an API key, Bedrock, Vertex AI or a gateway), or whose Claude email differs, sets **Your Emet email** (`emet_email`) to the address you invited ([how](enterprise.md#4-who-ran-each-turn)).
 
 Then [install the plugin](../README.md#install-with-your-agent), or have an administrator [roll it out to the organization](enterprise.md).
 
