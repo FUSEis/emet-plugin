@@ -4,6 +4,8 @@ Sends each Claude Code turn to [Emet](https://emet.so), which checks the claims 
 
 ## Install
 
+The plugin needs an Emet account for your organization. If you don't have one yet, [contact us](https://github.com/FUSEis/emet-plugin/blob/main/docs/contact.md) first.
+
 In Claude Code:
 
 ```text
