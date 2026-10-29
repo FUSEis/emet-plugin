@@ -8,6 +8,10 @@
 | Codex | | Planned |
 | Hermes | | Planned |
 
+## Get Emet first
+
+The plugin needs an Emet account for your organization: it sends to your team in Emet, with your team's key. If you don't have one yet, [contact us](docs/contact.md) to buy Emet or book a demo, then come back to install.
+
 ## Install with your agent
 
 If your organization rolls Emet out through managed settings, there is nothing to install: the plugin arrives configured at your next session. Otherwise, paste this into Claude Code:
@@ -80,7 +84,7 @@ claude/                           the Claude Code plugin (self-contained)
   hooks/hooks.json                the hooks it registers
   scripts/                        the hook script, Python standard library only
   skills/                         /emet:setup and /emet:status
-docs/                             administrator and design documentation
+docs/                             getting Emet, administrator and design documentation
 tests/                            tests, run in CI on Linux, macOS and Windows
 ```
 
@@ -90,7 +94,7 @@ Each plugin folder is self-contained, because Claude Code installs only the plug
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in public issues.
 
-For questions or help with a rollout, open an [issue](https://github.com/FUSEis/emet-plugin/issues) or write to support@emet.so.
+To buy Emet, see [docs/contact.md](docs/contact.md). For questions or help with a rollout, open an [issue](https://github.com/FUSEis/emet-plugin/issues) or write to support@emet.so.
 
 ## License
 
