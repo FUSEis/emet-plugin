@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - The plugin has an icon, `claude/.claude-plugin/icon.png`, the Emet logomark, for its listing in Anthropic's plugin directory.
+- `docs/contact.md` explains how to buy Emet before installing, and both READMEs link it ahead of the install steps.
 
 ## [0.1.3] - 2026-10-23
 
