@@ -2,11 +2,9 @@
 
 [Emet](https://emet.so) checks the claims an AI agent makes against the evidence behind them: the tool results, files and data the agent actually received. These plugins send an agent's turns to Emet from the tools where the agent runs, with nothing to change in your code.
 
-| Host | Folder | Status |
-| --- | --- | --- |
-| Claude Code | [`claude/`](claude/) | Available |
-| Codex | | Planned |
-| Hermes | | Planned |
+| Host | Folder |
+| --- | --- |
+| Claude Code | [`claude/`](claude/) |
 
 ## Install with your agent
 
