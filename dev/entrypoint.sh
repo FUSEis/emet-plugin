@@ -4,6 +4,7 @@
 set -eu
 
 port="${EMET_PORT:-8000}"
-socat "TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr" "TCP:host.docker.internal:${port}" &
+# socat reports each refused connection; keep that off the session's terminal
+socat "TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr" "TCP:host.docker.internal:${port}" 2>>/tmp/emet-forward.log &
 
 exec claude --plugin-dir /plugin "$@"

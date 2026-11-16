@@ -28,7 +28,7 @@ You need Docker, and an Emet running on this machine (port 8000 unless you chang
    docker compose -f dev/compose.yaml run --rm claude
    ```
 
-3. Sign in if you set no token or API key in `dev/.env`: run `/login` in the session. The sign-in is kept in the container's own volume.
+3. Sign in if you set no token or API key in `dev/.env`: the first run asks you to, and `/login` in the session does it again later. The sign-in is kept in the container's own volume.
 
 4. Run `/emet:status` to see where turns are going. It should name `http://localhost:8000`.
 
@@ -41,6 +41,7 @@ Arguments after `claude` go to Claude Code, for example `docker compose -f dev/c
 - **The plugin only sends to `app.emet.so` or to `localhost`.** The container forwards its own `localhost:8000` to port 8000 on your machine, so the plugin's rule is unchanged.
 - **The Claude Code version is pinned** in `dev/Dockerfile` and does not update itself. A test keeps it equal to the version CI validates the plugin with.
 - **The hook log** is at `/home/node/.claude/plugins/data/emet-inline/emet.log` in the container.
+- **When the local Emet is not running** the session still starts. The plugin logs `unreachable` and queues the turns, and the forward's own errors go to `/tmp/emet-forward.log` in the container.
 
 Model requests from the session go to Anthropic under the sign-in you give it, as they do outside the container.
 

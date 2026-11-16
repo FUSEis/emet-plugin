@@ -1,4 +1,6 @@
 # Starts one Claude Code session with the working copy of the plugin: docker compose -f dev/compose.yaml run --rm claude
+# Named so the volumes are not shared with another project whose compose file is also in a folder called dev
+name: emet-plugin-dev
 services:
   claude:
     build: .
