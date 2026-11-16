@@ -7,4 +7,14 @@ port="${EMET_PORT:-8000}"
 # socat reports each refused connection; keep that off the session's terminal
 socat "TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr" "TCP:host.docker.internal:${port}" 2>>/tmp/emet-forward.log &
 
-exec claude --plugin-dir /plugin "$@"
+status=0
+claude --plugin-dir /plugin "$@" || status=$?
+
+# The plugin sends from detached workers; let them finish before the container stops
+waited=0
+while [ "${waited}" -lt 30 ] && grep -qs '[e]met_hook.py' /proc/[0-9]*/cmdline; do
+    sleep 1
+    waited=$((waited + 1))
+done
+
+exit "${status}"
