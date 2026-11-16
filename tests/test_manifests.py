@@ -130,7 +130,7 @@ def test_the_dev_image_pins_the_claude_code_ci_validates_with():
 
 def test_the_dev_settings_file_is_ignored():
     def ignored(path):
-        return subprocess.run(["git", "check-ignore", "-q", path], cwd=ROOT).returncode == 0
+        return subprocess.run([str(shutil.which("git")), "check-ignore", "-q", path], cwd=ROOT).returncode == 0
 
     for name in ("dev/.env", "dev/.env.local", "dev/.env.swp"):
         assert ignored(name), name
