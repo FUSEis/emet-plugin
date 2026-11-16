@@ -117,3 +117,16 @@ def test_plugin_folder_is_self_contained():
     for path in PLUGIN.rglob("*"):
         assert not path.is_symlink(), path
         assert path.name != ".DS_Store"
+
+
+def test_the_dev_image_pins_the_claude_code_ci_validates_with():
+    dockerfile = (ROOT / "dev" / "Dockerfile").read_text(encoding="utf-8")
+    image = re.search(r"^ARG CLAUDE_CODE_VERSION=(\S+)$", dockerfile, re.M)
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    validated = set(re.findall(r"@anthropic-ai/claude-code@(\S+)", workflow))
+    assert image is not None
+    assert validated == {image.group(1)}
+
+
+def test_the_dev_settings_file_is_ignored():
+    assert "dev/.env" in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()

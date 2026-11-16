@@ -22,6 +22,8 @@ claude --plugin-dir ./claude
 
 The hook log is in the plugin's data folder (`~/.claude/plugins/data/emet-inline/emet.log` with `--plugin-dir`).
 
+To keep that session apart from the Claude Code you use every day, with its own home, its own key and a pinned Claude Code version, run it in the container described in [dev/README.md](dev/README.md).
+
 ## Rules for changes
 
 - **No runtime dependencies.** Anything outside the standard library would have to be installed on every developer machine.

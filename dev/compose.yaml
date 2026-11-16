@@ -1,0 +1,23 @@
+# Starts one Claude Code session with the working copy of the plugin: docker compose -f dev/compose.yaml run --rm claude
+services:
+  claude:
+    build: .
+    stdin_open: true
+    tty: true
+    env_file: .env
+    environment:
+      EMET_PORT: ${EMET_PORT:-8000}
+      CLAUDE_PLUGIN_OPTION_ENDPOINT: http://localhost:${EMET_PORT:-8000}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      # The working copy, read-only: edits on the host apply to the next session
+      - ../claude:/plugin:ro
+      # This environment's own Claude Code home; the host's is never mounted
+      - claude-home:/home/node/.claude
+      # A scratch project for the session to work in
+      - workspace:/workspace
+
+volumes:
+  claude-home:
+  workspace:
