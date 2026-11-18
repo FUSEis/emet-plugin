@@ -52,6 +52,8 @@ def test_a_turn_emet_did_not_accept_is_not_kept(transcript, environ, emet):
     emet.statuses = [400]
     finished_turn(transcript)
     run(transcript, environ)
+    assert len(emet.envelopes) == 1
+    assert not emet.conversations
     assert pending(environ) == []
 
 
