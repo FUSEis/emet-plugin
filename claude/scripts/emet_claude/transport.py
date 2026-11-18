@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
-from . import VERSION, storage
+from . import VERSION, pending, storage
 from .config import Config
 from .envelope import REPOSITORY_ATTRIBUTE
 
@@ -36,8 +36,6 @@ class Accepted:
     session_id: str
     repository: str
     outcome: Outcome
-    # The envelope was the last of its batch, so the turn it carries is complete
-    ended: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,7 +159,11 @@ class Sender:
         if outcome.delivered:
             resource = envelope.get("resource")
             repository = str(resource.get(REPOSITORY_ATTRIBUTE) or "")[:REPOSITORY_MAX] if isinstance(resource, dict) else ""
-            self.accepted.append(Accepted(str(envelope.get("conversation_id") or ""), repository, outcome, envelope.get("end") is True))
+            session_id = str(envelope.get("conversation_id") or "")
+            self.accepted.append(Accepted(session_id, repository, outcome))
+            # Kept at once and for the envelope's own session: a queued turn can be delivered by another session's worker
+            if envelope.get("end") is True and outcome.trace_uuid:
+                pending.note(self.root, session_id, outcome.trace_uuid)
         else:
             self.failures.append(outcome)
 

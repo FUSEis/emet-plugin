@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlencode
 
-from . import VERSION, envelope, storage, transcript, transport
+from . import VERSION, envelope, pending, storage, transcript, transport
 from .config import FROM_CLAUDE_ACCOUNT, Config, load
 from .spans import Builder, Capture
 
@@ -24,8 +24,6 @@ MAX_TRACKED_AGENTS = 200
 HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
 # Hooks that fire only once the current turn is over
 TURN_END_MODES = ("stop", "session-end")
-# Finished turns per session whose report has not been read yet, newest kept
-MAX_PENDING = 50
 # Deliveries listed by /emet:status
 RECENT_DELIVERIES = 5
 
@@ -185,22 +183,6 @@ def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
         agents.pop(next(iter(agents)))
 
 
-def note_pending(state: Dict[str, Any], session_id: str, accepted: Sequence[transport.Accepted]) -> None:
-    """Keeps Emet's id of each finished turn this session delivered, so its report can be read later."""
-    saved = state.get("pending")
-    entries = saved if isinstance(saved, list) else []
-    pending = [item for item in entries if isinstance(item, dict) and isinstance(item.get("trace_uuid"), str) and item["trace_uuid"]]
-    known = {item["trace_uuid"] for item in pending}
-    for item in accepted:
-        trace_uuid = item.outcome.trace_uuid
-        # The shared queue can hand this run another session's turn
-        if not item.ended or item.session_id != session_id or not trace_uuid or trace_uuid in known:
-            continue
-        pending.append({"trace_uuid": trace_uuid, "at": storage.now()})
-        known.add(trace_uuid)
-    state["pending"] = pending[-MAX_PENDING:]
-
-
 def process(
     hook_input: Mapping[str, Any],
     environ: Mapping[str, str] = os.environ,
@@ -221,7 +203,7 @@ def process(
         return
     if wait:
         time.sleep(wait)
-    with storage.locked(root / "state" / f"{session_id}.lock"):
+    with storage.locked(root / "state" / f"{session_id}.lock"), pending.finishing(root, session_id, turn_ended):
         state_file = root / "state" / f"{session_id}.json"
         state = storage.read_json(state_file, {})
         if not isinstance(state, dict):
@@ -264,7 +246,6 @@ def process(
                 track(state, agent["trace_id"], built)
             agent["offset"] = agent_end
 
-        note_pending(state, session_id, sender.accepted)
         state["offset"] = offset
         storage.write_json(state_file, state)
         update_status(root, config, sender.accepted, **last_error(sender))

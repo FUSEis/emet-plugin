@@ -1,14 +1,16 @@
 import json
-from pathlib import Path
+import sys
 
 import pytest
 
-from emet_claude import commands, transport
+from emet_claude import commands, envelope, pending, storage, transport
 from helpers import Transcript
 
+TRACE = "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
 
-def run(transcript, environ):
-    commands.process(transcript.hook_input(), environ, wait=0)
+
+def run(transcript, environ, turn_ended=True):
+    commands.process(transcript.hook_input(), environ, wait=0, turn_ended=turn_ended)
 
 
 def finished_turn(transcript, text="What is 2 + 2?", answer="4"):
@@ -17,9 +19,20 @@ def finished_turn(transcript, text="What is 2 + 2?", answer="4"):
     return prompt
 
 
-def pending(environ, session_id="session-1"):
-    state = json.loads((Path(environ["CLAUDE_PLUGIN_DATA"]) / "state" / f"{session_id}.json").read_text(encoding="utf-8"))
-    return [item["trace_uuid"] for item in state["pending"]]
+def root(environ):
+    return storage.data_dir(environ)
+
+
+def kept(environ, session_id="session-1"):
+    return pending.traces(root(environ), session_id)
+
+
+def stamps(environ, session_id="session-1"):
+    return [item for item in pending.lines(root(environ), session_id) if "finished" in item]
+
+
+def status(environ):
+    return json.loads((root(environ) / "status.json").read_text(encoding="utf-8"))
 
 
 def test_keeps_emets_id_of_each_finished_turn_in_order(transcript, environ, emet):
@@ -28,24 +41,27 @@ def test_keeps_emets_id_of_each_finished_turn_in_order(transcript, environ, emet
     second = finished_turn(transcript, "And 3 + 3?", "6")
     run(transcript, environ)
     run(transcript, environ)
-    assert pending(environ) == [emet.trace_uuids[first["uuid"]], emet.trace_uuids[second["uuid"]]]
+    assert kept(environ) == [emet.trace_uuids[first["uuid"]], emet.trace_uuids[second["uuid"]]]
 
 
-def test_a_trace_that_gets_more_spans_later_is_kept_once(transcript, environ, emet):
+def test_a_trace_that_gets_more_spans_later_is_written_once(transcript, environ, emet):
     prompt = finished_turn(transcript)
     run(transcript, environ)
     transcript.text("msg_late", "one more thing")
     run(transcript, environ)
     assert len(emet.envelopes) == 2
-    assert pending(environ) == [emet.trace_uuids[prompt["uuid"]]]
+    written = [item["trace_uuid"] for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert written == [emet.trace_uuids[prompt["uuid"]]]
 
 
-def test_a_reply_that_names_no_trace_keeps_nothing(transcript, environ, emet):
+def test_a_reply_that_names_no_trace_keeps_nothing_and_still_counts_as_delivered(transcript, environ, emet):
     emet.names_trace = False
     finished_turn(transcript)
     run(transcript, environ)
+    run(transcript, environ)
     assert len(emet.envelopes) == 1
-    assert pending(environ) == []
+    assert status(environ)["queued"] == 0
+    assert kept(environ) == []
 
 
 def test_a_turn_emet_did_not_accept_is_not_kept(transcript, environ, emet):
@@ -54,64 +70,124 @@ def test_a_turn_emet_did_not_accept_is_not_kept(transcript, environ, emet):
     run(transcript, environ)
     assert len(emet.envelopes) == 1
     assert not emet.conversations
-    assert pending(environ) == []
+    assert kept(environ) == []
+
+
+def test_a_turn_sent_in_batches_is_kept_once_its_last_batch_is_accepted(transcript, environ, emet, monkeypatch):
+    monkeypatch.setattr(envelope, "MAX_SPANS_PER_BATCH", 1)
+    emet.statuses = [202, 400]
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert [item["end"] for item in emet.envelopes] == [False, True]
+    assert kept(environ) == []
+    prompt = finished_turn(transcript, "And 3 + 3?", "6")
+    run(transcript, environ)
+    assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
 
 
 def test_a_queued_turn_is_kept_when_its_session_retries_it(transcript, environ, emet):
     emet.statuses = [503]
     prompt = finished_turn(transcript)
     run(transcript, environ)
-    assert pending(environ) == []
+    assert kept(environ) == []
     run(transcript, environ)
-    assert pending(environ) == [emet.trace_uuids[prompt["uuid"]]]
+    assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
 
 
-def test_another_sessions_retried_turn_is_not_kept_here(tmp_path, environ, emet):
+def test_a_queued_turn_another_session_delivers_is_kept_for_its_own_session(tmp_path, environ, emet):
     queued, current = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
     emet.statuses = [503]
-    finished_turn(queued)
+    late = finished_turn(queued)
     run(queued, environ)
     # This session's worker flushes the shared queue first, then sends its own turn
     prompt = finished_turn(current)
     run(current, environ)
     assert len(emet.envelopes) == 3
-    assert pending(environ, "session-1") == [emet.trace_uuids[prompt["uuid"]]]
-    assert pending(environ, "session-0") == []
+    assert kept(environ, "session-1") == [emet.trace_uuids[prompt["uuid"]]]
+    assert kept(environ, "session-0") == [emet.trace_uuids[late["uuid"]]]
 
 
-def accepted(session_id="session-1", trace_uuid="0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11", ended=True):
-    return transport.Accepted(session_id, "", transport.Outcome(202, True, True, "", "", trace_uuid), ended)
+def test_a_retried_turn_is_kept_even_when_the_rest_of_the_run_fails(transcript, environ, emet, monkeypatch):
+    emet.statuses = [503]
+    prompt = finished_turn(transcript)
+    run(transcript, environ)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("unreadable transcript")
+
+    monkeypatch.setattr(commands.transcript, "read_entries", broken)
+    with pytest.raises(RuntimeError):
+        run(transcript, environ)
+    assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
+    assert len(stamps(environ)) == 2
+
+
+def test_a_run_after_a_finished_turn_stamps_its_end(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ, turn_ended=False)
+    assert stamps(environ) == []
+    run(transcript, environ)
+    lines = pending.lines(root(environ), "session-1")
+    assert [sorted(item) for item in lines] == [["at", "trace_uuid"], ["finished"]]
+    assert all(isinstance(value, str) and value for item in lines for value in item.values())
+
+
+def test_the_list_is_not_in_the_session_state(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ)
+    state = json.loads((root(environ) / "state" / "session-1.json").read_text(encoding="utf-8"))
+    assert "pending" not in state
 
 
 @pytest.mark.parametrize(("end", "ended"), [(True, True), (False, False), (None, False), ("true", False)])
-def test_only_the_last_batch_of_a_turn_counts_as_ended(tmp_path, end, ended):
-    sender = transport.Sender(tmp_path, None)
-    envelope = {"conversation_id": "session-1", "end": end}
-    sender.record(envelope, transport.Outcome(202, True, True, "", "", "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"))
-    assert sender.accepted[-1].ended is ended
+def test_only_a_batch_that_ends_its_turn_is_kept(environ, end, ended):
+    sender = transport.Sender(root(environ), None)
+    sender.record({"conversation_id": "session-1", "end": end}, transport.Outcome(202, True, True, "", "", TRACE))
+    assert kept(environ) == ([TRACE] if ended else [])
 
 
-def test_a_batch_that_does_not_end_its_turn_is_not_kept():
-    state = {}
-    commands.note_pending(state, "session-1", [accepted(ended=False)])
-    assert state["pending"] == []
+def test_readable_lines_survive_damaged_ones(environ):
+    path = pending.path(root(environ), "session-1")
+    good = json.dumps({"trace_uuid": TRACE, "at": "t"})
+    damaged = [
+        "1",
+        '"x"',
+        "[]",
+        '{"at": "t"}',
+        '{"trace_uuid": ["x"]}',
+        '{"trace_uuid": ""}',
+        '{"trace_uuid": "../../keys"}',
+        "[" * 100_000,
+    ]
+    path.write_text(
+        "\n".join(
+            [good, *damaged, '{"trace_uuid": "0f0e6c6e'],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    newer = "00000000-0000-4000-8000-000000000001"
+    pending.note(root(environ), "session-1", newer)
+    assert kept(environ) == [TRACE, newer]
 
 
-def test_the_list_keeps_the_newest_turns():
-    state = {}
-    many = [accepted(trace_uuid=f"00000000-0000-4000-8000-{index:012d}") for index in range(commands.MAX_PENDING + 3)]
-    commands.note_pending(state, "session-1", many)
-    kept = [item["trace_uuid"] for item in state["pending"]]
-    assert len(kept) == commands.MAX_PENDING
-    assert kept[-1] == many[-1].outcome.trace_uuid
-    assert many[0].outcome.trace_uuid not in kept
+@pytest.mark.parametrize("session_id", ["", "..", "../session-1", "a/b", "a\\b", "x" * 101])
+def test_a_session_id_that_is_not_a_plain_name_writes_nothing(environ, session_id):
+    before = sorted(root(environ).parent.rglob("*"))
+    pending.note(root(environ), session_id, TRACE)
+    assert sorted(root(environ).parent.rglob("*")) == before
 
 
-@pytest.mark.parametrize("damaged", [None, "x", {"a": 1}, [1, "x", {"at": "now"}], [{"trace_uuid": ["x"]}], [{"trace_uuid": ""}]])
-def test_a_damaged_list_is_replaced(damaged):
-    state = {"pending": damaged}
-    commands.note_pending(state, "session-1", [accepted()])
-    assert [item["trace_uuid"] for item in state["pending"]] == ["0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"]
+def test_a_folder_that_cannot_be_written_never_stops_a_send(tmp_path):
+    sender = transport.Sender(tmp_path / "missing", None)
+    sender.record({"conversation_id": "session-1", "end": True}, transport.Outcome(202, True, True, "", "", TRACE))
+    assert len(sender.accepted) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+def test_the_file_is_private(environ):
+    pending.note(root(environ), "session-1", TRACE)
+    assert pending.path(root(environ), "session-1").stat().st_mode & 0o077 == 0
 
 
 @pytest.mark.parametrize("body", [b"", b"[]", b"null", b'"x"', b'{"trace": null}', b'{"trace": {}}', b"\xff\xfe", b'{"trace": "nope"}'])
@@ -121,7 +197,7 @@ def test_a_reply_without_a_valid_trace_gives_no_id(body):
 
 def test_the_trace_id_is_normalized():
     raw = "0F0E6C6E4A8E4D479B4C3C9F2F1D8A11"
-    assert transport.accepted_trace(json.dumps({"trace": raw}).encode()) == "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
+    assert transport.accepted_trace(json.dumps({"trace": raw}).encode()) == TRACE
 
 
 def test_a_deeply_nested_reply_gives_no_trace():
