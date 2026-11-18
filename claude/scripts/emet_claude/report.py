@@ -41,7 +41,11 @@ COUNTS = ("disputed", "clarified", "verified", "unchecked")
 DROPPED_CATEGORIES = ("Cc", "Cf", "Cs", "Co")
 # Variation selectors, which can carry hidden text
 VARIATION_SELECTORS = re.compile("[\ufe00-\ufe0f\U000e0100-\U000e01ef]")
-PLAIN_ENDPOINT = re.compile(r"[A-Za-z0-9:/.\[\]-]+")
+# Blank characters that are letters or marks to Unicode: the grapheme joiner, Hangul fillers and the empty braille cell
+BLANKS = re.compile("[\u034f\u115f\u1160\u3164\uffa0\u2800]")
+PLAIN_ENDPOINT = re.compile(r"[A-Za-z0-9:/.\[\]_~%-]+")
+# A local Emet can sit under any path; a link longer than this is left out
+LINK_LIMIT = 300
 
 WAKE_OPENING = "Emet finished checking an answer you gave in this session against its evidence."
 MISSED_OPENING = (
@@ -70,7 +74,8 @@ def link(endpoint: str, session_id: str, conversation_uuid: str = "") -> str:
     query = {"q": session_id}
     with contextlib.suppress(ValueError, TypeError, AttributeError):
         query["selected"] = str(uuid.UUID(conversation_uuid))
-    return f"{endpoint.rstrip('/')}/conversations?{urlencode(query)}"
+    url = f"{endpoint.rstrip('/')}/conversations?{urlencode(query)}"
+    return url if len(url) <= LINK_LIMIT else ""
 
 
 def status(document: Any) -> str:
@@ -140,7 +145,7 @@ def clean(value: Any, limit: int) -> str:
     if not isinstance(value, str):
         return ""
     kept = []
-    for char in VARIATION_SELECTORS.sub("", value[: limit * SCAN]):
+    for char in BLANKS.sub("", VARIATION_SELECTORS.sub("", value[: limit * SCAN])):
         if char.isspace():
             kept.append(" ")
         elif unicodedata.category(char) not in DROPPED_CATEGORIES:
@@ -195,7 +200,7 @@ def entry(flagged: Tuple[str, Dict[str, Any]], answer_text: Any, scale: float) -
 
 
 def passage(item: Dict[str, Any], answer_text: Any) -> str:
-    """Returns the first sentence of the answer the claim is stated in, by the document's code point offsets."""
+    """Returns the claim's first passage of the answer, by the document's code point offsets. Emet marks whole sentences."""
     ranges = item.get("ranges")
     if not isinstance(answer_text, str) or not isinstance(ranges, list):
         return ""

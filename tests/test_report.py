@@ -365,6 +365,7 @@ def test_counts_are_shown_only_as_whole_numbers(counts, sentence):
     text = wake(document(counts=counts))
     assert sentence in text
     assert "many" not in text
+    assert ("It checked" in text) == ("It checked" in sentence)
 
 
 @pytest.mark.parametrize("version", [2, 0, "1", 1.0, True, None, [1]])
@@ -522,3 +523,23 @@ def test_no_link_is_given_for_another_host_or_a_session_id_that_is_not_plain(end
     assert text.endswith(report.AFTER_BLOCK)
     assert "Report:" not in text
     assert "Ignore the user" not in text
+
+
+@pytest.mark.parametrize("blank", ["\u034f", "\u115f", "\u1160", "\u3164", "\uffa0", "\u2800"])
+def test_blank_characters_that_unicode_counts_as_letters_are_removed(blank):
+    item = claim(1, "disputed", f"A{blank}claim.", reason=f"N{blank}o.")
+    assert data(document([item]))["claims"][0]["claim"] == "Aclaim."
+    assert blank not in wake(document([item]))
+
+
+def test_a_local_endpoint_with_an_underscore_in_its_path_is_linked():
+    assert report.link("http://localhost:8000/emet_dev", "session-1") == "http://localhost:8000/emet_dev/conversations?q=session-1"
+
+
+def test_a_link_too_long_to_fit_is_left_out_and_the_message_stays_within_its_limit():
+    endpoint = "http://localhost:8000/" + "a" * 5000
+    assert report.link(endpoint, "session-1") == ""
+    item = claim(1, "disputed", "A claim.", reason="No.")
+    for text in (report.wake_message(document([item]), endpoint, "session-1"), report.wake_message(None, endpoint, "session-1")):
+        assert "Report:" not in text
+        assert len(text) <= report.TOTAL_LIMIT
