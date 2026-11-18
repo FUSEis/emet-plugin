@@ -9,6 +9,16 @@ All notable changes to this project are documented here. The format follows [Kee
 - The plugin has an icon, `claude/.claude-plugin/icon.png`, the Emet logomark, for its listing in Anthropic's plugin directory.
 - `docs/contact.md` explains how to buy Emet before installing, and both READMEs link it ahead of the install steps.
 
+### Changed
+
+- Times in the session file are read as instants, not compared as text. Today's sessions are sent exactly as before. If Claude Code ever writes a different form (another number of fraction digits, or a numeric offset in place of `Z`), spans keep the right order and length, and every time still reaches Emet in one form: UTC with milliseconds and `Z`. A time with no time zone is treated as unreadable, and an entry with no readable time takes the time of the entry before it.
+
+### Fixed
+
+- A turn that cannot be read no longer stops the session from being sent. Before, a turn with no usable time raised an error on every run, the session's progress was never saved, and nothing after that turn was sent. Such a turn is now skipped, written to the log as `turn skipped`, and counted by `/emet:status`; everything after it is sent. The same holds for any other error while building a turn.
+- A time that Emet would refuse, such as an empty one, is no longer sent. Emet answered `400` and the whole batch was dropped.
+- A turn whose first entry has no id is sent under an id made from its place in the session file. Before, every such turn of a session was sent under the id `None` and would have merged into one trace.
+
 ## [0.1.3] - 2026-10-23
 
 ### Added

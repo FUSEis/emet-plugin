@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from . import VERSION, content, transcript
+from . import VERSION, content, timestamps, transcript
 from .config import Config
 from .spans import Builder, Built
 
@@ -105,21 +105,27 @@ def for_turn(
     turn: List[Tuple[int, transcript.Entry]],
     cwd: str,
 ) -> Tuple[str, List[Dict[str, Any]], Built]:
-    """Returns the trace id, envelopes and built spans (for the subagents to track) of one turn."""
+    """Returns the trace id, envelopes and built spans (for the subagents to track) of one turn.
+
+    Raises timestamps.Unreadable for a turn with no time that can be read."""
     first = turn[0][1]
-    trace_id = str(first.get("uuid"))
+    times = timestamps.of(entry for _, entry in turn)
+    if not times:
+        raise timestamps.Unreadable("no readable time")
+    uuid = first.get("uuid")
+    # Without an id every such turn of a session would land on one trace; the place in the file never changes
+    trace_id = uuid if isinstance(uuid, str) and uuid else f"turn-at-{turn[0][0]}"
     capture = builder.capture
     text = transcript.prompt_text(first)
     built = Built()
     opening = builder.message("user", text, transcript.has_binary(first))
-    timestamps = [str(entry["timestamp"]) for _, entry in turn if entry.get("timestamp")]
-    builder.thread(turn[1:], "turn", opening, built, main=True, since=str(first.get("timestamp") or ""))
+    builder.thread(turn[1:], "turn", opening, built, main=True, since=timestamps.parse(first.get("timestamp")) or times[0])
     root: Dict[str, Any] = {
         "span_id": "turn",
         "name": "claude_code.turn",
         "kind": "turn",
-        "started_at": timestamps[0],
-        "ended_at": max(timestamps),
+        "started_at": timestamps.text(times[0]),
+        "ended_at": timestamps.text(max(times)),
         "attributes": {
             "claude_code.prompt_source": str(first.get("promptSource") or ("compaction" if first.get("isCompactSummary") else ""))
         },

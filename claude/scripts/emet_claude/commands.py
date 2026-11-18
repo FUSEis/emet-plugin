@@ -9,8 +9,9 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar
 from urllib.parse import urlencode
 
 from . import VERSION, envelope, pending, storage, transcript, transport
@@ -26,6 +27,7 @@ HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
 TURN_END_MODES = ("stop", "session-end")
 # Deliveries listed by /emet:status
 RECENT_DELIVERIES = 5
+Made = TypeVar("Made")
 
 
 def entry_script() -> str:
@@ -112,7 +114,9 @@ def status_path(root: Path) -> Path:
     return root / "status.json"
 
 
-def update_status(root: Path, config: Config, accepted: Sequence[transport.Accepted] = (), **fields: Any) -> None:
+def update_status(
+    root: Path, config: Config, accepted: Sequence[transport.Accepted] = (), skipped: Sequence[str] = (), **fields: Any
+) -> None:
     """Records what the setup and status skills report. Never holds the key or any session content.
 
     Only this run's deliveries change the links, so a run that sent nothing never hides a newer one.
@@ -149,6 +153,10 @@ def update_status(root: Path, config: Config, accepted: Sequence[transport.Accep
             recent = remember(recent, delivery)
             status["last_delivery"] = recent[0]
         status["recent"] = recent
+        if skipped:
+            earlier = status.get("skipped_turns")
+            status["skipped_turns"] = (earlier if isinstance(earlier, int) else 0) + len(skipped)
+            status["last_skipped"] = {"at": storage.now(), "reason": skipped[-1]}
         storage.write_json(status_path(root), status)
 
 
@@ -211,6 +219,16 @@ def process(
         sender = transport.Sender(root, config)
         sender.flush()
         builder = Builder(path, Capture(config.capture_mode, secrets=(config.emet_key,)))
+        skipped: List[str] = []
+
+        def attempt(build: Callable[[], Made]) -> Optional[Made]:
+            """Builds one turn or addition. One that cannot be built is recorded and left out, so the rest is still sent."""
+            try:
+                return build()
+            except Exception as error:  # noqa: BLE001 - the transcript format is not a contract
+                skipped.append(type(error).__name__)
+                storage.log(root, f"turn skipped {type(error).__name__}")
+                return None
 
         entries, end = transcript.read_entries(path, int(state.get("offset") or 0))
         head, turns = transcript.split_turns(entries)
@@ -222,14 +240,20 @@ def process(
 
         known = set((state.get("agents") or {}).keys())
         if head and state.get("last_trace"):
-            envelopes, built = envelope.for_tail(config, builder, session_id, state["last_trace"], head, "turn", cwd)
-            sender.send(envelopes)
-            track(state, state["last_trace"], built)
+            tail = attempt(partial(envelope.for_tail, config, builder, session_id, state["last_trace"], head, "turn", cwd))
+            if tail is not None:
+                sender.send(tail[0])
+                track(state, state["last_trace"], tail[1])
         for turn in turns:
             # Slash commands and local shell escapes look like prompts but no model call answers them
             if not transcript.answered(turn):
                 continue
-            trace_id, envelopes, built = envelope.for_turn(config, builder, session_id, turn, cwd)
+            made = attempt(partial(envelope.for_turn, config, builder, session_id, turn, cwd))
+            if made is None:
+                # Whatever is added to this turn later must not join the turn before it
+                state["last_trace"] = ""
+                continue
+            trace_id, envelopes, built = made
             sender.send(envelopes)
             state["last_trace"] = trace_id
             track(state, trace_id, built)
@@ -241,14 +265,17 @@ def process(
                 continue
             items, agent_end = transcript.read_entries(agent_path, int(agent.get("offset") or 0), sidechain=True)
             if items:
-                envelopes, built = envelope.for_tail(config, builder, session_id, agent["trace_id"], items, agent["parent_span_id"], cwd)
-                sender.send(envelopes)
-                track(state, agent["trace_id"], built)
+                late = attempt(
+                    partial(envelope.for_tail, config, builder, session_id, agent["trace_id"], items, agent["parent_span_id"], cwd)
+                )
+                if late is not None:
+                    sender.send(late[0])
+                    track(state, agent["trace_id"], late[1])
             agent["offset"] = agent_end
 
         state["offset"] = offset
         storage.write_json(state_file, state)
-        update_status(root, config, sender.accepted, **last_error(sender))
+        update_status(root, config, sender.accepted, skipped, **last_error(sender))
 
 
 def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -> None:
