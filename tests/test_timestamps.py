@@ -251,3 +251,113 @@ def test_a_subagent_whose_first_entry_has_no_time_starts_with_the_call_that_laun
     run(transcript, environ)
     spans = {span["span_id"]: span for span in emet.envelopes[0]["spans"]}
     assert times(spans["agent.s1"]) == times(spans["model.msg_s1"]) == (call["timestamp"], found["timestamp"])
+
+
+def test_an_entry_with_no_time_takes_the_time_before_it_not_the_first_of_the_turn(transcript, environ, emet):
+    transcript.prompt("What is 2 + 2?", timestamp="2026-10-20T10:00:01.000Z")
+    transcript.assistant("msg_1", [{"type": "text", "text": "a"}], timestamp="2026-10-20T10:00:05.000Z")
+    transcript.assistant("msg_2", [{"type": "text", "text": "b"}], timestamp="2026-10-20T10:00:07.000Z")
+    transcript.assistant("msg_3", [{"type": "text", "text": "c"}], timestamp="")
+    transcript.text("msg_4", "d", timestamp="2026-10-20T10:00:09.000Z")
+    run(transcript, environ)
+    spans = {span["span_id"]: span for span in emet.envelopes[0]["spans"]}
+    assert times(spans["model.msg_3"]) == ("2026-10-20T10:00:07.000Z", "2026-10-20T10:00:07.000Z")
+    assert times(spans["model.msg_4"]) == ("2026-10-20T10:00:07.000Z", "2026-10-20T10:00:09.000Z")
+
+
+def test_no_span_ends_before_it_starts_when_the_clock_steps_back(transcript, environ, emet):
+    transcript.prompt("go", timestamp="2026-10-20T10:00:10.000Z")
+    transcript.tool_use("msg_1", "toolu_1", "Bash", {"command": "ls"}, timestamp="2026-10-20T10:00:20.000Z")
+    transcript.tool_result("toolu_1", "ok", timestamp="2026-10-20T10:00:15.000Z")
+    transcript.text("msg_2", "done", timestamp="2026-10-20T10:00:12.000Z")
+    run(transcript, environ)
+    spans = {span["span_id"]: span for span in emet.envelopes[0]["spans"]}
+    assert times(spans["turn"]) == ("2026-10-20T10:00:10.000Z", "2026-10-20T10:00:20.000Z")
+    assert times(spans["tool.toolu_1"]) == ("2026-10-20T10:00:20.000Z", "2026-10-20T10:00:20.000Z")
+    assert times(spans["model.msg_2"]) == ("2026-10-20T10:00:15.000Z", "2026-10-20T10:00:15.000Z")
+
+
+def test_a_subagent_does_not_end_before_it_starts_when_its_clock_steps_back(transcript, environ, emet):
+    transcript.prompt("research it", timestamp="2026-10-20T10:00:01.000Z")
+    transcript.tool_use("msg_1", "toolu_agent", "Agent", {"prompt": "dig"}, timestamp="2026-10-20T10:00:02.000Z")
+    path = transcript.subagent("s1", "toolu_agent")
+    opening = {"type": "user", "isSidechain": True, "message": {"role": "user", "content": "dig"}}
+    transcript.write(dict(opening, timestamp="2026-10-20T10:00:09.000Z"), path)
+    transcript.text("msg_s1", "found it", path=path, isSidechain=True, timestamp="2026-10-20T10:00:04.000Z")
+    transcript.tool_result("toolu_agent", "found it", timestamp="2026-10-20T10:00:10.000Z")
+    transcript.text("msg_2", "Here it is.", timestamp="2026-10-20T10:00:11.000Z")
+    run(transcript, environ)
+    spans = {span["span_id"]: span for span in emet.envelopes[0]["spans"]}
+    assert times(spans["agent.s1"]) == ("2026-10-20T10:00:09.000Z", "2026-10-20T10:00:09.000Z")
+
+
+def test_skips_add_up_within_a_run_and_across_runs(transcript, environ, emet, monkeypatch):
+    broken = turn(transcript)
+    transcript.prompt("And 3 + 3?", timestamp="")
+    transcript.text("msg_a", "6", timestamp="")
+    real = envelope.for_turn
+
+    def for_turn(config, builder, session_id, entries, cwd):
+        if entries[0][1]["uuid"] == broken["uuid"]:
+            raise KeyError("a field Claude Code no longer writes")
+        return real(config, builder, session_id, entries, cwd)
+
+    monkeypatch.setattr(envelope, "for_turn", for_turn)
+    run(transcript, environ)
+    assert status(environ)["skipped_turns"] == 2
+    assert status(environ)["last_skipped"]["reason"] == "Unreadable"
+    turn(transcript, "And 4 + 4?", "8", uuid=broken["uuid"])
+    run(transcript, environ)
+    assert status(environ)["skipped_turns"] == 3
+    assert status(environ)["last_skipped"]["reason"] == "KeyError"
+
+
+def test_a_line_nested_too_deep_to_read_is_passed_over(transcript, environ, emet):
+    first = turn(transcript)
+    with open(transcript.path, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write("[" * 100_000 + "\n")
+    second = turn(transcript, "And 3 + 3?", "6")
+    run(transcript, environ)
+    assert [item["trace_id"] for item in emet.envelopes] == [first["uuid"], second["uuid"]]
+    assert "worker error" not in log(environ)
+
+
+def test_a_subagent_file_that_cannot_be_read_costs_the_subagent_not_the_turn(transcript, environ, emet, monkeypatch):
+    prompt = transcript.prompt("research it")
+    transcript.tool_use("msg_1", "toolu_agent", "Agent", {"prompt": "dig"})
+    path = transcript.subagent("s1", "toolu_agent")
+    transcript.text("msg_s1", "found it", path=path, isSidechain=True)
+    transcript.tool_result("toolu_agent", "found it")
+    transcript.text("msg_2", "Here it is.")
+    real = commands.transcript.read_entries
+
+    def read_entries(target, offset, sidechain=False):
+        if sidechain:
+            raise PermissionError("locked")
+        return real(target, offset, sidechain)
+
+    monkeypatch.setattr(commands.transcript, "read_entries", read_entries)
+    run(transcript, environ)
+    assert [item["trace_id"] for item in emet.envelopes] == [prompt["uuid"]]
+    assert {span["span_id"] for span in emet.envelopes[0]["spans"]} == {"turn", "model.msg_1", "tool.toolu_agent", "model.msg_2"}
+    assert "skipped_turns" not in status(environ)
+
+
+def test_a_saved_tool_output_that_cannot_be_read_falls_back_to_the_result_in_the_transcript(transcript, environ, emet, monkeypatch):
+    saved = transcript.saved_output("out.txt", "the full output")
+    transcript.prompt("go")
+    transcript.tool_use("msg_1", "toolu_1", "Bash", {"command": "ls"})
+    transcript.tool_result("toolu_1", "short", tool_use_result={"persistedOutputPath": str(saved)})
+    transcript.text("msg_2", "done")
+    real = open
+
+    def locked(target, *args, **kwargs):
+        if str(target) == str(saved.resolve()):
+            raise PermissionError("locked")
+        return real(target, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", locked)
+    run(transcript, environ)
+    tool = next(span for span in emet.envelopes[0]["spans"] if span["kind"] == "tool")
+    assert tool["payload"]["result"] == "short"
+    assert "skipped_turns" not in status(environ)

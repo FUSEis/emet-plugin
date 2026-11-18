@@ -16,6 +16,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - A turn that cannot be read no longer stops the session from being sent. Before, a turn with no usable time raised an error on every run, the session's progress was never saved, and nothing after that turn was sent. Such a turn is now skipped, written to the log as `turn skipped`, and counted by `/emet:status`; everything after it is sent. The same holds for any other error while building a turn.
+- A line of the session file nested too deep to read is passed over like any other unreadable line. Before, it raised an error on every run and stopped the session from being sent. A saved tool output or a subagent file that cannot be opened no longer costs the whole turn: the turn is sent with the result the session file holds, or without that subagent.
 - A time that Emet would refuse, such as an empty one, is no longer sent. Emet answered `400` and the whole batch was dropped.
 - A turn whose first entry has no id is sent under an id made from its place in the session file. Before, every such turn of a session was sent under the id `None` and would have merged into one trace.
 
