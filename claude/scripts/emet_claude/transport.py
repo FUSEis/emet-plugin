@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
-from . import VERSION, storage
+from . import VERSION, pending, storage
 from .config import Config
 from .envelope import REPOSITORY_ATTRIBUTE
 
@@ -46,6 +46,8 @@ class Outcome:
     detail: str
     # Emet's public id of the conversation an accepted batch landed on, not the session id
     conversation_uuid: str = ""
+    # Emet's public id of the trace, which its report is read by
+    trace_uuid: str = ""
 
 
 def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
@@ -66,7 +68,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
             reply = b""
             with contextlib.suppress(OSError, http.client.HTTPException):
                 reply = response.read(MAX_REPLY_BYTES)
-            return Outcome(response.status, True, True, "", accepted_conversation(reply))
+            return Outcome(response.status, True, True, "", accepted_conversation(reply), accepted_trace(reply))
     except urllib.error.HTTPError as error:
         body = error.read(500).decode("utf-8", "replace")
         final = error.code < 500 and error.code not in RETRYABLE
@@ -75,13 +77,21 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
         return Outcome(0, False, False, type(error).__name__)
 
 
-def accepted_conversation(body: bytes) -> str:
-    """Returns the conversation uuid from Emet's 202 body, or "" when it has none."""
+def accepted_uuid(body: bytes, field: str) -> str:
+    """Returns the uuid Emet's 202 body gives under field, or "" when it has none."""
     try:
         accepted = json.loads(body)
-        return str(uuid.UUID(str(accepted["conversation"])))
+        return str(uuid.UUID(str(accepted[field])))
     except (ValueError, TypeError, KeyError, RecursionError):
         return ""
+
+
+def accepted_conversation(body: bytes) -> str:
+    return accepted_uuid(body, "conversation")
+
+
+def accepted_trace(body: bytes) -> str:
+    return accepted_uuid(body, "trace")
 
 
 def queued(root: Path) -> List[Path]:
@@ -149,7 +159,11 @@ class Sender:
         if outcome.delivered:
             resource = envelope.get("resource")
             repository = str(resource.get(REPOSITORY_ATTRIBUTE) or "")[:REPOSITORY_MAX] if isinstance(resource, dict) else ""
-            self.accepted.append(Accepted(str(envelope.get("conversation_id") or ""), repository, outcome))
+            session_id = str(envelope.get("conversation_id") or "")
+            self.accepted.append(Accepted(session_id, repository, outcome))
+            # Kept at once and for the envelope's own session: a queued turn can be delivered by another session's worker
+            if envelope.get("end") is True and outcome.trace_uuid:
+                pending.note(self.root, session_id, outcome.trace_uuid, str(getattr(self.config, "endpoint", "")))
         else:
             self.failures.append(outcome)
 

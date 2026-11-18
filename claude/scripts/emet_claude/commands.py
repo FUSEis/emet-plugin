@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlencode
 
-from . import VERSION, envelope, storage, transcript, transport
+from . import VERSION, envelope, pending, storage, transcript, transport
 from .config import FROM_CLAUDE_ACCOUNT, Config, load
 from .spans import Builder, Capture
 
@@ -203,7 +203,7 @@ def process(
         return
     if wait:
         time.sleep(wait)
-    with storage.locked(root / "state" / f"{session_id}.lock"):
+    with storage.locked(root / "state" / f"{session_id}.lock"), pending.finishing(root, session_id, turn_ended):
         state_file = root / "state" / f"{session_id}.json"
         state = storage.read_json(state_file, {})
         if not isinstance(state, dict):
