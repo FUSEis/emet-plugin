@@ -40,7 +40,7 @@ COUNTS = ("disputed", "clarified", "verified", "unchecked")
 # Control, format (bidirectional overrides, zero width, tags), surrogate and private use characters
 DROPPED_CATEGORIES = ("Cc", "Cf", "Cs", "Co")
 # Variation selectors, which can carry hidden text
-VARIATION_SELECTORS = re.compile("[︀-️\U000e0100-\U000e01ef]")
+VARIATION_SELECTORS = re.compile("[\ufe00-\ufe0f\U000e0100-\U000e01ef]")
 PLAIN_ENDPOINT = re.compile(r"[A-Za-z0-9:/.\[\]-]+")
 
 WAKE_OPENING = "Emet finished checking an answer you gave in this session against its evidence."
