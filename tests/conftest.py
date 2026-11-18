@@ -9,7 +9,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from helpers import FakeEmet, Transcript
+from emet_claude import pause
+from helpers import Clock, FakeEmet, Transcript
 
 API_KEY = "Abcd1234.ZyxwVuts98765432QwertyUiop123456"
 
@@ -19,6 +20,15 @@ def emet() -> Iterator[FakeEmet]:
     server = FakeEmet()
     yield server
     server.close()
+
+
+@pytest.fixture(autouse=True)
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    """The pause reads this clock in every test. Advance it past a pause to let the next run send."""
+    fake = Clock()
+    monkeypatch.setattr(pause, "clock", lambda: fake.now)
+    monkeypatch.setattr(pause, "spread", lambda: fake.spread)
+    return fake
 
 
 @pytest.fixture

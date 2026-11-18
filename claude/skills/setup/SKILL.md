@@ -61,7 +61,7 @@ In an organization that manages Claude Code centrally, an administrator may have
      - If their organization manages Claude Code, the key comes from their administrator: ask the user to restart Claude Code, which picks up a key the administrator has replaced. If it is still rejected, they ask their administrator for the current key. A key they saved themselves takes precedence over the administrator's and cannot be cleared, so if they saved one, they enter the current team key with step 2.
      - Otherwise ask the user to enter it again with step 2, checking for a missing or extra character. If it is still rejected, someone who manages keys in their Emet organization issues a new one.
    - `unreachable`: Claude Code could not reach Emet. Check the network or a proxy.
-   - Not there yet: the check runs in the background when a session starts. Wait a few seconds and read `status.json` again.
+   - Not there yet: the check runs in the background when a session starts or is resumed. Wait a few seconds and read `status.json` again. If `paused_until` is set and has not passed, Emet could not be reached and no check is made before then.
    - Anything else (for example `unexpected 500`): show it to the user and suggest `/emet:status`.
 4. If the user sets up Emet for other people too, point them to `docs/enterprise.md` in https://github.com/FUSEis/emet-plugin: an administrator can install and configure the plugin for everyone through managed settings, key included.
 

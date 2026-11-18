@@ -12,13 +12,16 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set
 
-from . import VERSION, pending, storage
+from . import VERSION, pause, pending, storage
 from .config import Config
 from .envelope import REPOSITORY_ATTRIBUTE
 
 TIMEOUT_S = 15
+KEY_CHECK_TIMEOUT_S = 5
+# No trace has this id, so a key Emet accepts reads Emet's own "not found" for it
+PLACEHOLDER_TRACE = "00000000-0000-4000-8000-000000000000"
 # Bounds the queue so an unreachable endpoint cannot fill the disk
 QUEUE_MAX_FILES = 500
 QUEUE_MAX_BYTES = 256 * 1024 * 1024
@@ -48,6 +51,8 @@ class Outcome:
     conversation_uuid: str = ""
     # Emet's public id of the trace, which its report is read by
     trace_uuid: str = ""
+    # Seconds Emet asked to wait in Retry-After, None when it named none
+    retry_after: Optional[float] = None
 
 
 def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
@@ -72,9 +77,56 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
     except urllib.error.HTTPError as error:
         body = error.read(500).decode("utf-8", "replace")
         final = error.code < 500 and error.code not in RETRYABLE
-        return Outcome(error.code, False, final, body)
+        return Outcome(error.code, False, final, body, retry_after=pause.named(error.headers.get("Retry-After")))
     except (urllib.error.URLError, OSError) as error:
         return Outcome(0, False, False, type(error).__name__)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, so the key is never sent on to another address."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def miss_code(body: bytes) -> str:
+    """Returns the code of Emet's JSON error body, or "" for any other body."""
+    try:
+        error = json.loads(body)
+    except (ValueError, RecursionError):
+        return ""
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else ""
+
+
+def check_key(config: Config) -> str:
+    """Asks Emet whether the key is accepted, by reading the report of a trace that does not exist. Tried once.
+
+    Only Emet's own "not found" counts as accepted: a server without the route also answers 404.
+    """
+    request = urllib.request.Request(
+        f"{config.endpoint}/api/v1/traces/{PLACEHOLDER_TRACE}/report/",
+        headers={
+            "Authorization": f"Bearer {config.emet_key}",
+            "Accept": "application/json",
+            "User-Agent": f"emet-claude-code/{VERSION}",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=KEY_CHECK_TIMEOUT_S) as response:
+            return f"unexpected {response.status}"
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            return "rejected"
+        body = b""
+        with contextlib.suppress(OSError, http.client.HTTPException):
+            body = error.read(MAX_REPLY_BYTES)
+        if error.code == 404 and miss_code(body) == "not_found":
+            return "accepted"
+        return f"unexpected {error.code}"
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        return "unreachable"
 
 
 def accepted_uuid(body: bytes, field: str) -> str:
@@ -145,7 +197,10 @@ def describe(outcome: Outcome) -> str:
 
 class Sender:
     """Sends envelopes in order. After a failure that may pass, everything after it waits in the queue,
-    so batches stay in order and one unreachable endpoint costs one timeout, not one per turn."""
+    so batches stay in order and one unreachable endpoint costs one timeout, not one per turn.
+
+    The failure also starts a pause every session shares. While it lasts nothing is requested.
+    """
 
     def __init__(self, root: Path, config: Config) -> None:
         self.root = root
@@ -154,6 +209,15 @@ class Sender:
         # Every envelope Emet accepted in this run, queued ones included
         self.accepted: List[Accepted] = []
         self.failures: List[Outcome] = []
+        # Traces Emet refused for good in this run. Nothing more is sent to them
+        self.refused: Set[str] = set()
+
+    def held(self) -> bool:
+        """Says whether requests wait, checking the shared pause until this run is blocked."""
+        if not self.blocked and pause.until(self.root):
+            self.blocked = True
+            storage.log(self.root, "paused, queued without sending")
+        return self.blocked
 
     def record(self, envelope: Dict[str, Any], outcome: Outcome) -> None:
         if outcome.delivered:
@@ -166,10 +230,20 @@ class Sender:
                 pending.note(self.root, session_id, outcome.trace_uuid, str(getattr(self.config, "endpoint", "")))
         else:
             self.failures.append(outcome)
+        if outcome.delivered or outcome.final:
+            # Emet answered, so it can be reached
+            pause.clear(self.root)
+            if not outcome.delivered:
+                self.refused.add(str(envelope.get("trace_id")))
+        else:
+            pause.extend(self.root, outcome.retry_after)
 
     def send(self, envelopes: List[Dict[str, Any]]) -> None:
         for envelope in envelopes:
-            if self.blocked:
+            if str(envelope["trace_id"]) in self.refused:
+                storage.log(self.root, f"trace {envelope['trace_id']} was refused, batch not sent")
+                continue
+            if self.held():
                 enqueue(self.root, envelope)
                 continue
             outcome = post(self.config, envelope)
@@ -189,8 +263,11 @@ class Sender:
         with storage.locked(self.root / "queue.lock"):
             files = queued(self.root)
             for index, path in enumerate(files):
+                # Read under the lock, so of the workers waiting on a pause only the first tries
+                if self.held():
+                    return len(files) - index
                 envelope = storage.read_json(path, None)
-                if not isinstance(envelope, dict):
+                if not isinstance(envelope, dict) or str(envelope.get("trace_id")) in self.refused:
                     remove(path)
                     continue
                 outcome = post(self.config, envelope)

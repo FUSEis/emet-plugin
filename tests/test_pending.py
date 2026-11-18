@@ -86,20 +86,22 @@ def test_a_turn_sent_in_batches_is_kept_once_its_last_batch_is_accepted(transcri
     assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
 
 
-def test_a_queued_turn_is_kept_when_its_session_retries_it(transcript, environ, emet):
+def test_a_queued_turn_is_kept_when_its_session_retries_it(transcript, environ, emet, clock):
     emet.statuses = [503]
     prompt = finished_turn(transcript)
     run(transcript, environ)
     assert kept(environ) == []
+    clock.advance(60)
     run(transcript, environ)
     assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
 
 
-def test_a_queued_turn_another_session_delivers_is_kept_for_its_own_session(tmp_path, environ, emet):
+def test_a_queued_turn_another_session_delivers_is_kept_for_its_own_session(tmp_path, environ, emet, clock):
     queued, current = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
     emet.statuses = [503]
     late = finished_turn(queued)
     run(queued, environ)
+    clock.advance(60)
     # This session's worker flushes the shared queue first, then sends its own turn
     prompt = finished_turn(current)
     run(current, environ)
@@ -108,10 +110,11 @@ def test_a_queued_turn_another_session_delivers_is_kept_for_its_own_session(tmp_
     assert kept(environ, "session-0") == [emet.trace_uuids[late["uuid"]]]
 
 
-def test_a_retried_turn_is_kept_even_when_the_rest_of_the_run_fails(transcript, environ, emet, monkeypatch):
+def test_a_retried_turn_is_kept_even_when_the_rest_of_the_run_fails(transcript, environ, emet, monkeypatch, clock):
     emet.statuses = [503]
     prompt = finished_turn(transcript)
     run(transcript, environ)
+    clock.advance(60)
 
     def broken(*args, **kwargs):
         raise RuntimeError("unreadable transcript")
@@ -135,11 +138,12 @@ def test_a_run_after_a_finished_turn_stamps_its_end(transcript, environ, emet):
     assert all(value for value in (lines[0]["at"], lines[1]["finished"]))
 
 
-def test_the_stamp_counts_what_is_still_queued(transcript, environ, emet):
+def test_the_stamp_counts_what_is_still_queued(transcript, environ, emet, clock):
     emet.statuses = [503]
     prompt = finished_turn(transcript)
     run(transcript, environ)
     assert [item["queued"] for item in stamps(environ)] == [1]
+    clock.advance(60)
     run(transcript, environ)
     assert [item["queued"] for item in stamps(environ)] == [1, 0]
     assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]

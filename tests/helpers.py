@@ -7,7 +7,10 @@ import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+# The body Emet answers a report read with when no trace has the id
+NOT_FOUND = json.dumps({"error": "No trace was found with this id.", "code": "not_found", "status_code": 404}).encode()
 
 
 class Transcript:
@@ -118,8 +121,19 @@ class Transcript:
         return {"session_id": self.session_id, "transcript_path": str(self.path), "cwd": "/work/acme-app", "hook_event_name": "Stop"}
 
 
+class Clock:
+    """Stands in for the time and the randomness of the pause, so no test waits or depends on chance."""
+
+    def __init__(self) -> None:
+        self.now = 1_800_000_000.0
+        self.spread = 1.0
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class FakeEmet:
-    """Records every request; answers with the next status in `statuses`, then 202."""
+    """Records every request; answers a send with the next status in `statuses`, then 202."""
 
     def __init__(self) -> None:
         self.requests: List[Dict[str, Any]] = []
@@ -133,6 +147,11 @@ class FakeEmet:
         self.names_trace = True
         # Span ids listed as missing content in each 202, as Emet does for a metadata-mode batch
         self.gaps: List[str] = []
+        # Sent as Retry-After with every send that is not accepted
+        self.retry_after: Optional[str] = None
+        # Report reads, kept apart from the sends; each is answered with the next (status, content type, body), then Emet's not found
+        self.reads: List[Dict[str, Any]] = []
+        self.read_replies: List[Tuple[int, str, bytes]] = []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -152,6 +171,19 @@ class FakeEmet:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(reply)))
+                if status != 202 and owner.retry_after is not None:
+                    self.send_header("Retry-After", owner.retry_after)
+                self.end_headers()
+                self.wfile.write(reply)
+
+            def do_GET(self) -> None:
+                owner.reads.append({"path": self.path, "headers": dict(self.headers)})
+                status, content_type, reply = owner.read_replies.pop(0) if owner.read_replies else (404, "application/json", NOT_FOUND)
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(reply)))
+                if status in (301, 302, 307, 308):
+                    self.send_header("Location", "/elsewhere/")
                 self.end_headers()
                 self.wfile.write(reply)
 

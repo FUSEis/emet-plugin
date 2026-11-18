@@ -111,6 +111,12 @@ def test_the_skills_name_the_person_sources_the_code_reports():
         assert f"`{FROM_CLAUDE_ACCOUNT}`" in text and f"`{FROM_SETTING}`" in text, skill
 
 
+def test_the_status_skill_explains_the_pause_and_the_log_lines_it_leaves():
+    text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
+    for named in ("`paused_until`", "`paused 30s`", "`paused, queued without sending`", "`worker start failed ...`"):
+        assert named in text, named
+
+
 def test_plugin_folder_is_self_contained():
     for name in ("README.md", "LICENSE"):
         assert (PLUGIN / name).is_file(), name
