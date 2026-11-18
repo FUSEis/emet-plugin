@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import content, transcript
+from . import content, timestamps, transcript
 from .transcript import Entry
 
 SPAN_ID_MAX = 64
@@ -110,18 +111,23 @@ class Builder:
         opening: Optional[Opening],
         built: Built,
         main: bool,
-        since: str = "",
+        since: Optional[datetime] = None,
     ) -> None:
         """Adds the model and tool spans of one thread of entries under parent_span_id. since is when the
-        thread's opening message was sent, which is when its first model call started."""
+        thread's opening message was sent, which is when its first model call started.
+
+        An entry with no readable time takes the time of the entry before it."""
         calls: List[Dict[str, Any]] = []
         by_id: Dict[str, Dict[str, Any]] = {}
         tool_calls: Dict[str, Dict[str, Any]] = {}
         pending: List[Dict[str, Any]] = []
-        previous_ts = since or (str(items[0][1].get("timestamp") or "") if items else "")
+        times = timestamps.of(entry for _, entry in items)
+        if since is None and not times:
+            raise timestamps.Unreadable("no readable time")
+        previous_ts = since or times[0]
 
         for _, entry in items:
-            timestamp = str(entry.get("timestamp") or previous_ts)
+            timestamp = timestamps.parse(entry.get("timestamp")) or previous_ts
             if entry.get("type") == "assistant":
                 message = entry.get("message") or {}
                 # One API response is split across entries that share message.id, each repeating the usage
@@ -130,7 +136,7 @@ class Builder:
                 if call is None:
                     call = {
                         "id": message_id,
-                        "started_at": previous_ts or timestamp,
+                        "started_at": previous_ts,
                         "ended_at": timestamp,
                         "model": message.get("model") or "",
                         "usage": message.get("usage") or {},
@@ -169,7 +175,7 @@ class Builder:
                     call_id = str(part.get("tool_use_id") or "")
                     # The model span names the result; its content lives once, in the tool span
                     pending.append({"role": "tool", "parts": [{"type": "tool_call_response", "id": call_id}]})
-                    tool = tool_calls.get(call_id, {"name": "", "input": None, "started_at": previous_ts or timestamp})
+                    tool = tool_calls.get(call_id, {"name": "", "input": None, "started_at": previous_ts})
                     built.spans.append(self.tool_span(entry, part, call_id, tool, timestamp, parent_span_id))
                     self.agent(call_id, tool, built)
             previous_ts = timestamp
@@ -190,7 +196,7 @@ class Builder:
         part: Dict[str, Any],
         call_id: str,
         tool: Dict[str, Any],
-        timestamp: str,
+        timestamp: datetime,
         parent_span_id: str,
     ) -> Dict[str, Any]:
         failed = bool(part.get("is_error"))
@@ -206,8 +212,8 @@ class Builder:
             "status": "error" if failed else "ok",
             "tool_name": tool["name"][:255],
             "tool_call_id": call_id[:255],
-            "started_at": tool["started_at"],
-            "ended_at": max(timestamp, tool["started_at"]),
+            "started_at": timestamps.text(tool["started_at"]),
+            "ended_at": timestamps.text(max(timestamp, tool["started_at"])),
             "attributes": {},
             "payload": {},
         }
@@ -235,8 +241,8 @@ class Builder:
             "name": f"chat {call['model']}".strip(),
             "kind": "model",
             "status": "ok",
-            "started_at": call["started_at"],
-            "ended_at": max(call["ended_at"], call["started_at"]),
+            "started_at": timestamps.text(call["started_at"]),
+            "ended_at": timestamps.text(max(call["ended_at"], call["started_at"])),
             "model_name": call["model"][:255],
             "provider": "anthropic",
             "response_id": call["id"][:255],
@@ -268,18 +274,23 @@ class Builder:
         if found is None:
             return
         path, meta = found
-        items, offset = transcript.read_entries(path, 0, sidechain=True)
+        try:
+            items, offset = transcript.read_entries(path, 0, sidechain=True)
+        # A subagent file that cannot be read costs that subagent, not the turn
+        except OSError:
+            return
         agent_id = str(meta.get("agentId") or path.stem.replace("agent-", ""))
         agent_span_id = span_id("agent", agent_id)
-        timestamps = [str(entry["timestamp"]) for _, entry in items if entry.get("timestamp")]
-        started = timestamps[0] if timestamps else tool["started_at"]
+        times = timestamps.of(entry for _, entry in items)
+        # A first entry with no readable time started when the call that launched it did, not at a later entry's time
+        started = (timestamps.parse(items[0][1].get("timestamp")) if items else None) or tool["started_at"]
         span: Dict[str, Any] = {
             "span_id": agent_span_id,
             "parent_span_id": span_id("tool", call_id),
             "name": f"invoke_agent {meta.get('agentType') or 'subagent'}".strip(),
             "kind": "agent",
-            "started_at": started,
-            "ended_at": max(timestamps[-1], started) if timestamps else started,
+            "started_at": timestamps.text(started),
+            "ended_at": timestamps.text(max([started, *times])),
             "attributes": {"claude_code.agent_type": str(meta.get("agentType") or "")},
         }
         built.spans.append(span)
