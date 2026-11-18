@@ -98,6 +98,7 @@ def test_sends_times_unchanged_for_todays_transcripts(transcript, environ, emet)
     prompt = turn(transcript)
     run(transcript, environ)
     spans = emet.envelopes[0]["spans"]
+    assert [span["kind"] for span in spans] == ["turn", "model"]
     assert spans[0]["started_at"] == prompt["timestamp"]
     assert all(SENT.fullmatch(value) for span in spans for value in times(span))
 
@@ -197,12 +198,10 @@ def test_a_run_that_skips_nothing_records_no_skip(transcript, environ, emet):
 @pytest.mark.parametrize("missing", [None, "", 7])
 def test_a_turn_with_no_id_gets_one_from_its_place_in_the_file(transcript, environ, emet, missing):
     turn(transcript, uuid=missing)
+    second_starts_at = transcript.path.stat().st_size
     turn(transcript, "And 3 + 3?", "6", uuid=missing)
     run(transcript, environ)
-    first, second = [item["trace_id"] for item in emet.envelopes]
-    assert first == "turn-at-0"
-    assert re.fullmatch(r"turn-at-[1-9][0-9]*", second)
-    assert "None" not in (first, second)
+    assert [item["trace_id"] for item in emet.envelopes] == ["turn-at-0", f"turn-at-{second_starts_at}"]
 
 
 def background_agent(transcript):
@@ -239,3 +238,16 @@ def test_a_subagent_with_no_times_takes_the_time_of_the_call_that_launched_it(tr
     run(transcript, environ)
     spans = {span["span_id"]: span for span in emet.envelopes[0]["spans"]}
     assert times(spans["agent.s1"]) == times(spans["model.msg_s1"]) == (call["timestamp"], call["timestamp"])
+
+
+def test_a_subagent_whose_first_entry_has_no_time_starts_with_the_call_that_launched_it(transcript, environ, emet):
+    transcript.prompt("research it")
+    call = transcript.tool_use("msg_1", "toolu_agent", "Agent", {"prompt": "dig"})
+    path = transcript.subagent("s1", "toolu_agent")
+    transcript.write({"type": "user", "isSidechain": True, "message": {"role": "user", "content": "dig"}, "timestamp": ""}, path)
+    found = transcript.text("msg_s1", "found it", path=path, isSidechain=True)
+    transcript.tool_result("toolu_agent", "found it")
+    transcript.text("msg_2", "Here is what the agent found.")
+    run(transcript, environ)
+    spans = {span["span_id"]: span for span in emet.envelopes[0]["spans"]}
+    assert times(spans["agent.s1"]) == times(spans["model.msg_s1"]) == (call["timestamp"], found["timestamp"])

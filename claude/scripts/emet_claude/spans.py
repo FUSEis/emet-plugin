@@ -278,7 +278,8 @@ class Builder:
         agent_id = str(meta.get("agentId") or path.stem.replace("agent-", ""))
         agent_span_id = span_id("agent", agent_id)
         times = timestamps.of(entry for _, entry in items)
-        started = times[0] if times else tool["started_at"]
+        # A first entry with no readable time started when the call that launched it did, not at a later entry's time
+        started = (timestamps.parse(items[0][1].get("timestamp")) if items else None) or tool["started_at"]
         span: Dict[str, Any] = {
             "span_id": agent_span_id,
             "parent_span_id": span_id("tool", call_id),
