@@ -11,7 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
-- Times in the session file are read as instants, not compared as text. Today's sessions are sent exactly as before. If Claude Code ever writes a different form (another number of fraction digits, or a numeric offset in place of `Z`), spans keep the right order and length, and every time still reaches Emet in one form: UTC with milliseconds and `Z`. A time with no time zone is treated as unreadable, and an entry with no readable time takes the time of the entry before it.
+- Times in the session file are read as instants, not compared as text. Today's sessions are sent exactly as before. If Claude Code ever writes a different form (another number of fraction digits, or a numeric offset in place of `Z`), spans keep the right order and length, and every time still reaches Emet in one form: UTC with milliseconds and `Z`. A time with no time zone is treated as unreadable, and an entry with no readable time takes the time of the entry before it. A turn starts at its earliest time and a subagent ends at its latest, so no span starts before the turn it belongs to.
 
 ### Fixed
 

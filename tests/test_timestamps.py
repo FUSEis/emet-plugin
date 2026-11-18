@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from emet_claude import commands, envelope, storage, timestamps
+from emet_claude import commands, envelope, pending, storage, timestamps
 
 SENT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z")
 
@@ -31,11 +31,23 @@ def times(span):
     return span["started_at"], span["ended_at"]
 
 
-@pytest.mark.parametrize("digits", range(1, 10))
-def test_reads_every_fraction_length(digits):
-    fraction = "123456789"[:digits]
+@pytest.mark.parametrize(
+    ("fraction", "microseconds"),
+    [
+        ("1", 100000),
+        ("12", 120000),
+        ("123", 123000),
+        ("1234", 123400),
+        ("12345", 123450),
+        ("123456", 123456),
+        ("1234567", 123456),
+        ("12345678", 123456),
+        ("123456789", 123456),
+    ],
+)
+def test_reads_every_fraction_length(fraction, microseconds):
     at = timestamps.parse(f"2026-10-20T10:00:01.{fraction}Z")
-    assert at == datetime(2026, 10, 20, 10, 0, 1, int(fraction.ljust(6, "0")[:6]), tzinfo=timezone.utc)
+    assert at == datetime(2026, 10, 20, 10, 0, 1, microseconds, tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize(
@@ -91,7 +103,9 @@ def test_writes_what_claude_code_writes():
 
 
 def test_reads_the_time_the_plugin_writes_in_its_own_files():
-    assert timestamps.parse(storage.now()) is not None
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    at = timestamps.parse(storage.now())
+    assert before <= at <= datetime.now(timezone.utc)
 
 
 def test_sends_times_unchanged_for_todays_transcripts(transcript, environ, emet):
@@ -99,7 +113,8 @@ def test_sends_times_unchanged_for_todays_transcripts(transcript, environ, emet)
     run(transcript, environ)
     spans = emet.envelopes[0]["spans"]
     assert [span["kind"] for span in spans] == ["turn", "model"]
-    assert spans[0]["started_at"] == prompt["timestamp"]
+    answered = f"2026-10-20T10:00:{transcript.clock:02d}.000Z"
+    assert [times(span) for span in spans] == [(prompt["timestamp"], answered)] * 2
     assert all(SENT.fullmatch(value) for span in spans for value in times(span))
 
 
@@ -361,3 +376,54 @@ def test_a_saved_tool_output_that_cannot_be_read_falls_back_to_the_result_in_the
     tool = next(span for span in emet.envelopes[0]["spans"] if span["kind"] == "tool")
     assert tool["payload"]["result"] == "short"
     assert "skipped_turns" not in status(environ)
+
+
+def test_the_id_from_a_turns_place_counts_bytes_and_holds_across_runs(transcript, environ, emet):
+    turn(transcript)
+    run(transcript, environ)
+    # A line Claude Code wrote with letters that take more than one byte each
+    with open(transcript.path, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write('{"type": "summary", "summary": "Umsatz in Köln 売上"}\n')
+    place = transcript.path.stat().st_size
+    assert place > len(transcript.path.read_text(encoding="utf-8"))
+    turn(transcript, "And 3 + 3?", "6", uuid=None)
+    run(transcript, environ)
+    assert emet.envelopes[-1]["trace_id"] == f"turn-at-{place}"
+
+
+def test_a_turn_starts_at_its_earliest_time_so_no_span_starts_before_it(transcript, environ, emet):
+    transcript.prompt("go", timestamp="2026-10-20T10:00:10.000Z")
+    transcript.tool_use("msg_1", "toolu_1", "Bash", {"command": "ls"}, timestamp="2026-10-20T10:00:05.000Z")
+    transcript.tool_result("toolu_1", "ok", timestamp="2026-10-20T10:00:12.000Z")
+    transcript.text("msg_2", "done", timestamp="2026-10-20T10:00:14.000Z")
+    run(transcript, environ)
+    spans = {span["span_id"]: span for span in emet.envelopes[0]["spans"]}
+    assert times(spans["turn"]) == ("2026-10-20T10:00:05.000Z", "2026-10-20T10:00:14.000Z")
+    assert times(spans["tool.toolu_1"]) == ("2026-10-20T10:00:05.000Z", "2026-10-20T10:00:12.000Z")
+
+
+def test_a_subagent_ends_at_its_latest_time_not_its_last_line(transcript, environ, emet):
+    transcript.prompt("research it", timestamp="2026-10-20T10:00:01.000Z")
+    transcript.tool_use("msg_1", "toolu_agent", "Agent", {"prompt": "dig"}, timestamp="2026-10-20T10:00:02.000Z")
+    path = transcript.subagent("s1", "toolu_agent")
+    opening = {"type": "user", "isSidechain": True, "message": {"role": "user", "content": "dig"}}
+    transcript.write(dict(opening, timestamp="2026-10-20T10:00:03.000Z"), path)
+    transcript.text("msg_s1", "halfway", path=path, isSidechain=True, timestamp="2026-10-20T10:00:08.000Z")
+    transcript.text("msg_s2", "found it", path=path, isSidechain=True, timestamp="2026-10-20T10:00:06.000Z")
+    transcript.tool_result("toolu_agent", "found it", timestamp="2026-10-20T10:00:10.000Z")
+    transcript.text("msg_2", "Here it is.", timestamp="2026-10-20T10:00:11.000Z")
+    run(transcript, environ)
+    spans = {span["span_id"]: span for span in emet.envelopes[0]["spans"]}
+    assert times(spans["agent.s1"]) == ("2026-10-20T10:00:03.000Z", "2026-10-20T10:00:08.000Z")
+
+
+def test_a_skipped_turn_is_marked_in_the_sessions_own_file_before_the_run_is_stamped(transcript, environ, emet):
+    transcript.prompt("What is 2 + 2?", timestamp="")
+    transcript.text("msg_1", "4", timestamp="")
+    after = turn(transcript, "And 3 + 3?", "6")
+    run(transcript, environ)
+    lines = pending.lines(storage.data_dir(environ), "session-1")
+    assert [sorted(line) for line in lines] == [["reason", "skipped"], ["at", "endpoint", "trace_uuid"], ["finished", "queued"]]
+    assert lines[0]["reason"] == "Unreadable"
+    assert timestamps.parse(lines[0]["skipped"]) is not None
+    assert pending.traces(storage.data_dir(environ), "session-1") == [emet.trace_uuids[after["uuid"]]]

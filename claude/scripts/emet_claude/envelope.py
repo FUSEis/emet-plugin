@@ -124,7 +124,7 @@ def for_turn(
         "span_id": "turn",
         "name": "claude_code.turn",
         "kind": "turn",
-        "started_at": timestamps.text(times[0]),
+        "started_at": timestamps.text(min(times)),
         "ended_at": timestamps.text(max(times)),
         "attributes": {
             "claude_code.prompt_source": str(first.get("promptSource") or ("compaction" if first.get("isCompactSummary") else ""))

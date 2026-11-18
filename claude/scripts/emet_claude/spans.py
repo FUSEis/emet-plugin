@@ -290,7 +290,7 @@ class Builder:
             "name": f"invoke_agent {meta.get('agentType') or 'subagent'}".strip(),
             "kind": "agent",
             "started_at": timestamps.text(started),
-            "ended_at": timestamps.text(max(times[-1], started) if times else started),
+            "ended_at": timestamps.text(max([started, *times])),
             "attributes": {"claude_code.agent_type": str(meta.get("agentType") or "")},
         }
         built.spans.append(span)

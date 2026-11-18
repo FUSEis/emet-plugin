@@ -3,7 +3,8 @@
 One file per session, a JSON object per line. Lines are only ever added, so another process can
 read the file while a worker is still sending. A trace line names the endpoint that accepted the
 turn. A finished line ends one run and counts the envelopes still in the retry queue: while that
-is above zero, a later run of any session can still add an id here.
+is above zero, a later run of any session can still add an id here. A skipped line marks a turn or
+a later addition that could not be built and was never sent, with the error's type as its reason.
 """
 
 from __future__ import annotations

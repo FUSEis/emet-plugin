@@ -228,6 +228,8 @@ def process(
             except Exception as error:  # noqa: BLE001 - the transcript format is not a contract
                 skipped.append(type(error).__name__)
                 storage.log(root, f"turn skipped {type(error).__name__}")
+                # A reader of the session's own file must not take a turn that was never sent for a clean one
+                pending.append(root, session_id, {"skipped": storage.now(), "reason": type(error).__name__})
                 return None
 
         entries, end = transcript.read_entries(path, int(state.get("offset") or 0))
