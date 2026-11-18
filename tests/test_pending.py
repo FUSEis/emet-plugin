@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 
 import pytest
 
@@ -128,8 +129,27 @@ def test_a_run_after_a_finished_turn_stamps_its_end(transcript, environ, emet):
     assert stamps(environ) == []
     run(transcript, environ)
     lines = pending.lines(root(environ), "session-1")
-    assert [sorted(item) for item in lines] == [["at", "trace_uuid"], ["finished"]]
-    assert all(isinstance(value, str) and value for item in lines for value in item.values())
+    assert [sorted(item) for item in lines] == [["at", "endpoint", "trace_uuid"], ["finished", "queued"]]
+    assert lines[0]["endpoint"] == emet.url
+    assert lines[1]["queued"] == 0
+    assert all(value for value in (lines[0]["at"], lines[1]["finished"]))
+
+
+def test_the_stamp_counts_what_is_still_queued(transcript, environ, emet):
+    emet.statuses = [503]
+    prompt = finished_turn(transcript)
+    run(transcript, environ)
+    assert [item["queued"] for item in stamps(environ)] == [1]
+    run(transcript, environ)
+    assert [item["queued"] for item in stamps(environ)] == [1, 0]
+    assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
+
+
+def test_a_run_that_cannot_start_stamps_nothing(transcript, environ, emet):
+    finished_turn(transcript)
+    hook_input = dict(transcript.hook_input(), transcript_path=str(transcript.path) + ".missing")
+    commands.process(hook_input, environ, wait=0, turn_ended=True)
+    assert pending.lines(root(environ), "session-1") == []
 
 
 def test_the_list_is_not_in_the_session_state(transcript, environ, emet):
@@ -167,15 +187,61 @@ def test_readable_lines_survive_damaged_ones(environ):
         encoding="utf-8",
     )
     newer = "00000000-0000-4000-8000-000000000001"
-    pending.note(root(environ), "session-1", newer)
+    pending.note(root(environ), "session-1", newer, "")
     assert kept(environ) == [TRACE, newer]
+    assert all(isinstance(item, dict) for item in pending.lines(root(environ), "session-1"))
+
+
+def test_a_line_cut_short_without_a_newline_does_not_swallow_the_next_one(environ):
+    path = pending.path(root(environ), "session-1")
+    path.write_bytes(b'{"trace_uuid": "0f0e6c6e')
+    pending.note(root(environ), "session-1", TRACE, "")
+    assert kept(environ) == [TRACE]
+    assert path.read_bytes().count(b"\n") == 2
+
+
+def test_a_session_id_that_is_not_a_plain_name_reads_nothing(environ):
+    line = json.dumps({"trace_uuid": TRACE, "at": "t"}) + "\n"
+    (root(environ) / "outside.pending.jsonl").write_text(line, encoding="utf-8")
+    assert pending.traces(root(environ), "../outside") == []
+
+
+def test_a_file_that_is_not_text_reads_as_empty(environ):
+    pending.path(root(environ), "session-1").write_bytes(b"\xff\xfe\n")
+    assert pending.lines(root(environ), "session-1") == []
+
+
+def test_a_trace_written_twice_is_read_once(environ):
+    line = json.dumps({"trace_uuid": TRACE, "at": "t"}) + "\n"
+    pending.path(root(environ), "session-1").write_text(line * 2, encoding="utf-8")
+    assert kept(environ) == [TRACE]
+
+
+def test_two_writers_keep_a_trace_once(environ):
+    workers = [threading.Thread(target=pending.note, args=(root(environ), "session-1", TRACE, "")) for _ in range(8)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert len(pending.lines(root(environ), "session-1")) == 1
+
+
+def test_a_write_that_fails_is_logged_without_the_id(tmp_path, environ):
+    pending.note(root(environ), "../session-1", TRACE, "")
+    (root(environ) / "state" / "session-1.pending.jsonl").mkdir()
+    pending.note(root(environ), "session-1", TRACE, "")
+    log = (root(environ) / "emet.log").read_text(encoding="utf-8")
+    assert log.count("pending not written") == 2
+    assert TRACE not in log
 
 
 @pytest.mark.parametrize("session_id", ["", "..", "../session-1", "a/b", "a\\b", "x" * 101])
 def test_a_session_id_that_is_not_a_plain_name_writes_nothing(environ, session_id):
     before = sorted(root(environ).parent.rglob("*"))
-    pending.note(root(environ), session_id, TRACE)
-    assert sorted(root(environ).parent.rglob("*")) == before
+    pending.note(root(environ), session_id, TRACE, "")
+    assert pending.lines(root(environ), session_id) == []
+    # The skipped write is logged, and nothing else appears
+    assert sorted(path for path in root(environ).parent.rglob("*") if path.name != "emet.log") == before
 
 
 def test_a_folder_that_cannot_be_written_never_stops_a_send(tmp_path):
@@ -186,7 +252,7 @@ def test_a_folder_that_cannot_be_written_never_stops_a_send(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
 def test_the_file_is_private(environ):
-    pending.note(root(environ), "session-1", TRACE)
+    pending.note(root(environ), "session-1", TRACE, "")
     assert pending.path(root(environ), "session-1").stat().st_mode & 0o077 == 0
 
 
