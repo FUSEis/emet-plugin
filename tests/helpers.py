@@ -127,6 +127,10 @@ class FakeEmet:
         # The conversation uuid each accepted request was answered with; a fresh one per request unless reply is set
         self.conversations: List[str] = []
         self.reply: Optional[str] = None
+        # Emet's own uuid for each trace id it accepted, the same on every batch of that trace
+        self.trace_uuids: Dict[str, str] = {}
+        # False answers as an Emet that names no trace in its 202
+        self.names_trace = True
         # Span ids listed as missing content in each 202, as Emet does for a metadata-mode batch
         self.gaps: List[str] = []
         owner = self
@@ -141,7 +145,10 @@ class FakeEmet:
                 if status == 202:
                     owner.conversations.append(owner.reply or str(uuid.uuid4()))
                     gaps = {"missing_tool_arguments": owner.gaps, "missing_tool_results": owner.gaps}
-                    reply = json.dumps({"conversation": owner.conversations[-1], "gaps": gaps}).encode()
+                    accepted = {"conversation": owner.conversations[-1], "gaps": gaps}
+                    if owner.names_trace:
+                        accepted["trace"] = owner.trace_uuids.setdefault(str(body.get("trace_id")), str(uuid.uuid4()))
+                    reply = json.dumps(accepted).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(reply)))
