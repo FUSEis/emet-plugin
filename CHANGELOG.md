@@ -9,6 +9,17 @@ All notable changes to this project are documented here. The format follows [Kee
 - The plugin has an icon, `claude/.claude-plugin/icon.png`, the Emet logomark, for its listing in Anthropic's plugin directory.
 - `docs/contact.md` explains how to buy Emet before installing, and both READMEs link it ahead of the install steps.
 
+### Changed
+
+- Times in the session file are read as instants, not compared as text. Today's sessions are sent exactly as before. If Claude Code ever writes a different form (another number of fraction digits, or a numeric offset in place of `Z`), spans keep the right order and length, and every time still reaches Emet in one form: UTC with milliseconds and `Z`. A time with no time zone is treated as unreadable, and an entry with no readable time takes the time of the entry before it. A turn starts at its earliest time and a subagent ends at its latest, so no span starts before the turn it belongs to.
+
+### Fixed
+
+- A turn that cannot be read no longer stops the session from being sent. Before, a turn with no usable time raised an error on every run, the session's progress was never saved, and nothing after that turn was sent. Such a turn is now skipped, written to the log as `turn skipped`, and counted by `/emet:status`; everything after it is sent. The same holds for any other error while building a turn.
+- A line of the session file nested too deep to read is passed over like any other unreadable line. Before, it raised an error on every run and stopped the session from being sent. A saved tool output or a subagent file that cannot be opened no longer costs the whole turn: the turn is sent with the result the session file holds, or without that subagent.
+- A time that Emet would refuse, such as an empty one, is no longer sent. Emet answered `400` and the whole batch was dropped.
+- A turn whose first entry has no id is sent under an id made from its place in the session file. Before, every such turn of a session was sent under the id `None` and would have merged into one trace.
+
 ## [0.1.3] - 2026-10-23
 
 ### Added

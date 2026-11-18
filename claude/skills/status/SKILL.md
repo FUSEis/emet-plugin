@@ -14,6 +14,7 @@ description: Link the Emet reports of the latest turns, and report whether the p
    - Key check: `key_check` and `key_checked_at`.
    - Delivery: `last_delivery`, and `last_error` if it is more recent.
    - Retries: `queued` envelopes waiting. They are retried on the next turn, oldest first.
+   - Skipped: if `skipped_turns` is set, that many turns or later additions to a turn could not be read from the session file and were not sent. Give the time and `reason` of `last_skipped`. Turns after a skipped one are still sent.
 4. Explain the most recent problem in the log, if any:
 
 | Log shows | Meaning | Fix |
@@ -22,6 +23,7 @@ description: Link the Emet reports of the latest turns, and report whether the p
 | `network ...` | Emet could not be reached | Check the network or proxy; turns stay queued and are retried |
 | `400 ...` | Emet refused a turn as invalid | Report it at https://github.com/FUSEis/emet-plugin/issues with the log line |
 | `queue full, dropped ...` | Emet was unreachable long enough for the retry queue to fill | Fix the connection; the oldest queued turns were dropped |
+| `turn skipped ...` | One turn could not be read from the session file, for example because it had no usable time. It was left out and the rest of the session was sent | Report it at https://github.com/FUSEis/emet-plugin/issues with the log line, the plugin version and the Claude Code version |
 | `worker error ...` | The plugin hit an unexpected error | Report it with the log line and the plugin version |
 
 Do not print the contents of the `queue` folder: it holds session content waiting to be sent.

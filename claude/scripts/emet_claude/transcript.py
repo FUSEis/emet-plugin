@@ -42,7 +42,8 @@ def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List
             start, position = position, position + len(raw)
             try:
                 entry = json.loads(raw)
-            except ValueError:
+            # RecursionError: a line nested too deep to read, which would otherwise fail on every run
+            except (ValueError, RecursionError):
                 continue
             if isinstance(entry, dict) and entry.get("type") in ("user", "assistant") and (sidechain or not entry.get("isSidechain")):
                 entries.append((start, entry))
@@ -143,8 +144,12 @@ def persisted_output(transcript: Path, part: Dict[str, Any], result: Any) -> Opt
         path = Path(candidate).resolve()
         if path.parent != folder or not path.is_file():
             continue
-        with open(path, "rb") as handle:
-            data = handle.read(PERSISTED_MAX_BYTES + 1)
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read(PERSISTED_MAX_BYTES + 1)
+        # Removed or locked since the check above: the result in the transcript is sent instead
+        except OSError:
+            continue
         cut = len(data) > PERSISTED_MAX_BYTES
         return data[:PERSISTED_MAX_BYTES].decode("utf-8", "replace"), cut
     return None
