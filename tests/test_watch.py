@@ -8,6 +8,7 @@ import stat
 import sys
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -2539,15 +2540,75 @@ def test_a_verdict_file_that_cannot_be_read_once_open_is_unreadable_and_is_close
     assert len(closed) == 1
 
 
-def test_a_verdict_file_is_opened_once_and_judged_by_what_was_opened(environ, clock, opened, monkeypatch):
-    path = root(environ) / "verdicts" / VERDICT_FILE
+@pytest.fixture(params=["as the system is", "as on Windows"])
+def link_flag(request, monkeypatch):
+    """Runs a test as the system is, and again without the flag that refuses a link at the open, which Windows does not have."""
+    if request.param == "as on Windows":
+        monkeypatch.setattr(storage, "READ_FLAGS", storage.READ_FLAGS & ~storage.NOFOLLOW)
+        monkeypatch.setattr(storage, "NOFOLLOW", 0)
+    return storage.NOFOLLOW
+
+
+def test_a_verdict_file_is_opened_once_and_judged_by_what_was_opened(environ, clock, monkeypatch, link_flag):
     good = verdict_of(clock)
-    lstat = type(path).lstat
-    monkeypatch.setattr(type(path), "lstat", lambda self: pytest.fail("judged by its name") if self.name == VERDICT_FILE else lstat(self))
-    assert read_back(environ, good) == (good, [])
-    assert [name for name, _ in opened] == [VERDICT_FILE]
-    for flag in ("O_NOFOLLOW", "O_NONBLOCK"):
-        assert opened[0][1] & getattr(os, flag, 0) == getattr(os, flag, 0)
+    seen = {"open": [], "fstat": [], "read": [], "by name": [], "link?": []}
+    real = {name: getattr(os, name) for name in ("open", "fstat", "read", "stat", "lstat")}
+
+    def opening(path, flags, *rest):
+        fd = real["open"](path, flags, *rest)
+        if os.path.basename(str(path)) == VERDICT_FILE:
+            seen["open"].append((fd, flags))
+        return fd
+
+    def by_name(name):
+        def looking(path, *rest, **more):
+            if isinstance(path, (str, Path)) and os.path.basename(str(path)) == VERDICT_FILE:
+                seen["by name"].append(name)
+            return real[name](path, *rest, **more)
+
+        return looking
+
+    is_symlink = Path.is_symlink
+
+    def link_asked(self):
+        if self.name != VERDICT_FILE:
+            return is_symlink(self)
+        seen["link?"].append(self.name)
+        return False
+
+    (root(environ) / "verdicts").mkdir()
+    (root(environ) / "verdicts" / VERDICT_FILE).write_text(json.dumps(good), encoding="utf-8")
+    monkeypatch.setattr(os, "open", opening)
+    monkeypatch.setattr(os, "fstat", lambda fd: seen["fstat"].append(fd) or real["fstat"](fd))
+    monkeypatch.setattr(os, "read", lambda fd, size: seen["read"].append(fd) or real["read"](fd, size))
+    monkeypatch.setattr(os, "stat", by_name("stat"))
+    monkeypatch.setattr(os, "lstat", by_name("lstat"))
+    monkeypatch.setattr(Path, "is_symlink", link_asked)
+    assert watch.read_verdict(root(environ), VERDICT_FILE) == good
+    ((fd, flags),) = seen["open"]
+    # The type, the number of names and the size come from the open file, and so do the bytes
+    assert seen["fstat"] == [fd] and set(seen["read"]) == {fd}
+    assert seen["by name"] == []
+    # Only where the open cannot refuse a link is the name looked at, once, and for a link alone
+    assert seen["link?"] == ([] if link_flag else [VERDICT_FILE])
+    assert flags & link_flag == link_flag
+    assert flags & getattr(os, "O_NONBLOCK", 0) == getattr(os, "O_NONBLOCK", 0)
+
+
+def test_where_the_open_cannot_refuse_a_link_a_verdict_that_is_one_is_never_opened(environ, clock, tmp_path, monkeypatch, opened):
+    monkeypatch.setattr(storage, "READ_FLAGS", storage.READ_FLAGS & ~storage.NOFOLLOW)
+    monkeypatch.setattr(storage, "NOFOLLOW", 0)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps(verdict_of(clock)), encoding="utf-8")
+    folder = root(environ) / "verdicts"
+    folder.mkdir()
+    try:
+        (folder / VERDICT_FILE).symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("no symbolic links here")
+    assert watch.read_verdict(root(environ), VERDICT_FILE) is None
+    assert [name for name, _ in opened] == ["emet.log"]
+    assert log(environ).count("verdict not shown, link") == 1
 
 
 def test_a_verdict_file_with_a_second_name_is_never_shown(environ, clock, tmp_path):
