@@ -28,6 +28,8 @@ TURN_END_MODES = ("stop", "session-end")
 RECENT_DELIVERIES = 5
 # SessionStart sources where the key cannot have changed since the last check
 SAME_KEY_SOURCES = ("clear", "compact")
+# The format of state/<session>.json. A file that names no version is read as 1
+STATE_VERSION = 1
 Made = TypeVar("Made")
 
 
@@ -223,6 +225,10 @@ def process(
         state = storage.read_json(state_file, {})
         if not isinstance(state, dict):
             state = {}
+        if not storage.known_version(state, STATE_VERSION):
+            # Read as this version, its place could send the session again or drop turns. Left as it is for the plugin that wrote it
+            storage.log(root, "session not sent, its state file is of a version this plugin does not know")
+            return
         sender = transport.Sender(root, config)
         sender.flush()
         builder = Builder(path, Capture(config.capture_mode, secrets=(config.emet_key,)))
@@ -300,6 +306,7 @@ def process(
             agent["offset"] = agent_end
 
         state["offset"] = offset
+        state[storage.VERSION_KEY] = STATE_VERSION
         forget(state, sender.refused(session_id))
         storage.write_json(state_file, state)
         update_status(root, config, sender.accepted, skipped, **last_error(sender))
