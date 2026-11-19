@@ -157,8 +157,37 @@ def changelog_check():
     return module
 
 
-def checked(monkeypatch, paths, labels):
-    """Runs the check as CI does: the changed paths on stdin, NUL between them, and the labels in the environment."""
+BASE_CHANGELOG = """# Changelog
+
+## [Unreleased]
+
+### Fixed
+
+- An entry already on the base branch.
+
+## [0.1.4] - 2026-11-19
+
+- Released.
+
+[Unreleased]: https://github.com/FUSEis/emet-plugin/compare/v0.1.4...HEAD
+"""
+WITH_ENTRY = BASE_CHANGELOG.replace("- An entry already", "- A new entry.\n- An entry already")
+# A release moves the entries under a new version and leaves Unreleased empty
+RELEASED = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n## [0.1.5] - 2026-12-01\n")
+ENTRY_REMOVED = BASE_CHANGELOG.replace("### Fixed\n\n- An entry already on the base branch.\n\n", "")
+OLD_RELEASE_EDITED = BASE_CHANGELOG.replace("- Released.", "- Released. And a new line here.")
+BLANK_LINES_ONLY = BASE_CHANGELOG.replace("### Fixed\n", "### Fixed\n\n\n")
+
+
+def checked(monkeypatch, tmp_path, paths, labels="[]", head=BASE_CHANGELOG):
+    """Runs the check as CI does: the changed paths on stdin, the base changelog in a file, the labels in the environment."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    if head is not None:
+        (checkout / "CHANGELOG.md").write_text(head, encoding="utf-8")
+    (tmp_path / "base-changelog").write_text(BASE_CHANGELOG, encoding="utf-8")
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(sys, "argv", ["changelog_check.py", str(tmp_path / "base-changelog")])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO("\0".join(paths).encode() + b"\0")))
     monkeypatch.setenv("PR_LABELS", labels)
     return changelog_check().main()
@@ -168,27 +197,76 @@ CODE_FILE = "claude/scripts/emet_claude/watch.py"
 
 
 @pytest.mark.parametrize(
-    ("paths", "labels", "code"),
+    "path",
     [
-        ([CODE_FILE], "[]", 1),
-        ([CODE_FILE, "tests/test_watch.py", "README.md"], '["documentation"]', 1),
-        (["claude/scripts/emet_hook.py"], "[]", 1),
-        ([CODE_FILE, "CHANGELOG.md"], "[]", 0),
-        ([CODE_FILE], '["documentation", "no-changelog"]', 0),
-        (["claude/README.md", "claude/hooks/hooks.json", "tests/test_watch.py"], "[]", 0),
-        # Only the changelog at the root counts, and only a label of exactly that name
-        ([CODE_FILE, "docs/CHANGELOG.md"], "[]", 1),
-        ([CODE_FILE], '["no-changelog-needed"]', 1),
-        ([CODE_FILE], '"no-changelog"', 1),
-        ([CODE_FILE], "not json", 1),
-        ([CODE_FILE], "", 1),
-        ([], "[]", 0),
+        CODE_FILE,
+        "claude/scripts/emet_hook.py",
+        "claude/hooks/hooks.json",
+        "claude/skills/status/SKILL.md",
+        "claude/.claude-plugin/plugin.json",
     ],
 )
-def test_a_change_to_the_plugins_code_needs_a_changelog_entry_or_the_label(monkeypatch, capsys, paths, labels, code):
-    assert checked(monkeypatch, paths, labels) == code
-    said = capsys.readouterr().out
-    assert (CODE_FILE in said) is (code == 1 and CODE_FILE in paths)
+def test_a_change_to_what_the_plugin_ships_needs_a_changelog_entry(monkeypatch, tmp_path, capsys, path):
+    assert checked(monkeypatch, tmp_path, [path, "README.md"]) == 1
+    assert f"  {path}\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "path", ["claude/README.md", "claude/LICENSE", "tests/test_watch.py", "docs/enterprise.md", ".github/workflows/ci.yml"]
+)
+def test_a_change_to_anything_else_needs_no_entry(monkeypatch, tmp_path, path):
+    assert checked(monkeypatch, tmp_path, [path]) == 0
+
+
+def test_a_pull_request_that_changes_no_file_needs_no_entry(monkeypatch, tmp_path):
+    assert checked(monkeypatch, tmp_path, []) == 0
+
+
+@pytest.mark.parametrize(
+    ("head", "code"),
+    [
+        (WITH_ENTRY, 0),
+        (RELEASED, 0),
+        (BASE_CHANGELOG, 1),
+        # Deleted or renamed away
+        (None, 1),
+        ("", 1),
+        (ENTRY_REMOVED, 1),
+        (OLD_RELEASE_EDITED, 1),
+        (BLANK_LINES_ONLY, 1),
+    ],
+)
+def test_only_a_new_line_under_unreleased_or_a_new_version_counts_as_an_entry(monkeypatch, tmp_path, head, code):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE, "CHANGELOG.md"], head=head) == code
+
+
+def test_a_changelog_elsewhere_in_the_repository_is_not_the_changelog(monkeypatch, tmp_path):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE, "docs/CHANGELOG.md"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("labels", "code"),
+    [
+        ('["documentation", "no-changelog"]', 0),
+        # Only a label of exactly that name, in a list
+        ('["documentation"]', 1),
+        ('["no-changelog-needed"]', 1),
+        ('"no-changelog"', 1),
+        ("not json", 1),
+        ("", 1),
+    ],
+)
+def test_the_label_stands_in_for_an_entry(monkeypatch, tmp_path, labels, code):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE], labels) == code
+
+
+def test_the_check_reads_this_repositorys_own_changelog():
+    check = changelog_check()
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert check.UNRELEASED in text.splitlines()
+    assert f"## [{VERSION}]" in {line.split(" - ")[0] for line in check.versions(text)}
+    # The footnote links at the end are not entries
+    assert not any(line.startswith("[") for line in check.unreleased(text))
 
 
 def test_the_required_check_waits_for_the_changelog_job_and_runs_again_when_a_label_changes():
@@ -208,14 +286,21 @@ def test_the_required_check_waits_for_the_changelog_job_and_runs_again_when_a_la
     # The first parent of the merge commit CI checks out is the base branch, so two commits are enough
     assert "fetch-depth: 2" in job
     assert 'git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"' in job
-    assert 'python3 .github/scripts/changelog_check.py < "$RUNNER_TEMP/changed"' in job
+    assert 'git show HEAD^1:CHANGELOG.md > "$RUNNER_TEMP/base-changelog"' in job
+    assert 'python3 .github/scripts/changelog_check.py "$RUNNER_TEMP/base-changelog" < "$RUNNER_TEMP/changed"' in job
     assert "PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in job
     assert "if: github.event_name == 'pull_request'" in job
     assert "pull_request_target" not in workflow
 
 
-def test_contributing_names_the_label_the_changelog_check_reads():
-    assert f"`{changelog_check().LABEL}`" in (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+def test_contributing_names_the_label_and_the_folders_the_changelog_check_reads():
+    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    check = changelog_check()
+    assert f"`{check.LABEL}`" in guide
+    (rule,) = [line for line in guide.splitlines() if "fails the `changelog` job" in line]
+    assert set(re.findall(r"`(claude/[a-z./-]+/)`", rule)) == set(check.SHIPPED)
+    for folder in check.SHIPPED:
+        assert (ROOT / folder).is_dir(), folder
 
 
 def section(path, heading):
@@ -254,6 +339,10 @@ def test_the_readme_lists_the_files_an_installed_plugin_keeps_and_no_others():
         "report check",
     ):
         assert name not in kept, name
+    # A write cut short leaves a copy that the queue's limits never see
+    assert "`.<name>.<number>.tmp`" in kept and "is never sent" in kept
+    assert 'f".{path.name}.{os.getpid()}.tmp"' in Path(storage.__file__).read_text(encoding="utf-8")
+    assert "On Windows the plugin sets no access rules" in kept
 
 
 def shipped_hook_modes():
@@ -270,6 +359,11 @@ def test_the_security_policy_covers_what_an_installed_plugin_does():
     assert "https://github.com/FUSEis/emet-plugin/security/advisories/new" in policy
     for name in ("emet-report-data", "data block", watch.verdict_folder(Path("data")).name, pause.READS):
         assert name not in policy, name
+    # True while no hook starts the report check, which hands report text to Claude. Wiring it changes this sentence
+    assert "watch" not in shipped_hook_modes()
+    assert "no text from one is shown to Claude" in policy
+    # The plugin sets no access rules on Windows
+    assert "On Windows the plugin sets no access rules" in policy
 
 
 def test_contributing_names_only_tests_that_exist():
@@ -298,6 +392,7 @@ def test_contributing_lists_every_file_the_plugin_keeps_with_the_module_that_own
         ("read-pause.json", "pause.py"),
         ("status.json", "commands.py"),
         ("emet.log", "storage.py"),
+        ("*.lock", "storage.py"),
     ]:
         (row,) = [line for line in owners.splitlines() if line.startswith("|") and f"`{name}`" in line]
         assert f"`{owner}`" in row.split("|")[-2], name

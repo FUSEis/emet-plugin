@@ -59,7 +59,7 @@ For each finished turn, one trace:
 
 The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses any other destination, whatever the environment says. The one exception is an Emet on the same machine, for plugin development.
 
-It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`). On macOS and Linux the plugin sets the folder so that only your user can open it. On Windows it has the access rules of the folder it sits in.
+It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`). On macOS and Linux the plugin sets the folder so that only your user can open it. On Windows the plugin sets no access rules: the folder has those of the folder it sits in, which is your user profile unless Claude Code's data was moved.
 
 One kind of file in it can hold text from your session:
 
@@ -77,6 +77,8 @@ The other files hold ids, times, counts and HTTP statuses. They hold no text fro
 | `status.json` | What `/emet:status` reports: the plugin version, Team ID, capture mode, the email sent, the public start of the key, the result of the key check, counts, the pause time, and for the last five sessions the repository folder name, the time and the report link. | Rewritten at every run. |
 | `emet.log`, `emet.log.1` | One line for each thing the plugin did: the time, ids, counts, HTTP statuses, Emet's short error codes and the names of error types. | The log starts again at 1 MB, and one earlier file is kept. |
 | `*.lock` | Nothing. They stop two processes from writing one file at once. | The plugin is uninstalled. |
+
+If the plugin is stopped in the middle of writing a file, a hidden copy named `.<name>.<number>.tmp` can stay behind next to it. One left in `queue/` holds that turn's text. It is never sent, the queue's limits do not count it, and it stays until you delete it or uninstall the plugin. Deleting such a file is safe while no Claude Code session is running.
 
 The log and `status.json` never hold the key, a prompt, an answer or a tool result. Of an error Emet answers with, they keep the HTTP status and a short code of lowercase letters and underscores, never the message.
 

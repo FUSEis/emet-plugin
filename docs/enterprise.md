@@ -104,5 +104,5 @@ Images and binary content are never sent in any mode.
 - The hook is one Python package in [`claude/scripts/`](../claude/scripts/), standard library only, a few hundred lines. It runs with the developer's permissions, like any hook.
 - It sends only to Emet (`https://app.emet.so`), over HTTPS, and refuses any other destination. The one exception is an Emet on the same machine, for plugin development.
 - It reads the session transcript, saved tool outputs and subagent transcripts in Claude Code's own project folder, and nothing outside it. It also parses Claude Code's account file (`~/.claude.json`) and keeps only `oauthAccount.emailAddress`. It runs no other program.
-- It writes only to its own data folder, with owner-only permissions. The status file and log never hold content or the key.
+- It writes only to its own data folder, with owner-only permissions on macOS and Linux. On Windows it has the access rules of the folder it sits in, normally the user profile. The status file and log never hold content or the key.
 - [claude/README.md](../claude/README.md#what-is-sent) lists every field it sends in each mode.
