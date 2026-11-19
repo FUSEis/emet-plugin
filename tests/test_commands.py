@@ -490,7 +490,8 @@ def test_key_check_reports_a_refused_key(environ, emet, code):
         ("application/json", b'{"code": "not_assessed"}'),
         ("application/json", b'{"code": ["not_found"]}'),
         ("application/json", b"\xff\xfe"),
-        ("application/json", b"[" * 100_000),
+        # Named, since Windows cannot hold a test id this long in its environment
+        pytest.param("application/json", b"[" * 100_000, id="deeply nested json"),
     ],
 )
 def test_a_404_that_is_not_emets_own_is_never_read_as_accepted(environ, emet, content_type, body):
