@@ -862,14 +862,22 @@ def test_the_stop_file_is_written_again_when_another_process_has_it_open(session
     assert [path.name for path in (root(environ) / "state").iterdir() if path.name.endswith(".tmp")] == []
 
 
-def test_a_stop_file_that_cannot_be_written_for_another_reason_is_not_tried_again(session, environ, emet, clock):
-    watch.stop_path(root(environ), SESSION).mkdir()
+def test_a_stop_file_that_cannot_be_written_for_another_reason_is_not_tried_again(session, environ, emet, clock, monkeypatch):
+    real = os.replace
+    tries = []
+
+    def replace(source, target):
+        if str(target).endswith(".stop.json"):
+            tries.append(target)
+            raise FileNotFoundError
+        real(source, target)
+
+    monkeypatch.setattr(os, "replace", replace)
     deliver(environ, clock)
     emet.report(T1, 200, document())
-    start = clock.now
     assert stop(session, environ) == 2
-    assert clock.now - start == 8
-    assert "stop not written" in log(environ)
+    assert len(tries) == 1
+    assert "stop not written FileNotFoundError" in log(environ)
 
 
 def test_a_write_that_fails_leaves_no_temporary_file_behind(tmp_path, monkeypatch):
