@@ -498,6 +498,9 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     save_verdict(root, verdict)
     # Recorded before Claude is woken, so a crash in between cannot wake it twice
     if not record(root, session_id, trace.trace_uuid, FLAGGED, {"handed": not held, **({"held": held} if held else {}), **ids}):
+        if not held:
+            # Claude is not woken, and the saved verdict must not say it was
+            save_verdict(root, {**verdict, "handed": False})
         return ""
     if held:
         storage.log(root, f"report {trace.trace_uuid} not handed to Claude, {held}")
@@ -516,7 +519,7 @@ def unchecked(root: Path, config: Config, session_id: str, outcome: str) -> List
     """Returns the delivered turns with no final outcome, less than a day old, whose last outcome is not this one already."""
     found = checks(root, session_id)
     done = settled(found)
-    last = {item.get("trace_uuid"): item.get("outcome") for item in found}
+    last = {item["trace_uuid"]: item.get("outcome") for item in found if isinstance(item.get("trace_uuid"), str)}
     now = pause.clock()
     return [
         trace
@@ -570,6 +573,9 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
             plan = plans.setdefault(trace.trace_uuid, Plan(max(now, start + FIRST_S)))
             if plan.due > now:
                 continue
+            # Checked before each request: the ones before it in this pass can each take the full timeout
+            if pause.clock() - start >= BUDGET_S:
+                break
             answer = read_report(config, trace.trace_uuid)
             if answer.status == 200:
                 done.add(trace.trace_uuid)
@@ -612,6 +618,7 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
         storage.log(root, "watch skipped, a hook started the turn")
         return ""
     if config.problem:
+        storage.log(root, "watch skipped, the plugin is not set up")
         return skip(root, config, session_id, NOT_CONFIGURED)
     transcript_path = str(hook_input.get("transcript_path") or "")
     found, size = session_entries(transcript_path)

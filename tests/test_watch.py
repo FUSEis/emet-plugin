@@ -204,6 +204,25 @@ def test_a_report_that_is_never_ready_is_asked_for_thirteen_times_in_five_minute
     assert outcomes(environ) == [(T1, "timed_out", False)]
 
 
+def test_no_request_starts_after_five_minutes_however_slow_the_ones_before_it(session, environ, emet, clock, monkeypatch):
+    traces = [str(uuid.UUID(int=number)) for number in range(1, 6)]
+    for trace in traces:
+        deliver(environ, clock, trace)
+    begun = []
+    start = clock.now
+
+    def slow(settings, trace_uuid):
+        begun.append(clock.now - start)
+        clock.advance(watch.REQUEST_TIMEOUT_S)
+        return watch.Answer(0)
+
+    monkeypatch.setattr(watch, "read_report", slow)
+    assert stop(session, environ) == 0
+    assert 290 <= max(begun) < 300
+    assert clock.now - start < watch.HARD_STOP_S
+    assert outcomes(environ) == [(trace, "timed_out", False) for trace in traces]
+
+
 def test_a_turn_still_waiting_when_the_time_is_up_is_polled_after_the_next_stop(session, environ, emet, clock, capfdbinary):
     deliver(environ, clock)
     emet.report(T1, 202)
@@ -625,6 +644,30 @@ def test_a_second_watcher_of_a_session_leaves_at_once(session, environ, emet, cl
     assert stop(session, environ) == 2
 
 
+def test_the_poller_never_takes_the_session_lock_or_the_queue_lock(session, environ, emet, clock, monkeypatch):
+    taken = []
+    real = storage.locked
+
+    def named(path):
+        taken.append(path.name)
+        return real(path)
+
+    deliver(environ, clock)
+    deliver(environ, clock, T2)
+    monkeypatch.setattr(storage, "locked", named)
+    emet.report(T1, 429, retry_after="1")
+    emet.report(T1, 200, document(status="clear"))
+    emet.report(T2, 200, document())
+    assert stop(session, environ) == 0
+    clock.advance(2)
+    session_lock = storage.try_locked(root(environ) / "state" / f"{SESSION}.lock")
+    with session_lock as first, storage.try_locked(root(environ) / "queue.lock") as second:
+        assert first and second
+        assert stop(session, environ) == 2
+    assert {outcome for _, outcome, _ in outcomes(environ)} == {"rate_limited", "clear", "flagged"}
+    assert set(taken) == {"status.lock", "pause.lock"}
+
+
 def test_the_lock_is_taken_without_waiting_and_freed_after(tmp_path):
     path = tmp_path / "some.lock"
     with storage.try_locked(path) as first:
@@ -794,6 +837,13 @@ def test_a_stop_that_is_not_polled_records_only_turns_still_waiting_and_the_five
     assert outcomes(environ)[2:] == [(trace, "no_person", False) for trace in traces[3:8]]
 
 
+def test_a_stop_that_is_not_polled_records_nothing_for_a_turn_older_than_a_day(transcript, environ, emet, clock):
+    not_polled(transcript, environ, "no_person")
+    deliver(environ, clock, ago=24 * 3600 + 60)
+    assert stop(transcript, environ) == 0
+    assert not watch.checks_path(root(environ), SESSION).exists()
+
+
 def test_the_same_reason_is_recorded_once_for_a_turn_until_another_outcome_follows(transcript, environ, emet, clock):
     headless = not_polled(transcript, environ, "no_person")
     deliver(environ, clock)
@@ -890,7 +940,7 @@ def test_a_report_that_cannot_be_recorded_wakes_no_one(session, environ, emet, c
     assert stop(session, environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
     assert emet.polled(T1) == 1
-    assert len(watch.verdicts(root(environ), SESSION)) == 1
+    assert [item["handed"] for item in watch.verdicts(root(environ), SESSION)] == [False]
     assert f"report {T1} -> flagged, not recorded" in log(environ)
 
 
@@ -1044,6 +1094,19 @@ def test_an_outcome_written_after_a_line_cut_short_is_still_read(session, enviro
     assert outcomes(environ) == [(T1, "clear", True)]
 
 
+@pytest.mark.parametrize("skipped_for", ["no_person", "paused"])
+def test_a_damaged_line_of_the_outcome_file_never_stops_a_run(transcript, environ, emet, clock, skipped_for):
+    not_polled(transcript, environ, skipped_for)
+    damaged = [{"trace_uuid": ["a list"], "outcome": skipped_for}, {"trace_uuid": {"a": 1}, "final": True}, {"outcome": 5}, {}]
+    watch.checks_path(root(environ), SESSION).write_text("".join(json.dumps(line) + "\n" for line in damaged), encoding="utf-8")
+    deliver(environ, clock)
+    if skipped_for == "paused":
+        pause.extend(root(environ))
+    assert stop(transcript, environ) == 0
+    assert "watch error" not in log(environ)
+    assert watch.checks(root(environ), SESSION)[-1]["outcome"] == skipped_for
+
+
 def test_an_outcome_file_that_is_not_text_reads_as_empty(environ):
     watch.checks_path(root(environ), SESSION).write_bytes(b"\xff\xfe\n[1]\n")
     assert watch.checks(root(environ), SESSION) == []
@@ -1115,6 +1178,7 @@ def test_nothing_is_asked_without_configuration(session, environ, emet, clock, n
     assert stop(session, environ) == 0
     assert emet.reads == [] and clock.now == start
     assert outcomes(environ) == [(T1, "not_configured", False)]
+    assert "watch skipped, the plugin is not set up" in log(environ)
 
 
 def test_nothing_is_asked_of_a_host_other_than_emet(session, environ, emet, clock, monkeypatch):
