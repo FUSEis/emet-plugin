@@ -186,7 +186,7 @@ def test_an_endpoint_that_cannot_be_reached_starts_a_pause(transcript, environ, 
     def unreachable(request, timeout=None):
         raise ConnectionRefusedError
 
-    monkeypatch.setattr(transport.urllib.request, "urlopen", unreachable)
+    monkeypatch.setattr(transport, "ask", unreachable)
     finished_turn(transcript)
     run(transcript, environ)
     assert left(environ, clock) == 30

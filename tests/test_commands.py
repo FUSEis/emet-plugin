@@ -13,7 +13,7 @@ import pytest
 
 from conftest import API_KEY
 from emet_claude import commands, config, envelope, pause, pending, storage, transport
-from helpers import NOT_FOUND, Transcript
+from helpers import NOT_FOUND, FakeEmet, Transcript
 
 
 def run(transcript, environ):
@@ -335,7 +335,7 @@ def test_a_refusal_is_never_counted_as_a_turn_that_could_not_be_read(transcript,
 
 
 def outage(kind):
-    def urlopen(request, timeout=None):
+    def ask(request, timeout=None):
         if kind == "timeout":
             raise TimeoutError
         if kind == "refused":
@@ -345,7 +345,7 @@ def outage(kind):
         body = CutOff() if kind == "body cut off" else io.BytesIO(b"")
         raise urllib.error.HTTPError(request.full_url, 503, "Service Unavailable", email.message.Message(), body)
 
-    return urlopen
+    return ask
 
 
 class CutOff(io.BytesIO):
@@ -357,7 +357,7 @@ class CutOff(io.BytesIO):
 
 @pytest.mark.parametrize("kind", ["timeout", "refused", "not http", "503", "body cut off"])
 def test_an_outage_is_never_counted_as_a_turn_that_could_not_be_read(transcript, environ, clock, monkeypatch, kind):
-    monkeypatch.setattr(transport.urllib.request, "urlopen", outage(kind))
+    monkeypatch.setattr(transport, "ask", outage(kind))
     finished_turn(transcript)
     finished_turn(transcript, "next", "ok")
     run(transcript, environ)
@@ -369,6 +369,53 @@ def test_an_outage_is_never_counted_as_a_turn_that_could_not_be_read(transcript,
     log = (root / "emet.log").read_text(encoding="utf-8")
     assert "turn skipped" not in log and "worker error" not in log
     assert [item for item in pending.lines(root, "session-1") if "finished" not in item] == []
+
+
+@pytest.fixture
+def elsewhere():
+    """A second address, which must never be asked anything."""
+    server = FakeEmet()
+    yield server
+    server.close()
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+def test_a_redirected_send_is_not_followed_and_the_turn_waits(transcript, environ, emet, elsewhere, clock, code):
+    emet.statuses = [code]
+    emet.location = f"{elsewhere.url}/api/v1/traces/?token=secret-token"
+    prompt = finished_turn(transcript)
+    run(transcript, environ)
+    # Nothing reached the address the answer pointed to, so the key was not sent there
+    assert elsewhere.requests == [] and elsewhere.reads == []
+    assert len(emet.requests) == 1
+    root = storage.data_dir(environ)
+    assert status(environ)["queued"] == 1
+    assert pause.until(root)
+    assert pending.refused(root, "session-1") == set()
+    assert state(environ)["last_trace"] == prompt["uuid"]
+    assert status(environ)["last_error"]["detail"] == f"{code} redirected"
+    assert status(environ)["recent"] == []
+    log = (root / "emet.log").read_text(encoding="utf-8")
+    assert f"-> {code} redirected" in log
+    for text in (log, (root / "status.json").read_text(encoding="utf-8")):
+        assert "secret-token" not in text and elsewhere.url not in text and API_KEY not in text
+    # Once Emet answers as itself again, the turn is delivered
+    clock.advance(60)
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [prompt["uuid"]] * 2
+    assert status(environ)["queued"] == 0
+    assert elsewhere.requests == [] and elsewhere.reads == []
+
+
+def test_a_redirect_that_repeats_its_address_in_the_body_keeps_it_out_of_the_log(environ, monkeypatch):
+    def redirected(request, timeout=None):
+        body = io.BytesIO(b'<a href="https://elsewhere.example/?token=secret-token">moved</a>')
+        raise urllib.error.HTTPError(request.full_url, 302, "Found", email.message.Message(), body)
+
+    monkeypatch.setattr(transport, "ask", redirected)
+    outcome = transport.post(commands.load(environ), {})
+    assert (outcome.status, outcome.delivered, outcome.final, outcome.detail) == (302, False, False, "")
+    assert transport.describe(outcome) == "302 redirected"
 
 
 def test_an_error_while_sending_is_not_taken_for_a_turn_that_could_not_be_built(transcript, environ, emet, monkeypatch):

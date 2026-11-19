@@ -113,7 +113,7 @@ def test_the_skills_name_the_person_sources_the_code_reports():
 
 def test_the_status_skill_explains_the_pause_and_the_log_lines_it_leaves():
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
-    for named in ("`paused_until`", "`paused 30s`", "`paused, queued without sending`", "`worker start failed ...`"):
+    for named in ("`paused_until`", "`paused 30s`", "`paused, queued without sending`", "`worker start failed ...`", "`302 redirected`"):
         assert named in text, named
 
 

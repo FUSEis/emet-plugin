@@ -149,6 +149,8 @@ class FakeEmet:
         self.gaps: List[str] = []
         # Sent as Retry-After with every send that is not accepted
         self.retry_after: Optional[str] = None
+        # Where a send answered with a redirect status points
+        self.location = "/elsewhere/"
         # Report reads, kept apart from the sends; each is answered with the next (status, content type, body), then Emet's not found
         self.reads: List[Dict[str, Any]] = []
         self.read_replies: List[Tuple[int, str, bytes]] = []
@@ -173,6 +175,8 @@ class FakeEmet:
                 self.send_header("Content-Length", str(len(reply)))
                 if status != 202 and owner.retry_after is not None:
                     self.send_header("Retry-After", owner.retry_after)
+                if 300 <= status < 400:
+                    self.send_header("Location", owner.location)
                 self.end_headers()
                 self.wfile.write(reply)
 

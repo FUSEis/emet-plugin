@@ -55,8 +55,23 @@ class Outcome:
     retry_after: Optional[float] = None
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, so the key is never sent on to another address."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def ask(request: urllib.request.Request, timeout: float) -> Any:
+    """Makes one request and follows no redirect: a 3xx answer is raised as an HTTPError."""
+    return urllib.request.build_opener(NoRedirect).open(request, timeout=timeout)
+
+
 def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
-    """Sends one envelope. final is True when resending would not change the answer."""
+    """Sends one envelope. final is True when resending would not change the answer.
+
+    A redirect is not followed and not final: the turn waits, as when Emet cannot be reached.
+    """
     request = urllib.request.Request(
         f"{config.endpoint}/api/v1/traces/",
         data=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
@@ -68,7 +83,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+        with ask(request, TIMEOUT_S) as response:
             # Delivered once Emet answered; the body only adds the report link
             reply = b""
             with contextlib.suppress(OSError, http.client.HTTPException):
@@ -78,20 +93,14 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
         body = b""
         # The status is the answer; a body that cannot be read changes nothing
         with contextlib.suppress(OSError, http.client.HTTPException):
-            body = error.read(500)
-        final = error.code < 500 and error.code not in RETRYABLE
+            # A redirect's body can repeat the address it points to, so it is not kept
+            body = b"" if error.code < 400 else error.read(500)
+        final = 400 <= error.code < 500 and error.code not in RETRYABLE
         detail = body.decode("utf-8", "replace")
         return Outcome(error.code, False, final, detail, retry_after=pause.named(error.headers.get("Retry-After")))
     # HTTPException: an answer that is not HTTP, as a broken proxy gives
     except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
         return Outcome(0, False, False, type(error).__name__)
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuses every redirect, so the key is never sent on to another address."""
-
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None
 
 
 def miss_code(body: bytes) -> str:
@@ -119,7 +128,7 @@ def check_key(config: Config) -> str:
         method="GET",
     )
     try:
-        with urllib.request.build_opener(NoRedirect).open(request, timeout=KEY_CHECK_TIMEOUT_S) as response:
+        with ask(request, KEY_CHECK_TIMEOUT_S) as response:
             return f"unexpected {response.status}"
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
@@ -202,6 +211,9 @@ def describe(outcome: Outcome) -> str:
         return f"{outcome.status} key rejected"
     if outcome.status == 0:
         return f"network {outcome.detail}"
+    if outcome.status < 400:
+        # Never the address it points to, which can hold a token
+        return f"{outcome.status} redirected"
     return f"{outcome.status} {outcome.detail[:200]}"
 
 
