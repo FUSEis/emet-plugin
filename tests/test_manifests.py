@@ -1,10 +1,15 @@
 """Keeps the manifests, the code and the docs consistent with each other."""
 
+import importlib.util
+import io
 import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from emet_claude import VERSION
 
@@ -141,3 +146,67 @@ def test_the_dev_settings_file_is_ignored():
     for name in ("dev/.env", "dev/.env.local", "dev/.env.swp"):
         assert ignored(name), name
     assert not ignored("dev/.env.example")
+
+
+def changelog_check():
+    """Loads the script CI runs. It lives outside any package, next to the workflow that calls it."""
+    spec = importlib.util.spec_from_file_location("changelog_check", ROOT / ".github" / "scripts" / "changelog_check.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def checked(monkeypatch, paths, labels):
+    """Runs the check as CI does: the changed paths on stdin, NUL between them, and the labels in the environment."""
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO("\0".join(paths).encode() + b"\0")))
+    monkeypatch.setenv("PR_LABELS", labels)
+    return changelog_check().main()
+
+
+CODE_FILE = "claude/scripts/emet_claude/watch.py"
+
+
+@pytest.mark.parametrize(
+    ("paths", "labels", "code"),
+    [
+        ([CODE_FILE], "[]", 1),
+        ([CODE_FILE, "tests/test_watch.py", "README.md"], '["documentation"]', 1),
+        (["claude/scripts/emet_hook.py"], "[]", 1),
+        ([CODE_FILE, "CHANGELOG.md"], "[]", 0),
+        ([CODE_FILE], '["documentation", "no-changelog"]', 0),
+        (["claude/README.md", "claude/hooks/hooks.json", "tests/test_watch.py"], "[]", 0),
+        # Only the changelog at the root counts, and only a label of exactly that name
+        ([CODE_FILE, "docs/CHANGELOG.md"], "[]", 1),
+        ([CODE_FILE], '["no-changelog-needed"]', 1),
+        ([CODE_FILE], '"no-changelog"', 1),
+        ([CODE_FILE], "not json", 1),
+        ([CODE_FILE], "", 1),
+        ([], "[]", 0),
+    ],
+)
+def test_a_change_to_the_plugins_code_needs_a_changelog_entry_or_the_label(monkeypatch, capsys, paths, labels, code):
+    assert checked(monkeypatch, paths, labels) == code
+    said = capsys.readouterr().out
+    assert (CODE_FILE in said) is (code == 1 and CODE_FILE in paths)
+
+
+def test_the_required_check_waits_for_the_changelog_job_and_runs_again_when_a_label_changes():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    triggers = re.search(r"^  pull_request:\n(?:    #.*\n)*    types: \[(.+)\]$", workflow, re.M)
+    assert triggers is not None
+    assert {"opened", "synchronize", "reopened", "labeled", "unlabeled"} <= set(triggers.group(1).split(", "))
+    required = workflow.partition("\n  ci:\n")[2]
+    needs = re.search(r"^    needs: \[(.+)\]$", required, re.M)
+    assert needs is not None
+    # A job the required check does not wait for and test could fail without holding a merge
+    jobs = set(re.findall(r"^  ([a-z]+):$", workflow.partition("\njobs:\n")[2], re.M)) - {"ci"}
+    assert set(needs.group(1).split(", ")) == jobs and "changelog" in jobs
+    for job in jobs:
+        assert f'[ "${{{{ needs.{job}.result }}}}" = "success" ]' in required, job
+    assert "python3 .github/scripts/changelog_check.py" in workflow
+    assert "pull_request_target" not in workflow
+
+
+def test_contributing_names_the_label_the_changelog_check_reads():
+    assert f"`{changelog_check().LABEL}`" in (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
