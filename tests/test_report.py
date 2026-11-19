@@ -432,6 +432,33 @@ def test_every_line_of_the_block_is_json_the_plugin_wrote():
     assert all(line.lstrip(" ").startswith(('"', "{", "}", "[", "]")) for line in inside.splitlines())
 
 
+@pytest.mark.parametrize("field", ["text", "reason", "correction", "answer"])
+def test_cleaning_would_change_no_line_of_a_rendered_message_whatever_the_report_holds(field):
+    nasty = (
+        HOSTILE + "\x00\x07\x1b[31m\u202e\u200b\ufe0f\U000e0101\ue000\ud800\u2800\uff1cb\uff1e\t\r\n\u2028\xa0\u3000 \u00e9\u4e2d\U0001f600"
+    )
+    doc = document([claim(n, "disputed", passage=FIRST, reason="No.") for n in range(1, 4)])
+    if field == "answer":
+        doc["answer"]["text"] = nasty
+        doc["claims"][0]["ranges"] = [{"kind": "passage", "start": 0, "end": len(nasty)}]
+    else:
+        doc["claims"][0][field] = nasty
+    for text in (wake(doc), report.missed_message(doc, ENDPOINT, SESSION, CONVERSATION), *worst("http://localhost:8000/" + "a" * 100)):
+        assert report.is_clean(text)
+        assert "\n" in text
+    for doc in (None, {"version": 2}, document(status="clear")):
+        assert report.is_clean(report.missed_message(doc, ENDPOINT, SESSION, CONVERSATION))
+
+
+@pytest.mark.parametrize(
+    "character", ["\x00", "\x1b", "\r", "\t", "\xa0", "\u2028", "\u202e", "\u200b", "\ufe0f", "\ue000", "\ud800", "\u2800", "\uff1c"]
+)
+def test_a_text_holding_a_character_cleaning_would_drop_or_change_is_not_clean(character):
+    assert report.is_clean("one line\n two <lines> \u00e9\u4e2d\U0001f600")
+    assert not report.is_clean(f"one{character}line")
+    assert not report.is_clean(f"one line\n{character}")
+
+
 def test_control_bidirectional_and_invisible_characters_are_removed():
     hidden = (
         "pay\x00\x07\x1b[31m \u202eevil\u202c \u2066x\u2069 zero\u200b\u200dwidth\ufeff tag\U000e0041\U000e007f "

@@ -191,22 +191,32 @@ def block(data: Dict[str, Any]) -> str:
     return f"{OPEN}\n{body}\n{CLOSE}"
 
 
-def clean(value: Any, limit: int) -> str:
-    """Returns one line of plain text within the limit, marked when cut. Anything but a string is dropped."""
-    if not isinstance(value, str):
-        return ""
+def scrub(value: str) -> str:
+    """Returns the text with every blank character as a space, lookalike brackets as real ones, and no control or invisible character."""
     kept = []
-    for char in BLANKS.sub("", VARIATION_SELECTORS.sub("", value[: limit * SCAN])).translate(LOOKALIKES):
+    for char in BLANKS.sub("", VARIATION_SELECTORS.sub("", value)).translate(LOOKALIKES):
         if char.isspace():
             kept.append(" ")
         elif unicodedata.category(char) not in DROPPED_CATEGORIES:
             kept.append(char)
-    text = " ".join("".join(kept).split())
+    return "".join(kept)
+
+
+def clean(value: Any, limit: int) -> str:
+    """Returns one line of plain text within the limit, marked when cut. Anything but a string is dropped."""
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(scrub(value[: limit * SCAN]).split())
     if not text:
         return ""
     if len(text) > limit or len(value) > limit * SCAN:
         return text[:limit].rstrip() + CUT
     return text
+
+
+def is_clean(text: str) -> bool:
+    """Says whether cleaning would change no line of the text. True of every message render returns, so a saved one is held to it."""
+    return all(scrub(line) == line for line in text.split("\n"))
 
 
 def is_count(value: Any) -> bool:
