@@ -204,7 +204,13 @@ def test_the_required_check_waits_for_the_changelog_job_and_runs_again_when_a_la
     assert set(needs.group(1).split(", ")) == jobs and "changelog" in jobs
     for job in jobs:
         assert f'[ "${{{{ needs.{job}.result }}}}" = "success" ]' in required, job
-    assert "python3 .github/scripts/changelog_check.py" in workflow
+    job = workflow.partition("\n  changelog:\n")[2].partition("\n  ci:\n")[0]
+    # The first parent of the merge commit CI checks out is the base branch, so two commits are enough
+    assert "fetch-depth: 2" in job
+    assert 'git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"' in job
+    assert 'python3 .github/scripts/changelog_check.py < "$RUNNER_TEMP/changed"' in job
+    assert "PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in job
+    assert "if: github.event_name == 'pull_request'" in job
     assert "pull_request_target" not in workflow
 
 
@@ -220,7 +226,7 @@ def section(path, heading):
 
 
 def test_the_readme_lists_every_file_the_plugin_keeps():
-    from emet_claude import pause, pending, report, transport, watch
+    from emet_claude import pause, pending, report, storage, transport, watch
 
     kept = section("claude/README.md", "## Where data goes and what stays local")
     here = Path("data")
@@ -241,18 +247,12 @@ def test_the_readme_lists_every_file_the_plugin_keeps():
     for name in names:
         assert f"`{name}`" in kept, name
     # Each file the report check alone writes says so
-    for name in names[3:6] + [pause.READS]:
+    for name in [*names[3:6], pause.READS]:
         assert f"`{name}` (report check)" in kept, name
     assert f"{report.TOTAL_LIMIT:,} characters at most" in kept
     assert f"| {watch.VERDICT_DAYS} days." in kept
     assert f"At most {transport.QUEUE_MAX_FILES} files or {transport.QUEUE_MAX_BYTES // 1024**2} MB" in kept
-    assert f"starts again at {storage_log_megabytes()} MB" in kept
-
-
-def storage_log_megabytes():
-    from emet_claude import storage
-
-    return storage.LOG_MAX_BYTES // 1_000_000
+    assert f"starts again at {storage.LOG_MAX_BYTES // 1_000_000} MB" in kept
 
 
 def test_the_security_policy_states_the_limits_the_code_holds():

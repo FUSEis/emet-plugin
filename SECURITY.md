@@ -43,7 +43,7 @@ This lowers the chance that a report steers Claude. It cannot remove it, because
 ### What is not a boundary
 
 - **Another process running as you.** It can read the transcript and the data folder, queued turns and saved report text included, and it can change the plugin's files. The owner-only permissions and the checks on file names keep other users out and catch damage. They do not stop a process that already runs as you.
-- **Whoever sets Claude Code's environment.** Options reach the plugin through it. It cannot name another host, but it can name a program listening on your own machine, which then receives the key and the turns. [docs/enterprise.md](docs/enterprise.md) says how managed settings close this.
+- **Whoever sets Claude Code's environment.** Options reach the plugin through it. It cannot name another host. It can name a program listening on your own machine, which then receives the key and the turns. [docs/enterprise.md](docs/enterprise.md) says how managed settings close this.
 - **Redaction.** `sanitized` removes the secrets its patterns know. Use `metadata` where that is not enough.
 
 ## Scope
