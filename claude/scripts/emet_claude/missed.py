@@ -168,11 +168,8 @@ def choose(raw: bytes, environ: Mapping[str, str]) -> str:
     if not isinstance(hook_input, dict):
         return ""
     session_id = str(hook_input.get("session_id") or "")
-    # The session id names files
-    if not pending.SESSION_ID.fullmatch(session_id):
-        return ""
     root = storage.data_dir(environ)
-    # Nearly every prompt ends here, after one look at a folder
+    # Nearly every prompt ends here, after one look at a folder. An id that is no plain name has no verdicts
     saved = watch.verdicts(root, session_id)
     if not saved:
         return ""
