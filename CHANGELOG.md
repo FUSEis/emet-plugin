@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- The code that reads a turn's report from Emet after the turn ends, and tells Claude when the report disputes a claim (`watch.py`). No hook starts it, so nothing changes for an installed plugin. [claude/README.md](claude/README.md#where-data-goes-and-what-stays-local) lists the files it writes when it runs.
+- `claude/README.md` lists every file the plugin keeps in its data folder, what each holds, which can hold text from a turn or a report, and for how long.
+- `SECURITY.md` has a trust model: what the plugin reads, where it sends, how it treats Emet's answers and reports, what it does not defend against, and how to pin a release to a tag or a commit.
+
+### Changed
+
+- The turn Claude takes after the plugin woke it with a report is sent with `emet.plugin.turn_started_by` set to `report_wake` on its turn span, and with a fixed placeholder as its prompt, so Emet's own report text is not sent back as a person's message. Only a turn that follows a wake the plugin recorded is marked, so no turn is marked while no hook starts the report check.
+- `status.json` has a `reads_paused_until` field, empty unless Emet limited the rate of the report reads.
+
 ## [0.1.4] - 2026-11-19
 
 ### Added
