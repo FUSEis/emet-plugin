@@ -13,17 +13,7 @@ UNREADABLE = [
     pytest.param(None, id="no_file"),
     pytest.param(b"not json {", id="not_json"),
     pytest.param(b"\xff\xfe", id="not_utf8"),
-    pytest.param(
-        b"[" * 100_000,
-        id="nested_too_deep",
-        marks=pytest.mark.xfail(
-            strict=True,
-            raises=RecursionError,
-            reason="storage.read_json catches OSError and ValueError only, so a file nested too deep raises RecursionError "
-            "where every other reader of the plugin's files passes such a line over. One damaged status.json, state or "
-            "stop file then ends every run that reads it. Fix: add RecursionError to the except in read_json",
-        ),
-    ),
+    pytest.param(b"[" * 100_000, id="nested_too_deep"),
 ]
 
 
