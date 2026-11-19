@@ -308,3 +308,31 @@ def test_the_pause_file_holds_one_time_in_the_form_of_the_other_files(environ, c
 def test_the_pause_file_is_private(environ):
     pause.extend(root(environ))
     assert stat.S_IMODE(pause.path(root(environ)).stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("name", [pause.SENDS, pause.READS])
+def test_an_answer_does_not_end_a_pause_another_process_has_just_started(environ, clock, name):
+    pause.extend(root(environ), 120.0, name)
+    until = pause.until(root(environ), name)
+    pause.clear(root(environ), name)
+    assert pause.until(root(environ), name) == until
+    clock.advance(121)
+    pause.clear(root(environ), name)
+    assert not pause.path(root(environ), name).exists()
+
+
+def test_a_pause_is_forgotten_under_the_lock_that_starts_one(environ, clock, monkeypatch):
+    taken = []
+    real = storage.locked
+
+    def named(path):
+        taken.append(path.name)
+        return real(path)
+
+    pause.extend(root(environ))
+    clock.advance(31)
+    monkeypatch.setattr(storage, "locked", named)
+    pause.clear(root(environ))
+    assert taken == ["pause.lock"]
+    pause.clear(root(environ))
+    assert taken == ["pause.lock"]

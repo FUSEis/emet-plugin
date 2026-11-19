@@ -89,6 +89,13 @@ def extend(root: Path, retry_after: Optional[float] = None, name: str = SENDS) -
 
 
 def clear(root: Path, name: str = SENDS) -> None:
-    """Ends the pause once Emet answered."""
+    """Forgets a pause that has run out, once Emet answered, so the next one starts short. Never raises.
+
+    One still in force was started by another process a moment ago, and stays.
+    """
     with contextlib.suppress(OSError):
-        path(root, name).unlink()
+        if not path(root, name).exists():
+            return
+        with storage.locked(root / "pause.lock"):
+            if not until(root, name):
+                path(root, name).unlink()
