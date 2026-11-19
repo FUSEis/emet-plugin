@@ -275,10 +275,13 @@ class Builder:
             return
         path, meta = found
         try:
-            items, offset = transcript.read_entries(path, 0, sidechain=True)
+            read = transcript.read_subagent(self.transcript_path, path, 0)
         # A subagent file that cannot be read costs that subagent, not the turn
         except OSError:
             return
+        if read is None:
+            return
+        items, offset = read
         agent_id = str(meta.get("agentId") or path.stem.replace("agent-", ""))
         agent_span_id = span_id("agent", agent_id)
         times = timestamps.of(entry for _, entry in items)
