@@ -718,6 +718,8 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
         "conversation_uuid": trace.conversation_uuid,
         "endpoint": config.endpoint,
         "at": storage.now(pause.clock()),
+        # Which wording of the fixed words the text was rendered with
+        "prompt_version": report.PROMPT_VERSION,
         # True only once the hand-over is recorded. Even then it is not proof that Claude told the user
         "handed": False,
         # The rendered text only, never the document
@@ -725,7 +727,8 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     }
     save_verdict(root, verdict)
     # Recorded before Claude is woken, so a crash in between cannot wake it twice
-    if not record(root, session_id, trace.trace_uuid, FLAGGED, {"handed": not held, **({"held": held} if held else {}), **ids}):
+    line = {"handed": not held, **({"held": held} if held else {}), **ids, "prompt_version": report.PROMPT_VERSION}
+    if not record(root, session_id, trace.trace_uuid, FLAGGED, line):
         return ""
     if held:
         storage.log(root, f"report {trace.trace_uuid} not handed to Claude, {held}")

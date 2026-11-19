@@ -191,7 +191,9 @@ def test_a_flagged_report_is_recorded_under_emets_ids(session, environ, emet, cl
         "handed": True,
         "report_uuid": REPORT,
         "revision": 1,
+        "prompt_version": report.PROMPT_VERSION,
     }
+    assert type(check["prompt_version"]) is int
 
 
 @pytest.mark.parametrize("word", sorted(set(report.STATUS_WORDS) - {"flagged"}))
@@ -230,6 +232,7 @@ def test_the_table_of_outcomes_names_every_outcome_and_whether_it_is_final():
     assert all(f"`{held}`" in watch.__doc__ for held in (watch.CAPPED, watch.NEWER_TURN, watch.LATE))
     assert f"already had {watch.WAKE_CAP} wakes" in watch.__doc__ and f"the {watch.BUDGET_S} seconds" in watch.__doc__
     assert f"more than {watch.LATE_S} seconds after its turn ended" in watch.__doc__
+    assert f"A turn is still polled after those {watch.LATE_S} seconds" in watch.__doc__ and "for the next prompt" in watch.__doc__
 
 
 def test_only_a_listed_outcome_can_be_recorded(environ):
@@ -2060,6 +2063,7 @@ def test_the_saved_verdict_holds_the_rendered_text_and_ids_not_the_document(sess
         "conversation_uuid": CONVERSATION,
         "endpoint": emet.url,
         "at": storage.now(clock.now),
+        "prompt_version": report.PROMPT_VERSION,
         "handed": True,
         "text": report.missed_message(document(long), emet.url, SESSION, CONVERSATION),
     }
