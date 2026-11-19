@@ -1,3 +1,4 @@
+import contextlib
 import email.message
 import http.client
 import io
@@ -1340,3 +1341,53 @@ def test_a_session_whose_state_file_is_of_an_unknown_version_is_neither_sent_aga
     rewrite_state(environ, lambda saved: saved.update(v=1))
     run(transcript, environ)
     assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
+
+
+def test_a_session_left_alone_over_its_state_file_still_sends_what_waits_in_the_queue(transcript, environ, emet, clock):
+    root = storage.data_dir(environ)
+    finished_turn(transcript)
+    run(transcript, environ)
+    rewrite_state(environ, lambda saved: saved.update(v=2))
+    newer = state_file(environ).read_bytes()
+    finished_turn(transcript, "And 3 + 3?", "6")
+    queued_batch(environ, "session-0", "turn-a")
+    queued_batch(environ, "session-1", "turn-b")
+    # A pause holds the queue on this path as on any other
+    pause.extend(root)
+    run(transcript, environ)
+    assert len(emet.envelopes) == 1 and len(transport.queued(root)) == 2
+    clock.advance(pause.LONGEST_S + 1)
+    run(transcript, environ)
+    assert [(env["conversation_id"], env["trace_id"]) for env in emet.envelopes[1:]] == [("session-0", "turn-a"), ("session-1", "turn-b")]
+    assert transport.queued(root) == []
+    assert state_file(environ).read_bytes() == newer
+    assert [line["queued"] for line in pending.lines(root, "session-1") if "finished" in line] == [0, 2, 0]
+    assert status(environ)["queued"] == 0 and status(environ)["recent"][0]["session_id"] == "session-1"
+    assert (root / "emet.log").read_text(encoding="utf-8").count("session not sent") == 2
+
+
+def test_the_queue_is_flushed_under_its_lock_when_a_session_is_left_alone(transcript, environ, emet, monkeypatch):
+    finished_turn(transcript)
+    run(transcript, environ)
+    rewrite_state(environ, lambda saved: saved.update(v=2))
+    queued_batch(environ, "session-0", "turn-a")
+    held, sent = [], []
+    locked, post = storage.locked, transport.post
+
+    @contextlib.contextmanager
+    def spy(path):
+        with locked(path):
+            held.append(path.name)
+            try:
+                yield
+            finally:
+                held.remove(path.name)
+
+    def checked(*args):
+        sent.append("queue.lock" in held)
+        return post(*args)
+
+    monkeypatch.setattr(storage, "locked", spy)
+    monkeypatch.setattr(transport, "post", checked)
+    run(transcript, environ)
+    assert sent == [True]

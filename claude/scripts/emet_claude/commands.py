@@ -225,12 +225,14 @@ def process(
         state = storage.read_json(state_file, {})
         if not isinstance(state, dict):
             state = {}
+        sender = transport.Sender(root, config)
+        # Before the state is judged: a queued turn is whole, of any session, and needs nothing from this file
+        sender.flush()
         if not storage.known_version(state, STATE_VERSION):
             # Read as this version, its place could send the session again or drop turns. Left as it is for the plugin that wrote it
             storage.log(root, "session not sent, its state file is of a version this plugin does not know")
+            update_status(root, config, sender.accepted, **last_error(sender))
             return
-        sender = transport.Sender(root, config)
-        sender.flush()
         builder = Builder(path, Capture(config.capture_mode, secrets=(config.emet_key,)))
         skipped: List[str] = []
 
