@@ -53,7 +53,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 ### What a key in managed settings means
 
 - The managed settings file is readable by the developer on their own machine, and `env` values reach every command Claude Code runs. The key is not kept in the system keychain on this route.
-- The Emet key can only send traces to your organization; it cannot read reports or anything else. Anyone holding it could send turns that would appear as your team's (or any team's, if the key is not pinned), under any member's name (see section 4). In every capture mode the plugin replaces Emet keys with `[REDACTED:emet_key]` wherever they appear in what is sent, such as a command that prints the environment.
+- The Emet key does two things. It sends traces to your organization, and it reads Emet's report of a trace that was sent with a key of the same Application, by the id Emet returned for that trace. A key pinned to a team reads only that team's reports. It cannot sign in to Emet or reach anything else. Anyone holding it could send turns that would appear as your team's (or any team's, if the key is not pinned), under any member's name (see section 4). With the id of a trace, they could also read its report, which quotes the answer Emet checked. In every capture mode the plugin replaces Emet keys with `[REDACTED:emet_key]` wherever they appear in what is sent, such as a command that prints the environment.
 
 To rotate the key:
 

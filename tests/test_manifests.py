@@ -225,44 +225,51 @@ def section(path, heading):
     return text.partition(f"\n{heading}\n")[2].partition("\n## ")[0]
 
 
-def test_the_readme_lists_every_file_the_plugin_keeps():
-    from emet_claude import pause, pending, report, storage, transport, watch
+def test_the_readme_lists_the_files_an_installed_plugin_keeps_and_no_others():
+    from emet_claude import pause, pending, storage, transport, watch
 
     kept = section("claude/README.md", "## Where data goes and what stays local")
     here = Path("data")
-    names = [
+    for name in (
         "queue/*.json",
         "state/<session>.json",
         pending.path(here, "<session>").relative_to(here).as_posix(),
-        watch.checks_path(here, "<session>").relative_to(here).as_posix(),
-        watch.stop_path(here, "<session>").relative_to(here).as_posix(),
-        watch.verdict_folder(here).name + "/*.json",
         pause.SENDS,
-        pause.READS,
         "status.json",
         "emet.log",
         "emet.log.1",
         "*.lock",
-    ]
-    for name in names:
+    ):
         assert f"`{name}`" in kept, name
-    # Each file the report check alone writes says so
-    for name in [*names[3:6], pause.READS]:
-        assert f"`{name}` (report check)" in kept, name
-    assert f"{report.TOTAL_LIMIT:,} characters at most" in kept
-    assert f"| {watch.VERDICT_DAYS} days." in kept
     assert f"At most {transport.QUEUE_MAX_FILES} files or {transport.QUEUE_MAX_BYTES // 1024**2} MB" in kept
     assert f"starts again at {storage.LOG_MAX_BYTES // 1_000_000} MB" in kept
+    # No hook starts the report check, so what it alone writes is not a user's concern
+    assert "watch" not in shipped_hook_modes()
+    for name in (
+        watch.checks_path(here, "s").name.partition(".")[2],
+        watch.stop_path(here, "s").name.partition(".")[2],
+        watch.verdict_folder(here).name,
+        pause.READS,
+        "reads_paused_until",
+        "report check",
+    ):
+        assert name not in kept, name
 
 
-def test_the_security_policy_states_the_limits_the_code_holds():
-    from emet_claude import report, watch
+def shipped_hook_modes():
+    """Returns every mode a hook in the shipped hooks.json runs the script in."""
+    hooks = load(PLUGIN / "hooks" / "hooks.json")["hooks"]
+    return {hook["command"].rsplit(" ", 1)[1] for groups in hooks.values() for group in groups for hook in group["hooks"]}
+
+
+def test_the_security_policy_covers_what_an_installed_plugin_does():
+    from emet_claude import pause, watch
 
     policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
-    assert f"{report.TOTAL_LIMIT:,} characters at most" in policy
-    assert f"for {watch.VERDICT_DAYS} days" in policy
-    assert f"over {watch.REPORT_MAX_BYTES // 1024**2} MB" in policy
     assert "`localhost`, `127.0.0.1`, `::1`" in policy
+    assert "https://github.com/FUSEis/emet-plugin/security/advisories/new" in policy
+    for name in ("emet-report-data", "data block", watch.verdict_folder(Path("data")).name, pause.READS):
+        assert name not in policy, name
 
 
 def test_contributing_names_only_tests_that_exist():
@@ -287,6 +294,7 @@ def test_contributing_lists_every_file_the_plugin_keeps_with_the_module_that_own
         ("state/<session>.stop.json", "watch.py"),
         ("verdicts/<session>.<trace>.<revision>.json", "watch.py"),
         ("queue/<number>-<hash>.json", "transport.py"),
+        ("pause.json", "pause.py"),
         ("read-pause.json", "pause.py"),
         ("status.json", "commands.py"),
         ("emet.log", "storage.py"),

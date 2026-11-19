@@ -78,7 +78,7 @@ The report check (`watch.py` and `report.py`) is the one part of the plugin that
 
 ## Files the plugin keeps
 
-Everything is in the plugin's data folder. [claude/README.md](claude/README.md#where-data-goes-and-what-stays-local) says what each file holds for a user; this table says who owns it. "Sender" is the worker behind the four hooks (`commands.process`), "report check" is `watch.py`.
+Everything is in the plugin's data folder. [claude/README.md](claude/README.md#where-data-goes-and-what-stays-local) tells users about the files an installed plugin writes. This table has every file the code can write, the report check's included, and says who owns each. "Sender" is the worker behind the four hooks (`commands.process`), "report check" is `watch.py`.
 
 | Path | Written by | Read by | Format owned by |
 | --- | --- | --- | --- |
@@ -97,7 +97,7 @@ These files outlive an update, and a session that started before an update keeps
 - **Readers ignore what they do not know.** A key a reader does not know is skipped, and so is a line it cannot read. Writers only add keys. `test_a_line_with_a_field_the_poller_does_not_know_is_still_a_turn` and `test_readable_lines_survive_damaged_ones` (in `tests/test_pending.py`) hold this.
 - **A new outcome word goes in the outcomes table.** Add it to `watch.OUTCOMES` and to the table at the top of `watch.py`, with whether it is final. `test_the_table_of_outcomes_names_every_outcome_and_whether_it_is_final` and `test_only_a_listed_outcome_can_be_recorded` hold this. A reader treats a word it does not know as not final.
 - **A rename needs a version.** No file carries a version today. A change that renames or removes a key, changes what a value means, or renames a file first adds a `v` key to that file, and keeps reading the form without it.
-- **A new file, or new text in a file, goes in the README table** in the same pull request. `test_the_readme_lists_every_file_the_plugin_keeps` holds the names.
+- **The README lists what an installed plugin writes, and nothing else.** A file goes into its table in the pull request that makes a hook write it, and not before. `test_the_readme_lists_the_files_an_installed_plugin_keeps_and_no_others` holds this.
 
 ## Live check
 
