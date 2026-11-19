@@ -7,9 +7,10 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 
@@ -235,6 +236,7 @@ def test_a_session_id_that_is_a_path_never_names_a_file(
 @pytest.fixture
 def closed_port() -> str:
     """The address of a local port nothing listens on."""
+    # Released, not held: macOS leaves a connect to a bound socket that never listens waiting 8 seconds, where a free port refuses at once
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         port = taken.getsockname()[1]
@@ -255,15 +257,63 @@ def test_an_emet_that_cannot_be_reached_ends_the_process_with_exit_0_and_no_outp
     assert outcomes(environ) == [(T1, "timed_out")], "the turn stays to be polled after a later Stop"
 
 
-def test_the_process_ends_itself_while_a_request_hangs(session: Transcript, environ: Dict[str, str], tmp_path: Path) -> None:
-    with socket.socket() as silent:
-        # Accepts the connection in its backlog and never answers
-        silent.bind(("127.0.0.1", 0))
-        silent.listen(1)
-        environ["CLAUDE_PLUGIN_OPTION_ENDPOINT"] = f"http://127.0.0.1:{silent.getsockname()[1]}"
-        deliver(environ)
-        assert watch.REQUEST_TIMEOUT_S > 5, "the request must outlast the one second timer below, or the timer is not what ends the run"
-        result = hook(environ, stop_input(session), waits(tmp_path / "startup", FIRST_S=0, HARD_STOP_S=1))
+class Silent:
+    """A local server that takes one request and never answers it. Keeps what it was sent."""
+
+    def __init__(self) -> None:
+        self.received: List[bytes] = []
+        self.done = threading.Event()
+        self.server = socket.socket()
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(1)
+        # A short wait per try, so close never hangs on a client that did not come
+        self.server.settimeout(0.05)
+        self.thread = threading.Thread(target=self.hold, daemon=True)
+        self.thread.start()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server.getsockname()[1]}"
+
+    def hold(self) -> None:
+        while not self.done.is_set():
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                continue
+            with client:
+                client.settimeout(PROCESS_TIMEOUT_S)
+                try:
+                    self.received.append(client.recv(65536))
+                except OSError:
+                    self.received.append(b"")
+                # Held open and unanswered until the test is over
+                self.done.wait()
+
+    def close(self) -> None:
+        self.done.set()
+        self.thread.join()
+        self.server.close()
+
+
+@pytest.fixture
+def silent() -> Iterator[Silent]:
+    server = Silent()
+    yield server
+    server.close()
+
+
+def test_the_process_ends_itself_while_a_request_hangs(
+    session: Transcript, environ: Dict[str, str], silent: Silent, tmp_path: Path
+) -> None:
+    environ["CLAUDE_PLUGIN_OPTION_ENDPOINT"] = silent.url
+    deliver(environ)
+    assert watch.REQUEST_TIMEOUT_S > 5, "the request must outlast the one second timer below, or the timer is not what ends the run"
+    result = hook(environ, stop_input(session), waits(tmp_path / "startup", FIRST_S=0, HARD_STOP_S=1))
+    asked = b"".join(silent.received)
+    assert asked.startswith(f"GET /api/v1/traces/{T1}/report/ ".encode()), (
+        "the report read must have reached the server that never answers, or the timer ended a process that was not stuck in a request"
+    )
     assert result == (0, b"", b""), "the timer ends a stuck process with exit 0 and no output, below the hook's own limit"
     assert "asked again later" not in log(environ), "the request was still hanging when the process ended, so the timer ended it"
     assert outcomes(environ) == [], "a process ended by its timer records nothing: the turn is polled again after a later Stop"
