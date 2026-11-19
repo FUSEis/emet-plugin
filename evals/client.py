@@ -1,6 +1,6 @@
 """Calls the Anthropic Messages API with the standard library, and a stand-in that replays written replies offline.
 
-Requests and responses are the JSON the API documents (https://platform.claude.com/docs/en/api/messages), as plain dicts.
+Requests and responses are the JSON the API documents (platform.claude.com/docs/en/api/messages), as plain dicts.
 """
 
 from __future__ import annotations
@@ -12,7 +12,9 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
-API_URL = "https://api.anthropic.com/v1/messages"
+# The only host the eval calls. The plugin itself never does
+API_HOST = "api.anthropic.com"
+API_URL = f"https://{API_HOST}/v1/messages"
 # The version whose request and response shapes this file was written against
 API_VERSION = "2026-10-21"
 KEY_VARIABLE = "ANTHROPIC_API_KEY"
@@ -111,7 +113,8 @@ class ReplayClient:
         self.requests: List[Dict[str, Any]] = []
 
     def create(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        self.requests.append(request)
+        # A copy: the caller goes on adding to its messages
+        self.requests.append(json.loads(json.dumps(request)))
         if "output_config" in request and "format" in request["output_config"]:
             graded = json.loads(request["messages"][0]["content"])["reply_to_grade"]
             verdict = {"critique": "Replayed from the hand label.", "verdict": self.labels.get(graded, "pass")}

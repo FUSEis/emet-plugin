@@ -22,7 +22,7 @@ from .graders import Reply
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
-# Small, medium and large, from https://platform.claude.com/docs/en/about-claude/models/overview on 2026-11-19
+# Small, medium and large, from platform.claude.com/docs/en/about-claude/models/overview on 2026-11-19
 MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
 JUDGE_MODEL = "claude-opus-5-5"
 SAMPLES = 5
@@ -217,7 +217,7 @@ def table(result: Dict[str, Any]) -> str:
         "|---|" + "---|" * len(models),
     ]
     for rule in rules.RULES:
-        if any(summary[model]["checks"][rule.id]["total"] for model in models):
+        if any(summary[model]["checks"][rule.id]["total"] or summary[model]["checks"][rule.id]["undecided"] for model in models):
             lines.append(f"| {rule.says} | " + " | ".join(cell(summary[model]["checks"][rule.id]) for model in models) + " |")
     lines += ["", "Samples that passed every check, by case:", "", "| Case | " + " | ".join(f"`{model}`" for model in models) + " |"]
     lines.append("|---|" + "---|" * len(models))

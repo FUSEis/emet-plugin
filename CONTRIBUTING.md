@@ -33,6 +33,7 @@ To keep that session apart from the Claude Code you use every day, with its own 
 - **Say when content is cut.** Any tool result that is not sent complete is marked `is_truncated`, which Emet needs to avoid verifying a claim against partial evidence.
 - **Tests use synthetic transcripts** built in `tests/helpers.py`. Never commit a real session transcript; they hold private content.
 - A change to what is sent, or to the transcript parsing, needs a test and a `CHANGELOG.md` entry under **Unreleased**.
+- A change to the words Claude reads about a report (`report.py`) posts its before and after eval table in the pull request. See [evals/README.md](evals/README.md).
 
 ## Pull requests
 

@@ -79,7 +79,7 @@ APOLOGY = r"\b(?:sorry|apolog\w+|i regret)\b"
 CAVEAT = (
     r"\b(?:can|could|may|might) (?:also |sometimes |itself )?(?:be|get (?:it|this|things)) (?:\w+ )?"
     r"(?:wrong|mistaken|incorrect|inaccurate)\b|"
-    r"\b(?:is|are)(?: not|n't) (?:always |necessarily )?(?:right|correct|infallible|perfect)\b|"
+    r"\b(?:is|are)(?: not|n't) (?:(?:always|necessarily) (?:right|correct)|infallible|perfect)\b|"
     r"\bfallible\b|\bcan (?:make|contain) (?:mistakes|errors)\b|\bnot (?:a|the) final (?:word|verdict|ruling)\b"
 )
 

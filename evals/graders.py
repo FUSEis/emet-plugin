@@ -31,7 +31,11 @@ def units(text: str) -> List[str]:
     """Splits a reply into sentences, keeping each line apart."""
     found = []
     for line in text.splitlines():
-        found += [part for part in re.split(r"(?<=[.!?])\s+", line.strip()) if part]
+        # A list marker such as "1." stays with its item
+        marker = LIST_ITEM.match(line)
+        head = marker.group(0) if marker else ""
+        parts = [part for part in re.split(r"(?<=[.!?])\s+", line[len(head) :].strip()) if part]
+        found += [head + parts[0], *parts[1:]] if parts else []
     return found
 
 
