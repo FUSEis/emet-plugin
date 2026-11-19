@@ -1,10 +1,10 @@
 """Reads the Emet report of each delivered turn after the turn ends, and wakes Claude when a report is flagged.
 
-Runs as its own background hook, started at every Stop, one at a time per session. A Stop that
-finds a watcher writes its turn to state/<session_id>.stop.json, so the watcher judges that turn
-by its own Stop, and waits to take over. It exits 0 whatever happens, except when it hands a
-flagged report to Claude. Each outcome is added as a line
-to state/<session_id>.checks.jsonl and shown in the status file. A flagged verdict is saved to its
+Runs as its own background hook, started at every Stop, one at a time per session. Every polled
+Stop writes its turn to state/<session_id>.stop.json, so a watcher already running judges that
+turn by its own Stop. The Stop that found a watcher waits to take over. It exits 0 whatever
+happens, except when it hands a flagged report to Claude. Each outcome is added as a line to
+state/<session_id>.checks.jsonl and shown in the status file. A flagged verdict is saved to its
 own file under verdicts/ before Claude is woken. Only that file holds text from a report.
 
 Exit code 2 hands the text to Claude Code. It does not prove Claude told the user: a wake that
