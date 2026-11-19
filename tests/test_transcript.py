@@ -245,3 +245,5 @@ def test_a_link_is_never_a_subagent_file_even_inside_the_folder(transcript):
     loop.symlink_to(loop)
     assert not tr.own_subagent_file(transcript.path, link)
     assert not tr.own_subagent_file(transcript.path, loop)
+    # A loop in a folder above the file, which Python before 3.13 raises on
+    assert not tr.own_subagent_file(transcript.path, loop / "agent-a4.jsonl")
