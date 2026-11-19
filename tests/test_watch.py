@@ -702,45 +702,59 @@ def test_a_wake_starts_a_turn_that_is_sent_and_never_wakes_claude_again(transcri
     assert len(list((root(environ) / "verdicts").glob("*.json"))) == 1
 
 
-@pytest.mark.parametrize("meta", [True, False])
+@pytest.mark.parametrize("meta", [False, True])
 def test_the_stop_that_takes_over_after_a_wake_never_wakes_claude_for_the_woken_turn(
-    session, environ, emet, clock, sleeper, capfdbinary, meta
+    transcript, environ, emet, clock, sleeper, capfdbinary, sender_on_the_clock, meta
 ):
-    woken = str(uuid.UUID(int=3))
-    deliver(environ, clock)
-    emet.report(T1, 202)
-    emet.report(T2, 200, document())
-    emet.report(woken, 200, document())
-    waiting = []
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1", timestamp=stamp(clock))
+    transcript.text("msg_1", "4", timestamp=stamp(clock))
+    send(transcript, environ)
+    (first,) = pending.traces(root(environ), SESSION)
+    emet.report(first, 202)
+    waiting, sent = [], {}
 
     def turn_2_ends():
-        session.prompt("And 3 + 3?", promptId="prompt-2")
-        session.text("msg_2", "6")
+        transcript.prompt("And 3 + 3?", promptId="prompt-2", timestamp=stamp(clock))
+        transcript.text("msg_2", "6", timestamp=stamp(clock))
         # Its Stop finds watcher 1 and waits
-        waiting.append(later_stop(environ, clock, session, "prompt-2"))
+        waiting.append(later_stop(environ, clock, transcript, "prompt-2"))
+
+    def turn_2_is_sent():
+        send(transcript, environ)
+        sent["second"] = pending.traces(root(environ), SESSION)[-1]
+        emet.report(sent["second"], 200, document())
 
     sleeper.at(40, turn_2_ends)
-    sleeper.at(42, lambda: deliver(environ, clock, T2))
+    sleeper.at(42, turn_2_is_sent)
     # Watcher 1 wakes Claude for turn 2 and leaves
-    assert stop(session, environ, prompt_id="prompt-1") == 2
+    assert stop(transcript, environ, prompt_id="prompt-1") == 2
     text = capfdbinary.readouterr()[1].decode("utf-8")
 
     def woken_turn_ends():
-        # With isMeta the poller sees no new turn in the session file. Either way the mark decides
-        session.notice(WAKE_WRAPPER + text, **({"isMeta": True} if meta else {}))
-        session.text("msg_3", "Emet disputes one claim of my last answer.")
-        assert stop(session, environ, stop_hook_active=True) == 0
-        deliver(environ, clock, woken, started_by="report_wake")
+        transcript.notice(WAKE_WRAPPER + text, timestamp=stamp(clock), **({"isMeta": True} if meta else {}))
+        transcript.text("msg_3", "Emet disputes one claim of my last answer.", timestamp=stamp(clock))
+        assert stop(transcript, environ, stop_hook_active=True) == 0
+        if meta:
+            # The sender takes no isMeta entry for the start of a turn. The line is written as the sender would write it,
+            # for a session file in which the poller sees no new turn
+            deliver(environ, clock, str(uuid.UUID(int=3)), started_by="report_wake")
+        else:
+            send(transcript, environ)
+        (line,) = [item for item in pending.lines(root(environ), SESSION) if "started_by" in item]
+        assert line["started_by"] == "report_wake" and line["trace_uuid"] not in (first, sent["second"])
+        sent["woken"] = line["trace_uuid"]
+        # Emet flags the reply too
+        emet.report(sent["woken"], 200, document())
 
     sleeper.at(60, woken_turn_ends)
-    # The Stop of turn 2 takes over, and Emet has flagged the woken turn too
+    # The Stop of turn 2 takes over
     assert watch.attend(root(environ), config.load(environ), waiting[0]) == ""
     assert capfdbinary.readouterr() == (b"", b"")
     found = watch.checks(root(environ), SESSION)
-    assert [item["trace_uuid"] for item in found if item.get("handed") is True] == [T2]
-    assert [(item["outcome"], item["final"]) for item in found if item["trace_uuid"] == woken] == [("wake_turn", True)]
-    assert emet.polled(woken) == 0
-    assert [verdict["trace_uuid"] for verdict in watch.verdicts(root(environ), SESSION)] == [T2]
+    assert [item["trace_uuid"] for item in found if item.get("handed") is True] == [sent["second"]]
+    assert [(item["outcome"], item["final"]) for item in found if item["trace_uuid"] == sent["woken"]] == [("wake_turn", True)]
+    assert emet.polled(sent["woken"]) == 0
+    assert [verdict["trace_uuid"] for verdict in watch.verdicts(root(environ), SESSION)] == [sent["second"]]
     # The woken turn's Stop named nothing: the latest Stop is still turn 2's, which ended before the woken turn was delivered
     saved = json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))
     assert (saved["token"], saved["ended"]) == ("later", storage.now(waiting[0].ended))
