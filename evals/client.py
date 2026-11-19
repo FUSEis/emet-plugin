@@ -25,6 +25,8 @@ RETRIED = (429,)
 RETRIES = 4
 # A timeout says nothing about whether the request arrived (socket.timeout is its own class before Python 3.10)
 TIMEOUTS = (socket.timeout, TimeoutError)
+# The only failures that prove no request left: nothing listens at the address, or its name does not resolve
+NEVER_SENT = (ConnectionRefusedError, socket.gaierror)
 MAX_WAIT_S = 60.0
 # A case scripts this many assistant turns before its notice, and this many more for each earlier wake in the session
 SCRIPTED_ASSISTANT_TURNS = 2
@@ -50,6 +52,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, *args: Any, **kwargs: Any) -> None:
         return None
+
+
+def ask(call: urllib.request.Request, timeout: float) -> Any:
+    """Makes one request and follows no redirect: a 3xx answer is raised as an HTTPError."""
+    return urllib.request.build_opener(NoRedirect).open(call, timeout=timeout)
 
 
 def count(tokens: Dict[str, int], response: Dict[str, Any]) -> None:
@@ -89,7 +96,7 @@ class AnthropicClient:
             wait: Optional[float] = None
             try:
                 call = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
-                with urllib.request.build_opener(NoRedirect).open(call, timeout=self.timeout) as reply:
+                with ask(call, self.timeout) as reply:
                     return parsed(reply.status, reply.read())
             except urllib.error.HTTPError as error:
                 if 300 <= error.code < 400:
@@ -99,8 +106,8 @@ class AnthropicClient:
                     raise ApiError(error.code, kind) from None
                 wait = retry_after(error)
             except urllib.error.URLError as error:
-                # The request never left, so asking again cannot run it twice
-                if attempt == RETRIES or isinstance(error.reason, TIMEOUTS):
+                # Asked again only when the request cannot have left. A timeout while connecting is not that proof
+                if attempt == RETRIES or not isinstance(error.reason, NEVER_SENT):
                     raise ApiError(0, "connection_error") from None
             except (*TIMEOUTS, ConnectionError, http.client.HTTPException):
                 # Sent, and the reply was lost: the API may have run it

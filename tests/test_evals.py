@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 import threading
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Tuple
@@ -743,13 +745,77 @@ def test_a_request_timeout_or_a_conflict_status_is_not_retried(anthropic):
     assert len(anthropic.seen) == 2
 
 
-def test_the_client_reports_an_unreachable_endpoint_as_a_connection_error(monkeypatch):
+def closed_port() -> int:
+    """Returns a local port nothing listens on: one that was bound a moment ago and released."""
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        port: int = taken.getsockname()[1]
+    return port
+
+
+def test_a_refused_connection_is_asked_again_and_then_reported(monkeypatch):
     monkeypatch.setenv(api.KEY_VARIABLE, KEY)
     monkeypatch.setattr(api, "RETRIES", 1)
     waits: List[float] = []
-    with pytest.raises(api.ApiError, match="0 connection_error"):
-        api.AnthropicClient(url="http://127.0.0.1:9/v1/messages", timeout=2, sleep=waits.append).create({"model": "m"})
+    # Windows takes about two seconds to report a refusal on this machine's own address, so the timeout is far above that
+    client = api.AnthropicClient(url=f"http://127.0.0.1:{closed_port()}/v1/messages", timeout=30, sleep=waits.append)
+    with pytest.raises(api.ApiError, match=r"^0 connection_error$"):
+        client.create({"model": "m"})
     assert waits == [1.0]
+
+
+def failing_with(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> Tuple[List[float], int, str]:
+    """Makes every call of the client fail with the error. Returns its waits, how often it tried, and the error it reports."""
+    monkeypatch.setenv(api.KEY_VARIABLE, KEY)
+    attempts: List[float] = []
+
+    def ask(call: Any, timeout: float) -> Any:
+        attempts.append(timeout)
+        raise error
+
+    monkeypatch.setattr(api, "ask", ask)
+    waits: List[float] = []
+    with pytest.raises(api.ApiError) as caught:
+        api.AnthropicClient(sleep=waits.append).create({"model": "m"})
+    assert caught.value.status == 0
+    return waits, len(attempts), caught.value.kind
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        ConnectionRefusedError(61, "Connection refused"),
+        ConnectionRefusedError(10061, "refused, as Windows numbers it"),
+        socket.gaierror(8, "unknown name"),
+    ],
+    ids=["refused", "refused-on-windows", "name-not-found"],
+)
+def test_a_connection_that_was_never_made_is_asked_again_up_to_the_limit(monkeypatch, reason):
+    assert failing_with(monkeypatch, urllib.error.URLError(reason)) == ([1.0, 2.0, 4.0, 8.0], api.RETRIES + 1, "connection_error")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        socket.timeout("timed out"),
+        TimeoutError("timed out"),
+        ConnectionResetError(54, "reset while sending"),
+        OSError(51, "unreachable"),
+        "odd",
+    ],
+    ids=["socket-timeout", "timeout", "reset", "unreachable", "not-an-exception"],
+)
+def test_a_timeout_while_connecting_or_any_other_failure_to_send_is_not_asked_again(monkeypatch, reason):
+    assert failing_with(monkeypatch, urllib.error.URLError(reason)) == ([], 1, "connection_error")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [socket.timeout("timed out"), TimeoutError("timed out"), ConnectionResetError(54, "reset")],
+    ids=["socket-timeout", "timeout", "reset"],
+)
+def test_a_timeout_while_waiting_for_the_reply_is_not_asked_again(monkeypatch, error):
+    assert failing_with(monkeypatch, error) == ([], 1, "no_reply")
 
 
 def test_without_a_key_the_run_stops_with_a_hint_and_makes_no_call(monkeypatch, tmp_path):
