@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import http.client
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -30,6 +31,8 @@ RETRYABLE = (408, 425, 429)
 MAX_REPLY_BYTES = 128 * 1024
 # A repository folder name as /emet:status shows it
 REPOSITORY_MAX = 100
+# The only form of an error code that is logged or shown; any other text from the server is dropped
+ERROR_CODE = re.compile(r"[a-z_]{1,40}")
 
 
 @dataclass(frozen=True)
@@ -106,7 +109,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
 def miss_code(body: bytes) -> str:
     """Returns the code of Emet's JSON error body, or "" for any other body."""
     try:
-        error = json.loads(body)
+        error = storage.loads(body)
     except (ValueError, RecursionError):
         return ""
     code = error.get("code") if isinstance(error, dict) else None
@@ -146,7 +149,7 @@ def check_key(config: Config) -> str:
 def accepted_uuid(body: bytes, field: str) -> str:
     """Returns the uuid Emet's 202 body gives under field, or "" when it has none."""
     try:
-        accepted = json.loads(body)
+        accepted = storage.loads(body)
         return str(uuid.UUID(str(accepted[field])))
     except (ValueError, TypeError, KeyError, RecursionError):
         return ""
@@ -204,7 +207,14 @@ def turn_of(envelope: Dict[str, Any]) -> Tuple[str, str]:
     return str(envelope.get("conversation_id") or ""), str(envelope.get("trace_id") or "")
 
 
+def error_code(body: str) -> str:
+    """Returns the code of Emet's JSON error body when it is a plain lowercase name, or "" for anything else."""
+    code = miss_code(body.encode("utf-8", "replace"))
+    return code if ERROR_CODE.fullmatch(code) else ""
+
+
 def describe(outcome: Outcome) -> str:
+    """Says how a send ended, for the log and the status file. Never holds text the server wrote, only its status and code."""
     if outcome.delivered:
         return str(outcome.status)
     if outcome.status in (401, 403):
@@ -214,7 +224,8 @@ def describe(outcome: Outcome) -> str:
     if outcome.status < 400:
         # Never the address it points to, which can hold a token
         return f"{outcome.status} redirected"
-    return f"{outcome.status} {outcome.detail[:200]}"
+    code = error_code(outcome.detail)
+    return f"{outcome.status} {code}" if code else str(outcome.status)
 
 
 class Sender:
@@ -305,6 +316,11 @@ class Sender:
                 # Read under the lock, so of the workers waiting on a pause only the first tries
                 if self.held():
                     return len(files) - index
+                if path.is_symlink():
+                    # Only the link is removed. What it points to is never read or sent
+                    storage.log(self.root, "queued batch dropped, it is a link")
+                    remove(path)
+                    continue
                 envelope = storage.read_json(path, None)
                 if not isinstance(envelope, dict):
                     remove(path)

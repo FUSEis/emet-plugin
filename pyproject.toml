@@ -24,6 +24,8 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The eval harness in evals/ is imported by its tests
+pythonpath = ["."]
 addopts = "-ra --strict-markers"
 # A socket or file left open fails the test. One freed by the garbage collector reaches pytest as the second warning
 filterwarnings = [
@@ -42,7 +44,7 @@ show_missing = true
 [tool.ruff]
 line-length = 140
 target-version = "py39"
-src = ["claude/scripts", "tests"]
+src = ["claude/scripts", "tests", "."]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "SIM", "RUF"]
@@ -56,9 +58,10 @@ ignore = [
 "claude/scripts/emet_claude/commands.py" = ["S603"]
 "claude/scripts/emet_claude/transport.py" = ["S310"]
 "claude/scripts/emet_claude/watch.py" = ["S310"]
+"evals/client.py" = ["S310"]
 
 [tool.mypy]
 python_version = "3.9"
 strict = true
 mypy_path = "claude/scripts"
-files = ["claude/scripts"]
+files = ["claude/scripts", "evals"]

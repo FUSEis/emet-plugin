@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import json
+import os
 import re
+import stat
+import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, BinaryIO, Dict, List, Optional, Sequence, Tuple
 
-from . import report, timestamps
+from . import report, storage, timestamps
 
 Entry = Dict[str, Any]
 
@@ -34,27 +36,32 @@ def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List
 
     A session transcript skips sidechain entries; a subagent transcript (sidechain=True) is all sidechain.
     """
-    entries: List[Tuple[int, Entry]] = []
     with open(path, "rb") as handle:
-        handle.seek(0, 2)
-        size = handle.tell()
-        if offset > size:
-            # The file was replaced or truncated; start over
-            offset = 0
-        handle.seek(offset)
-        position = offset
-        for raw in handle:
-            if not raw.endswith(b"\n"):
-                # Still being written; read it next time
-                break
-            start, position = position, position + len(raw)
-            try:
-                entry = json.loads(raw)
-            # RecursionError: a line nested too deep to read, which would otherwise fail on every run
-            except (ValueError, RecursionError):
-                continue
-            if isinstance(entry, dict) and entry.get("type") in ("user", "assistant") and (sidechain or not entry.get("isSidechain")):
-                entries.append((start, entry))
+        return entries_of(handle, offset, sidechain)
+
+
+def entries_of(handle: BinaryIO, offset: int, sidechain: bool = False) -> Tuple[List[Tuple[int, Entry]], int]:
+    """Does the work of read_entries on a file that is already open."""
+    entries: List[Tuple[int, Entry]] = []
+    handle.seek(0, 2)
+    size = handle.tell()
+    if offset > size:
+        # The file was replaced or truncated; start over
+        offset = 0
+    handle.seek(offset)
+    position = offset
+    for raw in handle:
+        if not raw.endswith(b"\n"):
+            # Still being written; read it next time
+            break
+        start, position = position, position + len(raw)
+        try:
+            entry = storage.loads(raw)
+        # RecursionError: a line nested too deep to read, which would otherwise fail on every run
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(entry, dict) and entry.get("type") in ("user", "assistant") and (sidechain or not entry.get("isSidechain")):
+            entries.append((start, entry))
     return entries, position
 
 
@@ -184,22 +191,65 @@ def persisted_output(transcript: Path, part: Dict[str, Any], result: Any) -> Opt
     return None
 
 
+def own_subagent_file(transcript: Path, path: Path) -> bool:
+    """Says whether path is a file of this session's own subagents folder, with neither the file nor that folder a symbolic link.
+
+    Asked again before every read: a path kept in the state file is only as trustworthy as that file.
+    """
+    folder = session_folder(transcript) / "subagents"
+    try:
+        return not path.is_symlink() and not folder.is_symlink() and path.resolve().parent == folder.resolve()
+    # RuntimeError: a loop of links, before Python 3.13. ValueError: a path no file can have
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def open_subagent_file(transcript: Path, path: Path) -> Optional[BinaryIO]:
+    """Opens a subagent file for reading, or returns None when it is not the session's own or cannot be opened.
+
+    The file is opened first and judged afterwards, so the file that was checked is the one that is read. A link is
+    refused by the open itself where the platform can, and a file with a second name (a hard link) is refused too.
+    """
+    try:
+        fd = os.open(str(path), storage.READ_FLAGS)
+    except (OSError, ValueError):
+        return None
+    try:
+        opened = os.fstat(fd)
+        own = stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1 and own_subagent_file(transcript, path)
+        # The name must still lead to the file that was opened. Not compared on Windows, where the check above refuses a link
+        if own and (sys.platform == "win32" or os.path.samestat(opened, os.lstat(path))):
+            return os.fdopen(fd, "rb")
+    except (OSError, ValueError):
+        pass
+    os.close(fd)
+    return None
+
+
+def read_subagent(transcript: Path, path: Path, offset: int) -> Optional[Tuple[List[Tuple[int, Entry]], int]]:
+    """Reads a subagent file as read_entries does, or returns None when open_subagent_file refuses it."""
+    handle = open_subagent_file(transcript, path)
+    if handle is None:
+        return None
+    with handle:
+        return entries_of(handle, offset, sidechain=True)
+
+
 def subagents(transcript: Path) -> Dict[str, Tuple[Path, Dict[str, Any]]]:
     """Maps the tool_use id that launched each subagent to its transcript and metadata."""
     found: Dict[str, Tuple[Path, Dict[str, Any]]] = {}
     folder = session_folder(transcript) / "subagents"
     if not folder.is_dir():
         return found
-    real_folder = folder.resolve()
     for meta_path in folder.glob("agent-*.meta.json"):
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = storage.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         tool_use_id = meta.get("toolUseId") if isinstance(meta, dict) else None
         agent_path = meta_path.with_name(meta_path.name[: -len(".meta.json")] + ".jsonl")
         # A link pointing out of the folder could make the plugin send some other file
-        if agent_path.is_symlink() or agent_path.resolve().parent != real_folder:
+        if not own_subagent_file(transcript, agent_path):
             continue
         if isinstance(tool_use_id, str) and agent_path.is_file():
             found[tool_use_id] = (agent_path, meta)
