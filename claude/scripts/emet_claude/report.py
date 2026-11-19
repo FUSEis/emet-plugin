@@ -2,7 +2,8 @@
 
 The document is the 200 body of GET /api/v1/traces/{trace_uuid}/report/. Nothing here reads a
 file or makes a request. Every value in the document is untrusted: text from it only ever appears
-inside one data block, as JSON strings, and the words around the block are fixed.
+inside one data block, as JSON strings, and the words around the block are fixed. So this module
+can also say of a text whether it is one it rendered.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import uuid
 from typing import Any, Dict, List
 from urllib.parse import urlencode
 
+from . import storage
 from .config import endpoint_problem
 from .pending import SESSION_ID
 
@@ -36,6 +38,12 @@ STATUS_WORDS = {FLAGGED: "Flagged", "clarified": "Clarified", "clear": "Verified
 # The one verdict whose claims are listed. A clarified claim is only counted
 DISPUTED = "disputed"
 COUNTS = ("disputed", "clarified", "verified", "unchecked")
+# The keys of the data block and of one claim in it, in the order they are written
+DATA_KEYS = ("answer_starts", "claims")
+ROW_KEYS = ("n", "verdict", "claim", "stated_in", "reason", "correction")
+# A whole number in a line of fixed words, and one with the word after it
+NUMBER = re.compile(r"[0-9]{1,7}")
+COUNTED = re.compile(r"([0-9]{1,7}) ([a-z]+)")
 
 # Control, format (bidirectional overrides, zero width, tags), surrogate and private use characters
 DROPPED_CATEGORIES = ("Cc", "Cf", "Cs", "Co")
@@ -145,10 +153,8 @@ def render(document: Any, url: str, missed: bool) -> str:
     found = status(document)
     if not found:
         return join(opening, UNREADABLE, after, report)
-    result = f"Result: {STATUS_WORDS[found]}."
     if found != FLAGGED:
-        return join(opening, result, NOT_FLAGGED, after, report)
-    instruction = join(INSTRUCTION, f"- {MISSED_REPLY_RULE}" if missed else "")
+        return join(opening, f"Result: {STATUS_WORDS[found]}.", NOT_FLAGGED, after, report)
     answer = document.get("answer")
     answer_text = answer.get("text") if isinstance(answer, dict) else None
     flagged = flagged_claims(document)
@@ -164,20 +170,85 @@ def render(document: Any, url: str, missed: bool) -> str:
         if starts:
             data["answer_starts"] = starts
         data["claims"] = [entry(item, answer_text, scale) for item in flagged[:count]]
-        text = join(
-            opening,
-            f"{result} {counted(document)}".strip(),
-            instruction,
-            block(data),
-            AFTER_BLOCK,
-            unlisted(len(flagged) - count),
-            after,
-            LINK_RULE if report else "",
-            report,
-        )
+        text = compose(missed, counted(document), data, len(flagged) - count, url)
         if len(text) <= TOTAL_LIMIT:
             break
     return text
+
+
+def compose(missed: bool, counts: str, data: Dict[str, Any], left_out: int, url: str) -> str:
+    """Puts the message about a flagged report together from the parts that vary.
+
+    They are the sentence with the counts, the data, the number of claims left out, and the link.
+
+    render writes with it and is_missed_message checks with it, so the two cannot come apart.
+    """
+    return join(
+        MISSED_OPENING if missed else join(WAKE_OPENING, WAKE_NOTICE),
+        f"Result: {STATUS_WORDS[FLAGGED]}. {counts}".strip(),
+        join(INSTRUCTION, f"- {MISSED_REPLY_RULE}" if missed else ""),
+        block(data),
+        AFTER_BLOCK,
+        unlisted(left_out),
+        MISSED_INSTRUCTION if missed else "",
+        LINK_RULE if url else "",
+        f"Report: {url}" if url else "",
+    )
+
+
+def is_missed_message(text: str, url: str) -> bool:
+    """Says whether the text is one missed_message could have returned for a flagged report, with this link. Never raises.
+
+    The parts that vary are read out of the text and checked, and compose puts the message together again from them.
+    Only a text equal to that one passes, so every other character of it is this module's own.
+    """
+    head, _, rest = text.partition(f"\n{OPEN}\n")
+    body, _, tail = rest.partition(f"\n{CLOSE}\n")
+    second = head.split("\n")[1:2]
+    after = tail.split("\n")[1:2]
+    try:
+        data = storage.loads(body)
+    except (ValueError, RecursionError):
+        return False
+    # The second line holds the counts when it holds any number: the claims first, then each count with its name
+    numbers = COUNTED.findall(second[0]) if second else []
+    counts = counted({"counts": {"claims": int(numbers[0][0]), **{name: int(number) for number, name in numbers[1:]}}}) if numbers else ""
+    # The line after the closing words counts the claims left out, when there is one
+    number = NUMBER.search(after[0]) if after else None
+    return written_data(data) and text == compose(True, counts, data, int(number.group()) if number else 0, url)
+
+
+def written_data(data: Any) -> bool:
+    """Says whether a data block holds only what render puts in one: the keys in their order, and each value as clean leaves it."""
+    if not isinstance(data, dict) or list(data) != [key for key in DATA_KEYS if key in data]:
+        return False
+    claims = data.get("claims")
+    if not isinstance(claims, list) or len(claims) > MAX_CLAIMS:
+        return False
+    if "answer_starts" in data and not written_field(data["answer_starts"], "answer_starts"):
+        return False
+    return all(written_row(row) for row in claims)
+
+
+def written_row(row: Any) -> bool:
+    """Says whether one claim of a data block is as entry writes it."""
+    if not isinstance(row, dict) or list(row) != [key for key in ROW_KEYS if key in row]:
+        return False
+    if row.get("verdict") != DISPUTED or ("n" in row and not is_count(row["n"])):
+        return False
+    if "stated_in" in row and row["stated_in"] == row.get("claim"):
+        return False
+    return all(written_field(row[key], key) for key in FIELD_LIMITS if key in row)
+
+
+def written_field(value: Any, key: str) -> bool:
+    """Says whether a string is one clean returns for the field.
+
+    Not empty, one line, nothing in it that clean drops or changes, and no longer than the field's full limit with the cut mark.
+    """
+    if not isinstance(value, str) or not value or len(value) > FIELD_LIMITS[key] + len(CUT):
+        return False
+    return " ".join(scrub(value).split()) == value
 
 
 def join(*lines: str) -> str:
@@ -212,11 +283,6 @@ def clean(value: Any, limit: int) -> str:
     if len(text) > limit or len(value) > limit * SCAN:
         return text[:limit].rstrip() + CUT
     return text
-
-
-def is_clean(text: str) -> bool:
-    """Says whether cleaning would change no line of the text. True of every message render returns, so a saved one is held to it."""
-    return all(scrub(line) == line for line in text.split("\n"))
 
 
 def is_count(value: Any) -> bool:

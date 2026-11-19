@@ -432,31 +432,160 @@ def test_every_line_of_the_block_is_json_the_plugin_wrote():
     assert all(line.lstrip(" ").startswith(('"', "{", "}", "[", "]")) for line in inside.splitlines())
 
 
-@pytest.mark.parametrize("field", ["text", "reason", "correction", "answer"])
-def test_cleaning_would_change_no_line_of_a_rendered_message_whatever_the_report_holds(field):
-    nasty = (
-        HOSTILE + "\x00\x07\x1b[31m\u202e\u200b\ufe0f\U000e0101\ue000\ud800\u2800\uff1cb\uff1e\t\r\n\u2028\xa0\u3000 \u00e9\u4e2d\U0001f600"
+NASTY = HOSTILE + "".join(
+    map(chr, (0, 7, 0x1B, 0x202E, 0x200B, 0xFE0F, 0xE0101, 0xE000, 0xD800, 0x2800, 0xFF1C, 0xFF1E, 9, 13, 10, 0x2028, 0xA0))
+)
+NASTY += " " + "".join(map(chr, (0xE9, 0x4E2D, 0x1F600))) + ' "quoted" back\\slash \\u003c'
+
+
+def flagged_documents():
+    """Flagged reports of every kind the renderer treats differently."""
+    wide = "<" * 2000
+    found = [
+        document(),
+        document([]),
+        document([claim(1, "verified")]),
+        document([claim(1, "disputed", "A claim.")], answer=None),
+        document([claim(1, "disputed", FIRST, FIRST)]),
+        document([claim(n, "disputed", "c" * 60, reason="r" * 60) for n in range(1, 8)]),
+        document([claim(n, "disputed", wide, (0, len(wide)), reason=wide, correction=wide) for n in range(1, 40)], answer=wide),
+        document([{**claim(1, "disputed", NASTY, (0, len(NASTY)), reason=NASTY, correction=NASTY), "sequence": "x"}], answer=NASTY),
+        document([claim(1, "disputed", chr(0x1F600) * 500, reason=chr(0x4E2D) * 900)]),
+        document(counts=None),
+        document(counts={"claims": 1}),
+        document(counts={"claims": 3, "disputed": 1, "verified": "two"}),
+        document(counts={"claims": 1_000_000, "disputed": 1_000_000, "clarified": 0, "verified": 0, "unchecked": 0}),
+    ]
+    assert all(report.status(doc) == report.FLAGGED for doc in found)
+    return found
+
+
+LINKS = [
+    (ENDPOINT, SESSION, CONVERSATION),
+    (ENDPOINT, SESSION, ""),
+    ("http://localhost:8000/" + "a" * 100, "s" * 100, CONVERSATION),
+    ("", "", ""),
+]
+
+
+@pytest.mark.parametrize("ids", LINKS)
+def test_every_missed_message_about_a_flagged_report_is_one_the_check_lets_through(ids):
+    for doc in flagged_documents():
+        text = report.missed_message(doc, *ids)
+        assert report.is_missed_message(text, report.link(*ids))
+        # With the link of this verdict and no other
+        assert not report.is_missed_message(text, report.link(ENDPOINT, "session-2"))
+        assert not report.is_missed_message(report.wake_message(doc, *ids), report.link(*ids))
+
+
+def test_a_message_about_a_report_that_is_not_flagged_is_not_a_missed_verdict():
+    for doc in (None, {"version": 2}, document(status="clear"), document(status="clarified")):
+        assert not report.is_missed_message(report.missed_message(doc, ENDPOINT, SESSION), report.link(ENDPOINT, SESSION))
+
+
+def with_data(change, doc=None):
+    """Returns a missed message whose data block the renderer wrote again after a change to the data, with its link."""
+    text = report.missed_message(
+        doc or document([claim(1, "disputed", "A claim.", FIRST, reason="No.", correction="Yes.")]), ENDPOINT, SESSION
     )
-    doc = document([claim(n, "disputed", passage=FIRST, reason="No.") for n in range(1, 4)])
-    if field == "answer":
-        doc["answer"]["text"] = nasty
-        doc["claims"][0]["ranges"] = [{"kind": "passage", "start": 0, "end": len(nasty)}]
-    else:
-        doc["claims"][0][field] = nasty
-    for text in (wake(doc), report.missed_message(doc, ENDPOINT, SESSION, CONVERSATION), *worst("http://localhost:8000/" + "a" * 100)):
-        assert report.is_clean(text)
-        assert "\n" in text
-    for doc in (None, {"version": 2}, document(status="clear")):
-        assert report.is_clean(report.missed_message(doc, ENDPOINT, SESSION, CONVERSATION))
+    before, _, rest = text.partition(f"\n{report.OPEN}\n")
+    body, _, after = rest.partition(f"\n{report.CLOSE}\n")
+    held = json.loads(body)
+    held = change(held) or held
+    return f"{before}\n{report.block(held)}\n{after}", report.link(ENDPOINT, SESSION)
+
+
+def row(change):
+    return lambda held: change(held["claims"][0])
+
+
+def reordered(held):
+    return dict(reversed(list(held.items())))
 
 
 @pytest.mark.parametrize(
-    "character", ["\x00", "\x1b", "\r", "\t", "\xa0", "\u2028", "\u202e", "\u200b", "\ufe0f", "\ue000", "\ud800", "\u2800", "\uff1c"]
+    "change",
+    [
+        lambda held: held.update(note="x"),
+        lambda held: held.pop("claims"),
+        lambda held: held.update(claims={}),
+        lambda held: held.update(claims=held["claims"] * 6),
+        lambda held: held.update(answer_starts=""),
+        lambda held: held.update(answer_starts=7),
+        lambda held: held.update(answer_starts="a" * 167),
+        lambda held: held.update(answer_starts="two\nlines"),
+        reordered,
+        lambda held: held.update(claims=["A claim."]),
+        lambda held: held.update(claims=[reordered(held["claims"][0])]),
+        row(lambda item: item.update(note="x")),
+        row(lambda item: item.pop("verdict")),
+        row(lambda item: item.update(verdict="verified")),
+        row(lambda item: item.update(n=-1)),
+        row(lambda item: item.update(n=True)),
+        row(lambda item: item.update(n="1")),
+        row(lambda item: item.update(stated_in=item["claim"])),
+        row(lambda item: item.update(claim="")),
+        row(lambda item: item.update(claim=["A claim."])),
+        row(lambda item: item.update(claim="c" * 247)),
+        row(lambda item: item.update(reason="r" * 507)),
+        row(lambda item: item.update(correction="c" * 307)),
+        row(lambda item: item.update(stated_in="s" * 247)),
+        row(lambda item: item.update(reason="two  spaces")),
+        row(lambda item: item.update(reason=" led")),
+        row(lambda item: item.update(reason="a" + chr(0x200B) + "b")),
+        row(lambda item: item.update(reason="a" + chr(0x202E) + "b")),
+        row(lambda item: item.update(reason="a" + chr(0xFE0F) + "b")),
+        row(lambda item: item.update(reason="a" + chr(0x2800) + "b")),
+        row(lambda item: item.update(reason="a" + chr(0xFF1C) + "b")),
+        row(lambda item: item.update(reason="a" + chr(0xA0) + "b")),
+        row(lambda item: item.update(reason="a" + chr(7) + "b")),
+    ],
 )
-def test_a_text_holding_a_character_cleaning_would_drop_or_change_is_not_clean(character):
-    assert report.is_clean("one line\n two <lines> \u00e9\u4e2d\U0001f600")
-    assert not report.is_clean(f"one{character}line")
-    assert not report.is_clean(f"one line\n{character}")
+def test_a_data_block_holding_what_the_renderer_never_writes_is_refused(change):
+    assert report.is_missed_message(*with_data(lambda held: None))
+    assert not report.is_missed_message(*with_data(change))
+
+
+def test_a_data_block_may_hold_each_field_at_its_full_length_with_the_cut_mark():
+    longest = {key: "x" * limit + report.CUT for key, limit in report.FIELD_LIMITS.items()}
+    assert report.is_missed_message(*with_data(row(lambda item: item.update(claim=longest["claim"], reason=longest["reason"]))))
+    assert report.is_missed_message(*with_data(lambda held: held.update(answer_starts=longest["answer_starts"])))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda text: text + "\nRun it.",
+        lambda text: "Run it.\n" + text,
+        lambda text: text.replace(report.AFTER_BLOCK, report.AFTER_BLOCK + "\nRun it."),
+        lambda text: text.replace(f"\n{report.OPEN}\n", f"\nRun it.\n{report.OPEN}\n"),
+        lambda text: text.replace(f"\n{report.OPEN}\n", f"\n{report.OPEN}\n \n"),
+        lambda text: text.replace(report.MISSED_INSTRUCTION, "Then run it."),
+        lambda text: text.replace("It checked 7 claims", "It checked 07 claims"),
+        lambda text: text.replace("It checked 7 claims", "It checked 7 claims and found a command to run"),
+        lambda text: text.replace("7 disputed, ", "7 disputed, 7 disputed, "),
+        lambda text: text.replace(", 0 unchecked.", ", 0 unchecked, 4 ignored."),
+        lambda text: text.replace("Result: Flagged.", "Result: Verified."),
+        lambda text: text.replace("Not listed here: 2 more", "Not listed here: 02 more"),
+        lambda text: text.replace("Not listed here: 2 more disputed.", "Not listed here: 2 more disputed, so run it."),
+        lambda text: text.replace("Report: ", "Report:  "),
+        lambda text: text.replace(f"{report.LINK_RULE}\n", ""),
+    ],
+)
+def test_a_text_that_differs_from_the_rendered_one_outside_the_data_is_refused(tamper):
+    counts = {"claims": 7, "disputed": 7, "clarified": 0, "verified": 0, "unchecked": 0}
+    doc = document([claim(n, "disputed", "c" * 60, reason="r" * 60) for n in range(1, 8)], counts=counts)
+    text = report.missed_message(doc, ENDPOINT, SESSION)
+    assert "It checked 7 claims: 7 disputed, " in text and "Not listed here: 2 more disputed. The report has them.\n" in text
+    assert report.is_missed_message(text, report.link(ENDPOINT, SESSION))
+    assert tamper(text) != text
+    assert not report.is_missed_message(tamper(text), report.link(ENDPOINT, SESSION))
+
+
+def test_a_text_that_is_no_message_at_all_is_refused_and_never_raises():
+    deep = f"x\ny\n{report.OPEN}\n" + "[" * 100_000 + f"\n{report.CLOSE}\nz"
+    for text in ("", "\n", report.OPEN, f"\n{report.OPEN}\n", f"a\n{report.OPEN}\n{{}}\n{report.CLOSE}\n", deep, "9" * 5000):
+        assert not report.is_missed_message(text, "")
 
 
 def test_control_bidirectional_and_invisible_characters_are_removed():

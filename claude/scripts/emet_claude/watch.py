@@ -698,8 +698,9 @@ def verdict_problem(name: str, verdict: Any) -> str:
     # A file copied or renamed to another session, trace or revision
     if name != verdict_path(Path(), verdict["session_id"], verdict["trace_uuid"], verdict["revision"]).name:
         return OTHER_NAME
-    text = verdict["text"]
-    if len(text) > report.TOTAL_LIMIT or not text.startswith(report.MISSED_OPENING) or not report.is_clean(text):
+    # The text must be one the renderer could have written, with the link these ids give. Nothing else may stand in it
+    url = report.link(verdict["endpoint"], verdict["session_id"], verdict["conversation_uuid"])
+    if len(verdict["text"]) > report.TOTAL_LIMIT or not report.is_missed_message(verdict["text"], url):
         return BAD_TEXT
     at = timestamps.parse(verdict.get("at"))
     # Also a verdict that names no time
@@ -708,18 +709,39 @@ def verdict_problem(name: str, verdict: Any) -> str:
     return ""
 
 
-def file_problem(folder: Path, name: str) -> str:
-    """Returns the word for why a verdict file is not opened, or "" when it is a plain file of a verdict's size."""
-    # The name as given, so that no part of it can lead out of the folder
-    if not VERDICT_NAME.fullmatch(name):
-        return BAD_NAME
+def verdict_bytes(path: Path) -> Tuple[str, bytes]:
+    """Returns the word for why a verdict file is not read, or "", and what it holds. Never raises.
+
+    The file is opened once, and the file that was judged is the one that is read: a plain file with one name, no longer than a verdict.
+    """
+    # Windows has no flag that refuses a link at the open. There this look is the guard, and a file swapped after it is followed
+    if not storage.NOFOLLOW and path.is_symlink():
+        return A_LINK, b""
     try:
-        found = (folder / name).lstat()
+        fd = os.open(str(path), storage.READ_FLAGS)
+    except (OSError, ValueError):
+        return (A_LINK if path.is_symlink() else NOT_READ), b""
+    try:
+        found = os.fstat(fd)
+        if not stat.S_ISREG(found.st_mode):
+            return NOT_READ, b""
+        # A second name is a hard link to a file from somewhere else
+        if found.st_nlink != 1:
+            return A_LINK, b""
+        if found.st_size > VERDICT_MAX_BYTES:
+            return TOO_LONG, b""
+        data = b""
+        # One byte past the limit: the file can grow after its size was read
+        while len(data) <= VERDICT_MAX_BYTES:
+            chunk = os.read(fd, VERDICT_MAX_BYTES + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
     except OSError:
-        return NOT_READ
-    if not stat.S_ISREG(found.st_mode):
-        return A_LINK if stat.S_ISLNK(found.st_mode) else NOT_READ
-    return TOO_LONG if found.st_size > VERDICT_MAX_BYTES else ""
+        return NOT_READ, b""
+    finally:
+        os.close(fd)
+    return (TOO_LONG if len(data) > VERDICT_MAX_BYTES else ""), data
 
 
 def judged(root: Path, name: str) -> Tuple[str, Any]:
@@ -727,10 +749,16 @@ def judged(root: Path, name: str) -> Tuple[str, Any]:
     folder = verdict_folder(root)
     if folder is None:
         return A_LINK, None
-    problem = file_problem(folder, name)
+    # The name as given, so that no part of it can lead out of the folder
+    if not VERDICT_NAME.fullmatch(name):
+        return BAD_NAME, None
+    problem, data = verdict_bytes(folder / name)
     if problem:
         return problem, None
-    verdict = storage.read_json(folder / name, None)
+    try:
+        verdict = storage.loads(data)
+    except (ValueError, RecursionError):
+        return NOT_READ, None
     return verdict_problem(name, verdict), verdict
 
 
@@ -739,8 +767,9 @@ def read_verdict(root: Path, name: str) -> Optional[Dict[str, Any]]:
 
     Its text goes to Claude, and any process of the user can write the file. So a file is a verdict only when it is
     a plain file under a verdict's name, of a version and a wording this code writes, with every key in the form
-    settle writes it, for the session, trace and revision its name gives, with text that render could have
-    written, and saved within the last seven days. The log names why one is not shown by a fixed word, and nothing of the file.
+    settle writes it, for the session, trace and revision its name gives, with a text equal to one the renderer
+    writes for the data block it holds and the link its ids give, and saved within the last seven days.
+    The log names why one is not shown by a fixed word, and nothing of the file.
     """
     try:
         problem, verdict = judged(root, name)
