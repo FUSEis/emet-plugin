@@ -596,10 +596,11 @@ def test_the_documents_say_the_latest_release_has_no_report_check_until_one_has(
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     waiting = any(line.startswith("- Claude now tells you when Emet disputes a claim.") for line in changelog_check().unreleased(changelog))
     mark = f"This is in the plugin on `main`. Release {VERSION} does not have it."
-    for name in ("claude/README.md", "SECURITY.md", "docs/enterprise.md", "README.md"):
+    # Once wherever a document says Claude speaks, twice in the admin guide
+    for name, times in (("claude/README.md", 1), ("SECURITY.md", 1), ("docs/enterprise.md", 2), ("README.md", 1)):
         text = (ROOT / name).read_text(encoding="utf-8")
         if waiting:
-            assert mark in text, name
+            assert text.count(mark) == times, name
         else:
             # The release that ships the check takes these sentences out
             assert "does not have it" not in text, name

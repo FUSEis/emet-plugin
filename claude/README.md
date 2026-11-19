@@ -57,7 +57,7 @@ The extra message is a turn of your session. It uses your Claude plan like any o
 
 **Turning it off.** There is no setting for this alone. To stop Claude from speaking about reports, disable the plugin, which also stops sending turns: see [Turn it off](#turn-it-off).
 
-`/emet:status` shows the outcome of the last five report checks, so you can see a flagged report even when Claude was not told.
+`/emet:status` shows the outcome of the last five report checks, so you can see a flagged report even when Claude was not told, or when you were away as Claude spoke.
 
 ## What is sent
 
@@ -91,7 +91,7 @@ Two kinds of files in it can hold text from your session:
 | File | What it holds | Kept until |
 | --- | --- | --- |
 | `queue/*.json` | Turns that could not be delivered yet, whole, as your capture mode sends them: prompts, answers and tool results in `sanitized` and `full`, none of them in `metadata`. | Emet accepts or refuses the turn. It is retried on the next turn, oldest first. At most 500 files or 256 MB; the oldest are dropped beyond that. There is no time limit. |
-| `verdicts/*.json` | One file for each report Emet flagged: Emet's ids, the address it was read from, the time, whether Claude was told, and the text written for Claude about it, 4,000 characters at most. The text quotes the disputed claims, Emet's reasons and suggested corrections, and the sentences of Claude's answer they are about. The report itself is never saved. The plugin does not read the text back or show it again. | 7 days. A file older than that is removed the next time the plugin reads reports. |
+| `verdicts/*.json` | One file for each report Emet flagged: Emet's ids, the address it was read from, the time, whether the notice was handed to Claude, and the text written for Claude about it, 4,000 characters at most. The text quotes the disputed claims, Emet's reasons and suggested corrections, and the sentences of Claude's answer they are about. The report itself is never saved. The plugin does not read the text back or show it again. | 7 days. A file older than that is removed the next time the plugin reads reports. |
 
 The other files hold ids, times, counts and HTTP statuses. They hold no text from a turn or from a report:
 
@@ -99,7 +99,7 @@ The other files hold ids, times, counts and HTTP statuses. They hold no text fro
 | --- | --- | --- |
 | `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, and for each subagent still followed the path of its transcript, its ids and a position. | The plugin is uninstalled. |
 | `state/<session>.pending.jsonl` | One line for each turn Emet accepted: Emet's ids of the trace and of its conversation, the time, the address that accepted it, Claude Code's id of the turn and the time the turn ended. Also a line for a turn Emet refused (its id and the HTTP status), for a turn that could not be read (the name of the error's type), and for the end of each run (the time and the number of turns queued). | The plugin is uninstalled. |
-| `state/<session>.checks.jsonl` | One line for each outcome of reading a turn's report: the trace id, an outcome word such as `clear`, `flagged` or `timed_out`, the time, Emet's id and revision of the report, whether Claude was told, and if not, a word for why. | The plugin is uninstalled. |
+| `state/<session>.checks.jsonl` | One line for each outcome of reading a turn's report: the trace id, an outcome word such as `clear`, `flagged` or `timed_out`, the time, Emet's id and revision of the report, whether the notice was handed to Claude, and if not, a word for why. | The plugin is uninstalled. |
 | `state/<session>.stop.json` | The session's latest turn end: a random name for it, Claude Code's id of the turn, the size of the transcript, and two times. | The next turn end replaces it. |
 | `pause.json` | The time before which the plugin asks Emet nothing, and the length of the last wait, written after Emet could not be reached. | Emet answers again after the pause has run out. |
 | `read-pause.json` | The same, for the report reads alone, written after Emet limited their rate. | Emet answers a report read after the pause has run out. |

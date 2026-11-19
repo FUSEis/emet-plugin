@@ -45,7 +45,7 @@ After a turn ends, the plugin reads Emet's report on it, and wakes Claude when t
 - Say once, in one line, before the list: the check compares an answer only with evidence from that turn, and can miss things or be wrong.
 - Put each entry under one of three headings, in this order, and leave out a heading with no entry: **Flagged**, **Checked, not flagged**, **Not checked**. The table below says which, by the entry's `outcome`.
 - For each entry give the time `at`, the `outcome` word, and the first 8 characters of `trace_uuid`. Add the `repository` and `report_url` of the entry in `recent` with the same `session_id`, when there is one. The link opens that session's conversation in Emet, where the report is.
-- List every flagged entry, also one Claude already told the user about. This list is how the user learns of a flagged report Claude was not told about.
+- List every flagged entry, also one Claude already told the user about. This list is how the user learns of a flagged report Claude was not told about, or whose message they did not see.
 - Show outcome words, ids, times and the link only. `status.json` holds no claim, reason or verdict text, so there is none to show: never add any, never guess what was disputed, and never open the report yourself. The user reads it in Emet.
 - An entry with an `outcome` that is not in the table, or with none, goes under **Not checked**: say this version of the plugin does not know the word, and show the word as data.
 - A turn with no entry is not checked, as far as this file shows. Never say a turn passed because nothing is listed for it.
@@ -53,7 +53,7 @@ After a turn ends, the plugin reads Emet's report on it, and wakes Claude when t
 
 | `outcome` | Heading | What to say |
 | --- | --- | --- |
-| `flagged` | Flagged | Emet disputed a claim in this turn. With `handed` true, Claude was told in the session. With `handed` false, Claude was not told, and `held` names why: `wake_cap` (the session already had 3 notices), `newer_turn` (a later turn had started) or `late` (the report came more than 60 seconds after the turn ended). Give the link either way. |
+| `flagged` | Flagged | Emet disputed a claim in this turn. With `handed` true, the plugin handed its notice to Claude in the session. That does not prove the user saw Claude's message. With `handed` false, Claude was not told, and `held` names why: `wake_cap` (the session already had 3 notices), `newer_turn` (a later turn had started) or `late` (the report came more than 60 seconds after the turn ended). Give the link either way. |
 | `clear` | Checked, not flagged | No conflicts found with this turn's evidence. Use these words, never "verified", "correct" or "passed". |
 | `clarified` | Checked, not flagged | Emet marked the turn Clarified, and Claude was not told. Do not call it clean: the report says what Emet noted. |
 | `unchecked` | Not checked | Emet has a report and marked the turn Skipped. |
