@@ -53,6 +53,18 @@ def sleeper(monkeypatch, clock):
     return fake
 
 
+@pytest.fixture(autouse=True)
+def no_wait_for_the_watcher_lock(monkeypatch):
+    """A watcher lock taken with a wait fails the test. Without this it would hang the suite."""
+    real = storage.locked
+
+    def checked(path):
+        assert not path.name.endswith(".watch.lock"), "the poller waited for the watcher lock"
+        return real(path)
+
+    monkeypatch.setattr(storage, "locked", checked)
+
+
 @pytest.fixture
 def asked(monkeypatch, clock):
     """Lists each report read as (seconds since the test began, trace)."""
@@ -394,6 +406,17 @@ def test_a_429_stops_the_run_and_pauses_the_report_reads_of_every_session_but_no
     assert status(environ)["reads_paused_until"] == storage.now(clock.now + 120)
     assert "report reads paused 120s" in log(environ)
     assert json.loads(pause.path(root(environ), pause.READS).read_text(encoding="utf-8")).keys() == {"until", "delay"}
+
+
+def test_a_pause_of_the_reads_is_shown_even_when_no_outcome_is_new(session, environ, emet, clock):
+    deliver(environ, clock)
+    emet.report(T1, 429, retry_after="40")
+    emet.report(T1, 429, retry_after="90")
+    assert stop(session, environ) == 0
+    clock.advance(41)
+    assert stop(session, environ) == 0
+    assert outcomes(environ) == [(T1, "rate_limited", False)]
+    assert status(environ)["reads_paused_until"] == storage.now(clock.now + 90)
 
 
 def test_a_turn_is_sent_while_the_report_reads_are_paused(transcript, environ, emet, clock):
