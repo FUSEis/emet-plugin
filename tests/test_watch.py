@@ -6,6 +6,7 @@ import re
 import socket
 import stat
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -13,7 +14,7 @@ import pytest
 
 from conftest import API_KEY
 from emet_claude import commands, config, pause, pending, report, storage, timestamps, transport, watch
-from helpers import Transcript
+from helpers import WAKE_WRAPPER, Transcript
 from test_report import claim, document
 
 SESSION = "session-1"
@@ -593,6 +594,143 @@ def test_a_line_with_a_field_the_poller_does_not_know_is_still_a_turn(session, e
     deliver(environ, clock, something_new=1)
     emet.report(T1, 200, document())
     assert stop(session, environ) == 2
+
+
+def test_the_turn_after_a_wake_is_never_polled_and_is_recorded_as_its_own_outcome(session, environ, emet, clock, capfdbinary):
+    deliver(environ, clock, started_by="report_wake")
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    start = clock.now
+    assert stop(session, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert emet.reads == [] and clock.now == start
+    assert not (root(environ) / "verdicts").exists()
+    (check,) = watch.checks(root(environ), SESSION)
+    assert check == {"trace_uuid": T1, "outcome": "wake_turn", "final": True, "at": storage.now(clock.now)}
+    assert status(environ)["checks"] == [{"session_id": SESSION, **check}]
+    # However often Stop fires
+    assert stop(session, environ) == 0
+    assert outcomes(environ) == [(T1, "wake_turn", True)] and emet.reads == []
+    # It ends the polling of its turn, and uses up no wake
+    found = watch.checks(root(environ), SESSION)
+    assert watch.settled(found) == {T1} and watch.wakes(found) == 0
+
+
+def test_the_turn_after_a_wake_is_not_polled_while_another_turn_is(session, environ, emet, clock, capfdbinary):
+    deliver(environ, clock, T2, ago=5)
+    deliver(environ, clock, T1, started_by="report_wake")
+    emet.report(T1, 200, document())
+    emet.report(T2, 202)
+    assert stop(session, environ) == 0
+    assert emet.polled(T2) == len(EVERY_REQUEST) and emet.polled(T1) == 0
+    assert outcomes(environ) == [(T1, "wake_turn", True), (T2, "timed_out", False)]
+    assert capfdbinary.readouterr() == (b"", b"")
+
+
+def test_the_turn_after_a_wake_does_not_hold_back_the_report_of_the_turn_before_it(transcript, environ, emet, clock):
+    # Both named after the turn of this Stop ended, as when the retry queue delivers an earlier wake turn late
+    next_turn(transcript, clock)
+    deliver(environ, clock, T1)
+    deliver(environ, clock, T2, started_by="report_wake")
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ) == 2
+    assert sorted(outcomes(environ)) == sorted([(T2, "wake_turn", True), (T1, "flagged", True)])
+
+
+def test_a_marked_line_of_another_emet_is_not_recorded(session, environ, emet, clock):
+    deliver(environ, clock, started_by="report_wake", endpoint="https://app.emet.so")
+    finish(environ, clock)
+    assert stop(session, environ) == 0
+    assert outcomes(environ) == [] and emet.reads == []
+
+
+@pytest.mark.parametrize("skipped_for", ["no_person", "old_claude_code", "not_configured"])
+def test_a_stop_that_is_not_polled_records_nothing_for_the_turn_after_a_wake(transcript, environ, emet, clock, skipped_for):
+    not_polled(transcript, environ, skipped_for)
+    deliver(environ, clock, T1, ago=5)
+    deliver(environ, clock, T2, started_by="report_wake")
+    assert stop(transcript, environ) == 0
+    assert outcomes(environ) == [(T1, skipped_for, False)]
+
+
+def test_a_run_that_ends_early_does_not_count_the_turn_after_a_wake_as_waiting(session, environ, emet, clock):
+    deliver(environ, clock, T1, ago=5)
+    deliver(environ, clock, T2, started_by="report_wake")
+    emet.report(T1, 401)
+    assert stop(session, environ) == 0
+    assert outcomes(environ) == [(T2, "wake_turn", True), (T1, "key_refused", False)]
+
+
+def test_a_wake_starts_a_turn_that_is_sent_and_never_wakes_claude_again(transcript, environ, emet, clock, capfdbinary):
+    # The sender stamps its lines with the real time
+    clock.now = time.time()
+    transcript.write(
+        {"type": "user", "message": {"role": "user", "content": "How did March go?"}, "promptSource": "typed", "version": "2.1.305"}
+    )
+    transcript.text("msg_1", "Spend rose 12% in March.", version="2.1.305")
+    commands.process(transcript.hook_input(), environ, wait=0)
+    (first,) = pending.traces(root(environ), SESSION)
+    emet.report(first, 200, document())
+    assert stop(transcript, environ) == 2
+    _, err = capfdbinary.readouterr()
+    transcript.notice(WAKE_WRAPPER + err.decode("utf-8"), version="2.1.305")
+    transcript.text("msg_2", "Emet disputes this: spend rose 12% in March.", version="2.1.305")
+    commands.process(transcript.hook_input(), environ, wait=0)
+    first, second = pending.traces(root(environ), SESSION)
+    assert len(emet.envelopes) == 2
+    # Emet flags the reply too, since it quotes the disputed sentence
+    emet.report(second, 200, document())
+    assert stop(transcript, environ, stop_hook_active=True) == 0
+    assert stop(transcript, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert emet.polled(second) == 0
+    assert outcomes(environ) == [(first, "flagged", True), (second, "wake_turn", True)]
+    assert len(list((root(environ) / "verdicts").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("meta", [True, False])
+def test_the_stop_that_takes_over_after_a_wake_never_wakes_claude_for_the_woken_turn(
+    session, environ, emet, clock, sleeper, capfdbinary, meta
+):
+    woken = str(uuid.UUID(int=3))
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    emet.report(T2, 200, document())
+    emet.report(woken, 200, document())
+    waiting = []
+
+    def turn_2_ends():
+        session.prompt("And 3 + 3?", promptId="prompt-2")
+        session.text("msg_2", "6")
+        # Its Stop finds watcher 1 and waits
+        waiting.append(later_stop(environ, clock, session, "prompt-2"))
+
+    sleeper.at(40, turn_2_ends)
+    sleeper.at(42, lambda: deliver(environ, clock, T2))
+    # Watcher 1 wakes Claude for turn 2 and leaves
+    assert stop(session, environ, prompt_id="prompt-1") == 2
+    text = capfdbinary.readouterr()[1].decode("utf-8")
+
+    def woken_turn_ends():
+        # With isMeta the poller sees no new turn in the session file. Either way the mark decides
+        session.notice(WAKE_WRAPPER + text, **({"isMeta": True} if meta else {}))
+        session.text("msg_3", "Emet disputes one claim of my last answer.")
+        assert stop(session, environ, stop_hook_active=True) == 0
+        deliver(environ, clock, woken, started_by="report_wake")
+
+    sleeper.at(60, woken_turn_ends)
+    # The Stop of turn 2 takes over, and Emet has flagged the woken turn too
+    assert watch.attend(root(environ), config.load(environ), waiting[0]) == ""
+    assert capfdbinary.readouterr() == (b"", b"")
+    found = watch.checks(root(environ), SESSION)
+    assert [item["trace_uuid"] for item in found if item.get("handed") is True] == [T2]
+    assert [(item["outcome"], item["final"]) for item in found if item["trace_uuid"] == woken] == [("wake_turn", True)]
+    assert emet.polled(woken) == 0
+    assert [verdict["trace_uuid"] for verdict in watch.verdicts(root(environ), SESSION)] == [T2]
+    # The woken turn's Stop named nothing: the latest Stop is still turn 2's, which ended before the woken turn was delivered
+    saved = json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))
+    assert (saved["token"], saved["ended"]) == ("later", storage.now(waiting[0].ended))
+    assert waiting[0].ended == sleeper.start + 40
 
 
 def test_a_trace_written_twice_is_asked_for_once(session, environ, emet, clock):

@@ -7,7 +7,9 @@ counts the envelopes still in the retry queue: while that is above zero, a later
 can still add an id here. A skipped line marks a turn or a later addition that could not be built
 and was never sent, with the error's type as its reason. A refused line names a turn Emet refused
 for good, by the id the plugin sent it under, with the HTTP status and the endpoint that refused it.
-It holds no trace_uuid, so it is never read as a report to fetch.
+It holds no trace_uuid, so it is never read as a report to fetch. A trace line with started_by
+names a turn that a hook of this plugin started, such as the turn after a wake. Its report is
+never read.
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ from . import storage
 
 # Any worker writes this file, for a session id read from a queued envelope
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
+# The key that marks a trace line as a turn a hook of this plugin started
+STARTED_BY = "started_by"
 
 
 def path(root: Path, session_id: str) -> Path:
@@ -80,11 +84,16 @@ def append(root: Path, session_id: str, item: Dict[str, Union[str, int]], once: 
         storage.log(root, f"pending not written: {type(error).__name__}")
 
 
-def note(root: Path, session_id: str, trace_uuid: str, endpoint: str, conversation_uuid: str = "") -> None:
-    """Keeps the id of a turn whose last batch Emet accepted, with Emet's id of its conversation when the reply gave one."""
+def note(root: Path, session_id: str, trace_uuid: str, endpoint: str, conversation_uuid: str = "", started_by: str = "") -> None:
+    """Keeps the id of a turn Emet accepted, with Emet's id of its conversation when the reply gave one.
+
+    started_by names the hook of this plugin that started the turn, and marks the line as one whose report is never read.
+    """
     item: Dict[str, Union[str, int]] = {"trace_uuid": trace_uuid, "at": storage.now(), "endpoint": endpoint}
     if conversation_uuid:
         item["conversation_uuid"] = conversation_uuid
+    if started_by:
+        item[STARTED_BY] = started_by
     append(root, session_id, item, once=trace_uuid)
 
 

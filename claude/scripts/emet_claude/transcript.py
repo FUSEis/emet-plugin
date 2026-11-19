@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import report
+
 Entry = Dict[str, Any]
 
 # Prompts a person wrote or accepted, as opposed to ones Claude Code generated
@@ -19,6 +21,10 @@ PERSISTED_PATH = re.compile(r"Full output saved to: (\S+)")
 # Never read more than this from a saved tool output
 PERSISTED_MAX_BYTES = 8 * 1024 * 1024
 BINARY_PARTS = ("image", "document")
+# How Claude Code names a turn a notice started, in turnOrigin and in origin.kind
+NOTICE_ORIGINS = ("task_notification", "task-notification")
+# How much of a prompt is searched for the plugin's own sentence; a wake is far shorter
+WAKE_SCAN = 64 * 1024
 
 
 def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List[Tuple[int, Entry]], int]:
@@ -91,6 +97,21 @@ def by_person(entry: Entry) -> bool:
     if source is None:
         return not LOCAL_COMMAND.match(text_of(entry))
     return source in PERSON_SOURCES
+
+
+def started_by_wake(entry: Entry) -> bool:
+    """Says whether this plugin's own wake started the turn: a notice turn whose text holds the wake's opening sentence.
+
+    Both are needed. A finished background command starts a notice turn too, and a person can paste the sentence.
+    """
+    origin = entry.get("origin")
+    named = (entry.get("turnOrigin"), origin.get("kind") if isinstance(origin, dict) else None)
+    if not any(isinstance(name, str) and name in NOTICE_ORIGINS for name in named):
+        return False
+    if entry.get("turnOrigin") == "human" or entry.get("promptSource") in PERSON_SOURCES:
+        return False
+    # Claude Code can wrap the lines again, and a cut keeps the start
+    return report.WAKE_OPENING in " ".join(text_of(entry)[:WAKE_SCAN].split())
 
 
 def prompt_text(entry: Entry) -> str:

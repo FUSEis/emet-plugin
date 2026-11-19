@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import VERSION, pause, pending, storage
 from .config import Config
-from .envelope import REPOSITORY_ATTRIBUTE
+from .envelope import REPOSITORY_ATTRIBUTE, started_by
 
 TIMEOUT_S = 15
 KEY_CHECK_TIMEOUT_S = 5
@@ -259,10 +259,11 @@ class Sender:
             session_id = str(envelope.get("conversation_id") or "")
             self.accepted.append(Accepted(session_id, repository, outcome))
             # Kept at once and for the envelope's own session: a queued turn can be delivered by another session's worker
-            if envelope.get("end") is True and outcome.trace_uuid:
-                pending.note(
-                    self.root, session_id, outcome.trace_uuid, str(getattr(self.config, "endpoint", "")), outcome.conversation_uuid
-                )
+            # The mark is on the root span, in the first batch. A marked line is never polled, so it need not wait for the last
+            mark = started_by(envelope)
+            if outcome.trace_uuid and (envelope.get("end") is True or mark):
+                endpoint = str(getattr(self.config, "endpoint", ""))
+                pending.note(self.root, session_id, outcome.trace_uuid, endpoint, outcome.conversation_uuid, mark)
         else:
             self.failures.append(outcome)
         if outcome.delivered or outcome.final:

@@ -19,6 +19,11 @@ MAX_RESULT_CHARS = 16 * 1024 * 1024
 TITLE_MAX = 255
 # The resource attribute naming the repository, which /emet:status also shows
 REPOSITORY_ATTRIBUTE = "vcs.repository.name"
+# The root span attribute naming the hook of this plugin that started a turn no person started
+STARTED_BY_ATTRIBUTE = "emet.plugin.turn_started_by"
+REPORT_WAKE = "report_wake"
+# Sent in place of the prompt of such a turn, which is Emet's own report text in Claude Code's wrapper
+WAKE_PROMPT = "[Emet's report of an earlier answer, handed to Claude by the Emet plugin. No person wrote this prompt.]"
 
 
 def size_of(value: Any) -> int:
@@ -63,6 +68,16 @@ def resource(config: Config, first: transcript.Entry, cwd: str) -> Dict[str, Any
         REPOSITORY_ATTRIBUTE: Path(cwd or first.get("cwd") or "").name,
         "vcs.ref.head.name": str(first.get("gitBranch") or ""),
     }
+
+
+def started_by(envelope: Dict[str, Any]) -> str:
+    """Returns the hook of this plugin that started the envelope's turn, read from its root span, or "" for any other turn."""
+    spans = envelope.get("spans")
+    for span in spans if isinstance(spans, list) else []:
+        attributes = span.get("attributes") if isinstance(span, dict) and span.get("kind") == "turn" else None
+        if isinstance(attributes, dict) and attributes.get(STARTED_BY_ATTRIBUTE) == REPORT_WAKE:
+            return REPORT_WAKE
+    return ""
 
 
 def wrap(
@@ -117,8 +132,10 @@ def for_turn(
     trace_id = uuid if isinstance(uuid, str) and uuid else f"turn-at-{turn[0][0]}"
     capture = builder.capture
     text = transcript.prompt_text(first)
+    woken = transcript.started_by_wake(first)
     built = Built()
-    opening = builder.message("user", text, transcript.has_binary(first))
+    # The report text is not sent back to Emet as a person's message; marked as left out, like an image
+    opening = builder.message("user", WAKE_PROMPT, True) if woken else builder.message("user", text, transcript.has_binary(first))
     builder.thread(turn[1:], "turn", opening, built, main=True, since=timestamps.parse(first.get("timestamp")) or times[0])
     root: Dict[str, Any] = {
         "span_id": "turn",
@@ -132,8 +149,10 @@ def for_turn(
     }
     if opening[2]:
         root["attributes"]["emet.redactions"] = opening[2]
+    if woken:
+        root["attributes"][STARTED_BY_ATTRIBUTE] = REPORT_WAKE
     title = ""
-    if transcript.by_person(first) and capture.keeps_content:
+    if transcript.by_person(first) and not woken and capture.keeps_content:
         title = capture.text(text)[0].strip().splitlines()[0][:TITLE_MAX] if text.strip() else ""
     return trace_id, wrap(config, session_id, trace_id, [root, *built.spans], resource(config, first, cwd), title), built
 

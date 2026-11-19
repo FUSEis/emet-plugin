@@ -3,7 +3,13 @@ import os
 
 import pytest
 
+from emet_claude import report
 from emet_claude import transcript as tr
+from helpers import WAKE_WRAPPER
+from test_report import document
+
+WAKE = WAKE_WRAPPER + report.wake_message(document(), "https://app.emet.so", "session-1")
+HUMAN = {"turnOrigin": "human", "origin": {"kind": "human"}}
 
 
 def test_reads_from_offset_and_skips_partial_last_line(transcript):
@@ -128,3 +134,61 @@ def test_subagents_are_found_by_launching_tool_call(transcript):
     found = tr.subagents(transcript.path)
     assert found["toolu_agent"][0] == path
     assert found["toolu_agent"][1]["agentType"] == "Explore"
+
+
+def test_the_turn_this_plugins_wake_started_is_recognised(transcript):
+    assert tr.started_by_wake(transcript.notice(WAKE))
+
+
+@pytest.mark.parametrize("fields", [{"origin": None}, {"turnOrigin": None}, {"origin": "task-notification"}])
+def test_either_origin_field_names_a_notice_turn(transcript, fields):
+    assert tr.started_by_wake(transcript.notice(WAKE, **fields))
+
+
+def test_another_task_notification_is_ordinary_work(transcript):
+    done = "<task-notification><status>completed</status><summary>Background command finished</summary></task-notification>"
+    assert not tr.started_by_wake(transcript.notice(done))
+    # The data block alone is in every saved verdict, which a background command can print
+    assert not tr.started_by_wake(transcript.notice(done + WAKE[WAKE.index(report.OPEN) :]))
+
+
+@pytest.mark.parametrize("source", ["typed", "queued", "suggestion_accepted"])
+def test_a_person_who_quotes_the_wake_stays_a_person(transcript, source):
+    assert not tr.started_by_wake(transcript.prompt(f"What does this mean?\n{WAKE}", source=source, **HUMAN))
+    assert not tr.started_by_wake(transcript.prompt(WAKE, source=source))
+    # One field naming a person is enough, whatever the other says
+    assert not tr.started_by_wake(transcript.notice(WAKE, promptSource=source))
+    assert not tr.started_by_wake(transcript.notice(WAKE, turnOrigin="human"))
+
+
+def test_a_wake_claude_code_cut_short_or_wrapped_again_is_still_recognised(transcript):
+    text = report.wake_message(document(), "https://app.emet.so", "session-1")
+    cut = WAKE[: len(WAKE_WRAPPER) + len(report.WAKE_OPENING) + 40] + "... [truncated]"
+    assert tr.started_by_wake(transcript.notice(cut))
+    assert tr.started_by_wake(transcript.notice(f"<task-notification>\n<stderr>{text}</stderr>\n</task-notification>"))
+    assert tr.started_by_wake(transcript.notice("A hook said:\n" + text.replace(" ", "\n")))
+    assert tr.started_by_wake(transcript.notice([{"type": "text", "text": WAKE_WRAPPER}, {"type": "text", "text": text}]))
+    # Cut inside the opening sentence, nothing of the plugin's is left to know it by
+    assert not tr.started_by_wake(transcript.notice(WAKE[: len(WAKE_WRAPPER) + 30]))
+
+
+@pytest.mark.parametrize("source", ["system", None])
+def test_without_the_origin_fields_no_turn_is_taken_for_a_wake(transcript, source):
+    # An older Claude Code writes neither field, and the text alone proves nothing
+    assert not tr.started_by_wake(transcript.prompt(WAKE, source=source))
+    assert not tr.started_by_wake(transcript.prompt(WAKE, source=source, origin={}, turnOrigin=""))
+
+
+def test_a_persons_turn_that_carries_the_wake_as_a_queued_command_stays_a_normal_turn(transcript):
+    prompt = transcript.prompt("And what about April?", **HUMAN)
+    transcript.write({"type": "attachment", "attachment": {"type": "queued_command", "prompt": WAKE, "commandMode": "task-notification"}})
+    transcript.text("msg_1", "April was flat.")
+    (turn,) = tr.split_turns(tr.read_entries(transcript.path, 0)[0])[1]
+    assert turn[0][1]["uuid"] == prompt["uuid"]
+    assert not any(tr.started_by_wake(entry) for _, entry in turn)
+
+
+def test_only_the_start_of_a_long_prompt_is_searched(transcript, monkeypatch):
+    monkeypatch.setattr(tr, "WAKE_SCAN", len(WAKE))
+    assert tr.started_by_wake(transcript.notice(WAKE))
+    assert not tr.started_by_wake(transcript.notice("x" + WAKE[: len(WAKE_WRAPPER)] + " " * len(WAKE) + WAKE[len(WAKE_WRAPPER) :]))

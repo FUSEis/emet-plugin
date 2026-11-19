@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # The body Emet answers a report read with when no trace has the id
+# Stands in for the words Claude Code puts before a Stop hook's stderr when it wakes Claude
+WAKE_WRAPPER = 'Stop hook blocking error from command: "python3 emet_hook.py watch": '
 NOT_FOUND = json.dumps({"error": "No trace was found with this id.", "code": "not_found", "status_code": 404}).encode()
 
 
@@ -46,6 +48,11 @@ class Transcript:
         if source:
             entry["promptSource"] = source
         return self.write(entry)
+
+    def notice(self, text: str, **extra: Any) -> Dict[str, Any]:
+        """Starts a turn no person started (a wake, a finished background command), with the fields Claude Code 2.1.305 writes."""
+        fields = {"turnOrigin": "task_notification", "origin": {"kind": "task-notification"}, "promptId": str(uuid.uuid4())}
+        return self.prompt(text, source=None, **{"promptSource": "system", **fields, **extra})
 
     def assistant(
         self,
