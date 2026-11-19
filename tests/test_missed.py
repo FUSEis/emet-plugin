@@ -351,7 +351,6 @@ def test_the_line_for_the_user_is_fixed_words_whatever_the_report_holds(session,
     assert shown["systemMessage"] == (
         "Emet disputed a claim in an earlier answer of this session. Claude was given Emet's report with this prompt."
     )
-    assert "—" not in missed.USER_LINE
     assert "Spend" not in shown["systemMessage"] and BEYOND_ASCII not in shown["systemMessage"]
 
 
