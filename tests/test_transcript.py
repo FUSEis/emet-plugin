@@ -380,6 +380,8 @@ def test_a_wrapper_in_an_entry_of_a_person_or_one_that_names_no_origin_is_a_comm
         [],
         wrapper(STATUS, "x" * tr.WAKE_SCAN),
     ],
+    # Named, since Windows cannot hold a test id this long in its environment
+    ids=["text after it", "an image after it", "inside a tool result", "text that is none", "no parts", "arguments too long"],
 )
 def test_a_prompt_that_is_more_than_the_one_wrapper_text_starts_an_ordinary_turn(transcript, content):
     entry = transcript.write({"type": "user", "message": {"role": "user", "content": content}, **HUMAN})
