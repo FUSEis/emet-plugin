@@ -495,3 +495,12 @@ def test_what_a_queued_envelope_says_of_its_turn_is_checked_again_before_it_is_w
     sender.record(sent, transport.Outcome(202, True, True, "", "", TRACE))
     (line,) = trace_lines(environ)
     assert {key: value for key, value in line.items() if key in ("prompt_id", "ended")} == kept
+
+
+def test_a_turn_id_that_is_not_a_plain_name_never_reaches_the_queue(transcript, environ, emet):
+    emet.statuses = [503]
+    transcript.prompt("What is 2 + 2?", promptId="prompt 1")
+    transcript.text("msg_1", "4")
+    run(transcript, environ)
+    (queued,) = [storage.read_json(path, {}) for path in transport.queued(root(environ))]
+    assert list(queued[envelope.LOCAL]) == ["ended"]
