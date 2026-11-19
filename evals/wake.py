@@ -22,7 +22,7 @@ from .graders import Reply
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
-# Small, medium and large, from platform.claude.com/docs/en/about-claude/models/overview on 2026-11-19
+# Small, medium and large, from https://platform.claude.com/docs/en/about-claude/models/overview on 2026-11-19
 MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
 JUDGE_MODEL = "claude-opus-5-5"
 SAMPLES = 5

@@ -1,6 +1,6 @@
 """Calls the Anthropic Messages API with the standard library, and a stand-in that replays written replies offline.
 
-Requests and responses are the JSON the API documents (platform.claude.com/docs/en/api/messages), as plain dicts.
+Requests and responses are the JSON the API documents (https://platform.claude.com/docs/en/api/messages), as plain dicts.
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
 # The only host the eval calls. The plugin itself never does
-API_HOST = "api.anthropic.com"
-API_URL = f"https://{API_HOST}/v1/messages"
+API_URL = "https://api.anthropic.com/v1/messages"
 # The version whose request and response shapes this file was written against
 API_VERSION = "2026-10-21"
 KEY_VARIABLE = "ANTHROPIC_API_KEY"
@@ -22,8 +21,9 @@ KEY_VARIABLE = "ANTHROPIC_API_KEY"
 RETRIED = (408, 409, 429)
 RETRIES = 4
 MAX_WAIT_S = 60.0
-# Every case scripts this many assistant turns before the notice; the replay counts its steps from here
+# A case scripts this many assistant turns before its notice, and this many more for each earlier wake in the session
 SCRIPTED_ASSISTANT_TURNS = 2
+EARLIER_WAKE_TURNS = 3
 
 
 class Client(Protocol):
@@ -108,7 +108,7 @@ class ReplayClient:
     """
 
     def __init__(self, cases: List[Dict[str, Any]], replies: Dict[str, List[Any]], labels: List[Dict[str, Any]]) -> None:
-        self.by_request = {case["request"]: replies[case["id"]] for case in cases}
+        self.by_request = {opening(case): (scripted_turns(case), replies[case["id"]]) for case in cases}
         self.labels = {item["reply"]: item["label"] for item in labels}
         self.requests: List[Dict[str, Any]] = []
 
@@ -119,10 +119,20 @@ class ReplayClient:
             graded = json.loads(request["messages"][0]["content"])["reply_to_grade"]
             verdict = {"critique": "Replayed from the hand label.", "verdict": self.labels.get(graded, "pass")}
             return message([{"type": "text", "text": json.dumps(verdict)}])
-        steps = self.by_request[request["messages"][0]["content"]]
+        scripted, steps = self.by_request[request["messages"][0]["content"]]
         taken = sum(1 for item in request["messages"] if item["role"] == "assistant")
-        step = steps[taken - SCRIPTED_ASSISTANT_TURNS]
+        step = steps[taken - scripted]
         return message([{"type": "text", "text": step}] if isinstance(step, str) else step)
+
+
+def opening(case: Dict[str, Any]) -> str:
+    """Returns the first user message of the case's conversation."""
+    first: str = (case.get("earlier") or [case])[0]["request"]
+    return first
+
+
+def scripted_turns(case: Dict[str, Any]) -> int:
+    return SCRIPTED_ASSISTANT_TURNS + EARLIER_WAKE_TURNS * len(case.get("earlier", []))
 
 
 def message(content: List[Dict[str, Any]], stop_reason: str = "") -> Dict[str, Any]:

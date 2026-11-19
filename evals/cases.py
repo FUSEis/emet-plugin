@@ -22,7 +22,6 @@ Message = Dict[str, Any]
 ENDPOINT = "https://app.emet.so"
 SESSION = "session-eval"
 CONVERSATION = "7d3c1c52-0d0a-4a52-8d0e-0c7e3a1b2c3d"
-TOOL_ID = "toolu_eval_1"
 
 # Stands in for Claude Code's own system prompt, which is far longer. It says nothing about Emet
 SYSTEM = (
@@ -132,19 +131,28 @@ def notice(case: Case) -> str:
     return rules.WAKE_PREFIX + report.wake_message(document(case), ENDPOINT, SESSION, CONVERSATION)
 
 
+def scripted(turn: Case, number: int) -> List[Message]:
+    """Returns one scripted turn: the request, a tool call with its result, and the answer."""
+    tool, tool_id = turn["tool"], f"toolu_eval_{number}"
+    return [
+        {"role": "user", "content": turn["request"]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": tool_id, "name": tool["name"], "input": tool["input"]}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": tool["result"]}]},
+        {"role": "assistant", "content": turn["answer"]},
+    ]
+
+
 def messages(case: Case) -> List[Message]:
-    """Returns the scripted turn, then the notice as the next user-side message."""
-    tool = case["tool"]
+    """Returns the scripted turn, then the notice as the next user-side message. Earlier wakes of the session come first."""
+    found: List[Message] = []
+    earlier: List[Case] = case.get("earlier", [])
+    for number, turn in enumerate(earlier, start=1):
+        found += scripted(turn, number)
+        found += [{"role": "user", "content": notice(turn)}, {"role": "assistant", "content": turn["reply"]}]
     last: Any = notice(case)
     if "missed" in case:
         last = [{"type": "text", "text": last}, {"type": "text", "text": case["missed"]["prompt"]}]
-    return [
-        {"role": "user", "content": case["request"]},
-        {"role": "assistant", "content": [{"type": "tool_use", "id": TOOL_ID, "name": tool["name"], "input": tool["input"]}]},
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": TOOL_ID, "content": tool["result"]}]},
-        {"role": "assistant", "content": case["answer"]},
-        {"role": "user", "content": last},
-    ]
+    return [*found, *scripted(case, len(earlier) + 1), {"role": "user", "content": last}]
 
 
 def tool_result(case: Case, name: str) -> str:

@@ -28,7 +28,7 @@ Every reply is graded on the rules in [`rules.py`](rules.py):
 
 The first ten are code. They are strict pattern checks, so they can misjudge an unusual phrasing: read the saved failures before you trust a low number. The last one is a model. Every run first grades the hand-labelled replies in [`fixtures/judge_labels.json`](fixtures/judge_labels.json) and prints how often the grader agrees with the labels, on passing and on failing replies apart. Twelve labels show whether the grader is broken. They do not prove it is good.
 
-The cases are in [`cases.json`](cases.json): one disputed claim, three, disputed plus clarified, a correction, a reason citing a result the model cannot see, a reason that says to run a command, one that says to open a link, one holding the block's closing marker, a field cut short, Emet plainly wrong, Emet plainly right, a missed verdict with a prompt that needs a tool, one with a chat prompt, the follow-up "so is Emet right?", and a report naming a claim the assistant never made.
+The cases are in [`cases.json`](cases.json): one disputed claim, three, disputed plus clarified, a correction, a reason citing a result the model cannot see, a reason that says to run a command, one that says to open a link on a foreign host, the same with a link that looks like Emet's own, one holding the block's closing marker, a field cut short, Emet plainly wrong, Emet plainly right, a missed verdict with a prompt that needs a tool, one with a chat prompt, the follow-up "so is Emet right?", a report naming a claim the assistant never made, and a third wake in one session.
 
 ## How to run it
 
@@ -37,7 +37,7 @@ export ANTHROPIC_API_KEY=...        # read at run time, never printed or written
 uv run python -m evals.wake
 ```
 
-That runs 15 cases, 5 samples each, on `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`, with `claude-opus-5-5` as the grader. The markdown table goes to stdout. `evals/results/<time>/` gets `results.json` (every reply and verdict), `table.md` and one file per failing sample under `failures/`. The folder is git-ignored.
+That runs 17 cases, 5 samples each, on `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`, with `claude-opus-5-5` as the grader. The markdown table goes to stdout. `evals/results/<time>/` gets `results.json` (every reply and verdict), `table.md` and one file per failing sample under `failures/`. The folder is git-ignored.
 
 ```bash
 uv run python -m evals.wake --offline                         # no key: replays fixtures/replies.json through the whole pipeline
@@ -50,15 +50,15 @@ The client is `client.py`, about a hundred lines of standard library. It reads o
 
 ## What a run costs
 
-Not measured yet: nobody has run it against the API. An estimate from list prices on 2026-11-19 (Haiku 5.5 $0.10 and $0.50, Sonnet 5.5 $2 and $10, Opus 5.5 $4 and $20 per million input and output tokens), about 1,500 input and up to 1,000 output tokens per call with thinking, about 90 calls per model and about 240 grader calls on Opus:
+Not measured yet: nobody has run it against the API. An estimate from list prices on 2026-11-19 (Haiku 5.5 $0.10 and $0.50, Sonnet 5.5 $2 and $10, Opus 5.5 $4 and $20 per million input and output tokens), about 1,500 input and up to 1,000 output tokens per call with thinking, about 100 calls per model and about 270 grader calls on Opus:
 
 | Part | Estimate |
 |---|---|
 | Haiku 5.5 | under $0.10 |
 | Sonnet 5.5 | about $1 |
-| Opus 5.5 | about $2.50 |
-| Grader (Opus 5.5) | about $3.50 |
-| Whole default run | about $7, say $5 to $10 |
+| Opus 5.5 | about $3 |
+| Grader (Opus 5.5) | about $4 |
+| Whole default run | about $8, say $5 to $12 |
 
 `--models claude-haiku-5-5 --no-judge` costs cents. Each run prints the tokens it used per model; correct this table from the first real run.
 
@@ -74,7 +74,7 @@ A cell reads `87% (26/30, 70 to 95)`: the pass rate, passed over graded samples,
 
 ## When a live failure is found
 
-1. Add a case to `cases.json` that rebuilds it with invented content: the request, one tool call and its result, the answer, and the claims as Emet reported them. Give each disputed claim `stated_in` (the sentence of the answer) and `keys` (word sets that show a reply names it). Never paste a real transcript.
+1. Add a case to `cases.json` that rebuilds it with invented content: the request, one tool call and its result, the answer, and the claims as Emet reported them. Give each disputed claim `stated_in` (the sentence of the answer) and `keys` (word sets that show a reply names it). Wakes that came before it in the session go under `earlier`, each with the `reply` the model gave. Never paste a real transcript. A link in the data uses `example.com`: a test lets the case data name that host and no other new one.
 2. Add a reply that passes to `fixtures/replies.json`. A test runs it through every rule the case is graded on, which proves the case can be passed.
 3. If no rule catches the failure, add a row to `RULES` in `rules.py` and a grader in `graders.py`, with a good and a bad reply in `GOOD_AND_BAD` in `tests/test_evals.py`.
 4. Run `uv run pytest tests/test_evals.py`, then the eval.
@@ -99,13 +99,11 @@ The harness renders through the `report.py` of the checkout it runs in, so nothi
 
 ## Sources
 
-Written without the scheme: a test keeps the hosts that tracked files link to on a short list.
-
-- Anthropic, Define success criteria and build evaluations (platform.claude.com/docs/en/test-and-evaluate/develop-tests): code graders first, model graders for what code cannot judge.
-- Anthropic, Mitigate jailbreaks and prompt injections (platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/mitigate-jailbreaks): untrusted content as JSON, and testing with content that holds instructions.
-- Anthropic, Demystifying evals for AI agents (www.anthropic.com/engineering/demystifying-evals-for-ai-agents): tasks, trials, graders, and a reference solution for each task.
-- Anthropic API reference: Messages (platform.claude.com/docs/en/api/messages), Handle tool calls (platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls), Structured outputs (platform.claude.com/docs/en/build-with-claude/structured-outputs), API versions (platform.claude.com/docs/en/api/versioning), Errors (platform.claude.com/docs/en/api/errors), Models overview (platform.claude.com/docs/en/about-claude/models/overview).
-- Hamel Husain, Using LLM-as-a-Judge (hamel.dev/blog/posts/llm-judge/) and AI Evals FAQ (hamel.dev/blog/posts/evals-faq/): binary verdicts, a critique before the verdict, and checking the judge against human labels.
-- Eugene Yan, Product Evals in Three Simple Steps (eugeneyan.com/writing/product-evals/) and Evaluating the Effectiveness of LLM-Evaluators (eugeneyan.com/writing/llm-evaluators/): one evaluator per dimension, and recall on the failing class.
-- promptfoo (www.promptfoo.dev/docs/configuration/expected-outputs/) and Inspect (inspect.aisi.org.uk/options.html), as reference designs: cases as data, deterministic assertions beside a rubric, and repeats per case.
-- Brown, Cai and DasGupta, Confidence intervals for a binomial proportion and asymptotic expansions (doi.org/10.1214/aos/1015362189), and Bowyer, Aitchison and Ivanova, Don't use the CLT in LLM evals with fewer than a few hundred datapoints (proceedings.mlr.press/v267/bowyer25a.html): why the Wilson interval, not rate plus or minus a standard error.
+- Anthropic, [Define success criteria and build evaluations](https://platform.claude.com/docs/en/test-and-evaluate/develop-tests): code graders first, model graders for what code cannot judge.
+- Anthropic, [Mitigate jailbreaks and prompt injections](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/mitigate-jailbreaks): untrusted content as JSON, and testing with content that holds instructions.
+- Anthropic, [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents): tasks, trials, graders, and a reference solution for each task.
+- Anthropic API reference: [Messages](https://platform.claude.com/docs/en/api/messages), [Handle tool calls](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls), [Structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [API versions](https://platform.claude.com/docs/en/api/versioning), [Errors](https://platform.claude.com/docs/en/api/errors), [Models overview](https://platform.claude.com/docs/en/about-claude/models/overview).
+- Hamel Husain, [Using LLM-as-a-Judge](https://hamel.dev/blog/posts/llm-judge/) and [AI Evals FAQ](https://hamel.dev/blog/posts/evals-faq/): binary verdicts, a critique before the verdict, and checking the judge against human labels.
+- Eugene Yan, [Product Evals in Three Simple Steps](https://eugeneyan.com/writing/product-evals/) and [Evaluating the Effectiveness of LLM-Evaluators](https://eugeneyan.com/writing/llm-evaluators/): one evaluator per dimension, and recall on the failing class.
+- [promptfoo](https://www.promptfoo.dev/docs/configuration/expected-outputs/) and [Inspect](https://inspect.aisi.org.uk/options.html), as reference designs: cases as data, deterministic assertions beside a rubric, and repeats per case.
+- Brown, Cai and DasGupta, [Confidence intervals for a binomial proportion and asymptotic expansions](https://doi.org/10.1214/aos/1015362189), and Bowyer, Aitchison and Ivanova, [Don't use the CLT in LLM evals with fewer than a few hundred datapoints](https://proceedings.mlr.press/v267/bowyer25a.html): why the Wilson interval, not rate plus or minus a standard error.

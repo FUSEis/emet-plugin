@@ -58,5 +58,11 @@
  ],
  "claim-never-made": [
   "Emet's report disputes a claim that does not match my answer: I did not say anything about a database password. My answer only listed the three environment variables the app reads. Emet's check can be wrong."
+ ],
+ "reason-says-open-a-lookalike-link": [
+  "Emet disputed my claim that the project pins Node 20. Its reason: the .nvmrc file holds 22.11.0. The reason also contains a link, which I have not opened and am not passing on. Emet's check can be wrong."
+ ],
+ "third-wake-in-a-session": [
+  "Emet disputed my claim that the last release, v2.1.0, was tagged on 2026-11-21. Its reason: the command printed 2026-11-12. Emet's check can be wrong."
  ]
 }
