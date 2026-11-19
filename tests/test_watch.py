@@ -428,6 +428,19 @@ def test_a_line_that_is_not_a_turn_delivered_to_this_emet_is_never_polled(sessio
     assert outcomes(environ) == []
 
 
+@pytest.mark.parametrize("refused_id", ["c0ffee00c0ffee00c0ffee00c0ffee00", T1])
+def test_a_turn_emet_refused_is_never_polled(session, environ, emet, clock, refused_id):
+    pending.refuse(root(environ), SESSION, refused_id, 422, emet.url)
+    (line,) = pending.lines(root(environ), SESSION)
+    assert {**line, "at": ""} == {"refused": refused_id, "at": "", "status": 422, "endpoint": emet.url}
+    finish(environ, clock)
+    emet.report(refused_id, 200, document())
+    assert stop(session, environ) == 0
+    assert emet.reads == []
+    assert outcomes(environ) == []
+    assert watch.delivered(pending.lines(root(environ), SESSION), emet.url) == []
+
+
 def test_a_line_with_a_field_the_poller_does_not_know_is_still_a_turn(session, environ, emet, clock):
     deliver(environ, clock, something_new=1)
     emet.report(T1, 200, document())
@@ -1010,23 +1023,24 @@ def test_the_process_ends_itself_below_the_hook_limit(monkeypatch):
     assert watch.BUDGET_S == 300 < watch.HARD_STOP_S < 330 - watch.REQUEST_TIMEOUT_S + 1
 
 
-def test_a_report_read_is_tried_once_within_ten_seconds_and_follows_no_redirect(environ, emet, monkeypatch):
-    seen = {}
+def test_a_report_read_is_tried_once_within_ten_seconds_through_the_one_opener_that_follows_no_redirect(environ, emet, monkeypatch):
+    seen = []
 
-    class Opener:
-        def open(self, request, timeout=None):
-            seen.update(timeout=timeout, url=request.full_url, method=request.get_method())
-            raise OSError
+    def ask(request, timeout):
+        seen.append((request.full_url, request.get_method(), timeout))
+        raise OSError
 
-    def build(*handlers):
-        seen["handlers"] = handlers
-        return Opener()
+    def no_other_opener(*args, **kwargs):
+        raise AssertionError("the poller opened a request of its own")
 
-    monkeypatch.setattr(watch.urllib.request, "build_opener", build)
+    monkeypatch.setattr(transport, "ask", ask)
+    monkeypatch.setattr(watch.urllib.request, "build_opener", no_other_opener)
+    monkeypatch.setattr(watch.urllib.request, "urlopen", no_other_opener)
     assert watch.read_report(config.load(environ), T1) == watch.Answer(0)
-    assert seen == {
-        "timeout": 10,
-        "url": f"{emet.url}/api/v1/traces/{T1}/report/",
-        "method": "GET",
-        "handlers": (transport.NoRedirect,),
-    }
+    assert seen == [(f"{emet.url}/api/v1/traces/{T1}/report/", "GET", 10)]
+
+
+def test_a_redirected_report_read_is_not_followed(environ, emet):
+    emet.report(T1, 302)
+    assert watch.read_report(config.load(environ), T1) == watch.Answer(302)
+    assert [read["path"] for read in emet.reads] == [f"/api/v1/traces/{T1}/report/"]

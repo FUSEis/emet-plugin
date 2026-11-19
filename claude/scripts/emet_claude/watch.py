@@ -226,7 +226,7 @@ def read_report(config: Config, trace_uuid: str) -> Answer:
         method="GET",
     )
     try:
-        with urllib.request.build_opener(transport.NoRedirect).open(request, timeout=REQUEST_TIMEOUT_S) as response:
+        with transport.ask(request, REQUEST_TIMEOUT_S) as response:
             if response.status != 200:
                 # The body of a 202 is never read, so it can never reach the renderer
                 return Answer(response.status, retry_after=pause.named(response.headers.get("Retry-After")))
