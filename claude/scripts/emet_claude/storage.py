@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -26,10 +27,16 @@ def data_dir(environ: Mapping[str, str] = os.environ) -> Path:
 def write_private(path: Path, text: str) -> None:
     """Writes atomically with owner-only permissions, since files can hold session content."""
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    os.replace(temp, path)
+    try:
+        fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, path)
+    except OSError:
+        # A write cut short must not leave the content behind under another name
+        with contextlib.suppress(OSError):
+            temp.unlink()
+        raise
 
 
 def read_json(path: Path, default: Any) -> Any:

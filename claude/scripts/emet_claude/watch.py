@@ -66,6 +66,8 @@ VERSION_FORM = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,3}")
 UUID_FORM = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # The name of a saved verdict: the session id, the trace and the revision of the report
 VERDICT_NAME = re.compile(rf"[A-Za-z0-9_-]{{1,100}}\.{UUID_FORM.pattern}\.[0-9]{{1,7}}\.json")
+# The name storage.write_private gives a verdict while it is written
+VERDICT_TEMP_NAME = re.compile(rf"\.{VERDICT_NAME.pattern}\.[0-9]{{1,10}}\.tmp")
 # How much of the end of the session file is read, and how far past the point where the poller started
 TAIL_BYTES = 1024 * 1024
 AHEAD_BYTES = 1024 * 1024
@@ -83,6 +85,11 @@ IDLE_S = 60
 # How often the pending file is read again while waiting
 TICK_S = 2.0
 SHORTEST_SLEEP_S = 0.05
+# Tries to write the session's latest Stop, and the wait between them
+STOP_WRITES = 5
+STOP_WRITE_WAIT_S = 0.05
+# A temporary file of a verdict left by a write cut short is removed once it is this old
+STALE_TEMP_S = 24 * 3600
 REQUEST_TIMEOUT_S = 10
 REPORT_MAX_BYTES = 2 * 1024 * 1024
 # The largest share added to a wait by chance
@@ -166,6 +173,8 @@ class Stop:
     # When the run started, and a name of its own that tells it from the other Stops of the session
     at: float = 0.0
     token: str = ""
+    # The time of the last entry the turn had written when the run started, 0 when none could be read
+    ended: float = 0.0
 
 
 @dataclass
@@ -247,6 +256,15 @@ def session_entries(transcript_path: str, around: Optional[int] = None) -> Tuple
     return found, size
 
 
+def last_time(found: List[Tuple[int, Dict[str, Any]]]) -> float:
+    """Returns the time of the last entry that names one, or 0. Taken from the file, so a late start of this process does not move it."""
+    for _, entry in reversed(found):
+        at = timestamps.parse(entry.get("timestamp"))
+        if at is not None:
+            return at.timestamp()
+    return 0.0
+
+
 def claude_code_version(found: List[Tuple[int, Dict[str, Any]]]) -> Tuple[int, ...]:
     """Returns the Claude Code version the last entry of the session file names, or () when none does."""
     for _, entry in reversed(found):
@@ -279,10 +297,21 @@ def stop_path(root: Path, session_id: str) -> Path:
 def announce(root: Path, stop: Stop) -> None:
     """Names this Stop as the session's latest, for the watcher that may already run. Ids and numbers only. Never raises."""
     saved = {"token": stop.token, "prompt_id": stop.prompt_id, "size": stop.size, "at": storage.now(stop.at)}
-    try:
-        storage.write_json(stop_path(root, stop.session_id), saved)
-    except OSError as error:
-        storage.log(root, f"stop not written {type(error).__name__}")
+    if stop.ended:
+        saved["ended"] = storage.now(stop.ended)
+    for attempt in range(STOP_WRITES):
+        try:
+            storage.write_json(stop_path(root, stop.session_id), saved)
+            return
+        except PermissionError as error:
+            # Windows refuses to replace a file another process has open. The watcher reads it for a moment only
+            if attempt == STOP_WRITES - 1:
+                storage.log(root, f"stop not written {type(error).__name__}")
+                return
+            sleep(STOP_WRITE_WAIT_S)
+        except OSError as error:
+            storage.log(root, f"stop not written {type(error).__name__}")
+            return
 
 
 def latest(root: Path, own: Stop) -> Stop:
@@ -297,7 +326,8 @@ def latest(root: Path, own: Stop) -> Stop:
         return own
     if type(size) is not int or size < 0:
         return own
-    return Stop(own.session_id, own.transcript_path, plain(prompt_id), size, at.timestamp(), token)
+    ended = timestamps.parse(saved.get("ended"))
+    return Stop(own.session_id, own.transcript_path, plain(prompt_id), size, at.timestamp(), token, ended.timestamp() if ended else 0.0)
 
 
 def plain(prompt_id: Any) -> str:
@@ -527,6 +557,11 @@ def prune_verdicts(root: Path) -> None:
         if isinstance(verdict, dict) and expired(verdict):
             with contextlib.suppress(OSError):
                 path.unlink()
+    # A write cut short can leave report text under a name the loop above never matches
+    for path in folder.glob(".*.tmp"):
+        with contextlib.suppress(OSError):
+            if VERDICT_TEMP_NAME.fullmatch(path.name) and not path.is_symlink() and pause.clock() - path.stat().st_mtime > STALE_TEMP_S:
+                path.unlink()
 
 
 def report_ids(document: Dict[str, Any]) -> Tuple[str, int]:
@@ -565,9 +600,9 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     held = ""
     if wakes(found) >= WAKE_CAP:
         held = CAPPED
-    # The sender names a turn after its Stop, so a turn delivered before the latest Stop is an earlier one.
+    # A turn is delivered after it ends, so one delivered before the last entry of the latest turn is an earlier one.
     # And a wake that lands in a running turn is folded into it and can go unseen
-    elif trace.at < int(stop.at) or newer_trace(root, config.endpoint, session_id, trace.trace_uuid) or newer_turn(stop):
+    elif trace.at < int(stop.ended) or newer_trace(root, config.endpoint, session_id, trace.trace_uuid) or newer_turn(stop):
         held = NEWER_TURN
     link = (config.endpoint, session_id, trace.conversation_uuid)
     verdict = {
@@ -755,7 +790,7 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     if headless(found, environ):
         storage.log(root, "watch skipped, no person is at the session")
         return skip(root, config, session_id, NO_PERSON)
-    stop = Stop(session_id, transcript_path, plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex)
+    stop = Stop(session_id, transcript_path, plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found))
     # Written before the lock is tried: the watcher already running judges this turn by it
     announce(root, stop)
     return attend(root, config, stop)

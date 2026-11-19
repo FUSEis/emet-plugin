@@ -7,11 +7,12 @@ import socket
 import stat
 import sys
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
 from conftest import API_KEY
-from emet_claude import commands, config, pause, pending, report, storage, transport, watch
+from emet_claude import commands, config, pause, pending, report, storage, timestamps, transport, watch
 from helpers import Transcript
 from test_report import claim, document
 
@@ -105,6 +106,13 @@ def finish(environ, clock, queued=0, ago=0.0):
 
 def stop(transcript, environ, **fields):
     return watch.run(json.dumps({**transcript.hook_input(), **fields}).encode(), environ)
+
+
+def next_turn(transcript, clock, text="And 3 + 3?", **extra):
+    """Writes a later turn of the session that ends now, as Claude Code stamps it."""
+    now = timestamps.text(datetime.fromtimestamp(clock.now, timezone.utc))
+    transcript.prompt(text, timestamp=now, **extra)
+    transcript.text("msg_next", "6", timestamp=now)
 
 
 def not_polled(transcript, environ, skipped_for):
@@ -244,6 +252,7 @@ def test_a_turn_still_waiting_when_the_time_is_up_is_polled_after_the_next_stop(
     emet.reports[T1][0:1] = [emet.reports[T1][0]] * 13
     assert stop(session, environ) == 0
     # The Stop of a later turn: the answer the report is about is no longer the one in view
+    next_turn(session, clock)
     assert stop(session, environ) == 0
     assert outcomes(environ) == [(T1, "timed_out", False), (T1, "flagged", True)]
     assert [(item["handed"], item["text"].startswith(report.MISSED_OPENING)) for item in watch.verdicts(root(environ), SESSION)] == [
@@ -470,8 +479,10 @@ def test_no_report_is_asked_for_during_a_pause(session, environ, emet, clock):
     assert emet.reads == [] and clock.now == start
     assert outcomes(environ) == [(T1, "paused", False)]
     clock.advance(31)
+    next_turn(session, clock)
     assert stop(session, environ) == 0
     assert outcomes(environ)[-1] == (T1, "flagged", True) and emet.polled(T1) == 1
+    assert watch.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
 
 
 def test_a_pause_another_session_starts_ends_a_run_already_polling(session, environ, emet, clock, sleeper):
@@ -714,7 +725,7 @@ def watcher_lock(environ, session_id=SESSION):
 
 def later_stop(environ, clock, transcript, prompt_id="", named="later"):
     """Writes what the Stop of a later turn of the session writes before it tries the lock."""
-    ended = watch.Stop(SESSION, str(transcript.path), prompt_id, transcript.path.stat().st_size, clock.now, named)
+    ended = watch.Stop(SESSION, str(transcript.path), prompt_id, transcript.path.stat().st_size, clock.now, named, clock.now)
     watch.announce(root(environ), ended)
     return ended
 
@@ -724,7 +735,13 @@ def test_a_stop_writes_its_turn_and_the_size_of_the_session_file_for_the_watcher
     assert stop(session, environ, prompt_id="prompt-1") == 0
     saved = json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))
     assert re.fullmatch("[0-9a-f]{32}", saved.pop("token"))
-    assert saved == {"prompt_id": "prompt-1", "size": session.path.stat().st_size, "at": storage.now(clock.now)}
+    last_entry = datetime(2026, 10, 20, 10, 0, 2, tzinfo=timezone.utc).timestamp()
+    assert saved == {
+        "prompt_id": "prompt-1",
+        "size": session.path.stat().st_size,
+        "at": storage.now(clock.now),
+        "ended": storage.now(last_entry),
+    }
     assert stop(session, environ, prompt_id="Tell me <a secret>") == 0
     assert json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))["prompt_id"] == ""
 
@@ -763,6 +780,131 @@ def test_a_turn_delivered_before_the_latest_stop_is_an_earlier_turn_and_keeps_cl
     assert capfdbinary.readouterr() == (b"", b"")
     (check,) = watch.checks(root(environ), SESSION)
     assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
+
+
+def test_a_turn_is_not_taken_for_an_earlier_one_when_the_poller_starts_long_after_the_sender(session, environ, emet, clock):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    # The sender named the turn five seconds before this process started
+    clock.advance(5)
+    assert stop(session, environ) == 2
+    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+
+
+def test_the_turn_a_later_stop_ended_is_not_taken_for_an_earlier_one_when_that_stop_wrote_late(
+    session, environ, emet, clock, sleeper, capfdbinary
+):
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    emet.report(T2, 200, document())
+
+    def next_turn_ends():
+        next_turn(session, clock)
+        deliver(environ, clock, T2)
+        clock.advance(5)
+        watch.announce(
+            root(environ), watch.Stop(SESSION, str(session.path), "", session.path.stat().st_size, clock.now, "late", clock.now - 5)
+        )
+
+    sleeper.at(40, next_turn_ends)
+    assert stop(session, environ) == 2
+    assert capfdbinary.readouterr()[1].startswith(report.WAKE_OPENING.encode())
+
+
+def test_the_turn_before_is_kept_for_the_next_prompt_by_the_stop_that_takes_over_before_its_own_turn_is_delivered(
+    session, environ, emet, clock, sleeper, capfdbinary
+):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    clock.advance(20)
+    next_turn(session, clock)
+    with watcher_lock(environ) as running:
+        sleeper.at(24, running.close)
+        assert stop(session, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["trace_uuid"], check["outcome"], check["handed"], check["held"]) == (T1, "flagged", False, "newer_turn")
+
+
+@pytest.mark.parametrize("ended", ["long ago", None, 5, ""])
+def test_a_stop_file_that_names_no_readable_end_of_its_turn_holds_nothing_back_by_the_clock(session, environ, emet, clock, sleeper, ended):
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    later = {"token": "later", "prompt_id": "", "size": session.path.stat().st_size, "at": storage.now(clock.now + 10), "ended": ended}
+    sleeper.at(10, lambda: storage.write_json(watch.stop_path(root(environ), SESSION), later))
+    assert stop(session, environ) == 2
+
+
+@pytest.mark.parametrize(("refused", "written"), [(2, True), (4, True), (5, False), (99, False)])
+def test_the_stop_file_is_written_again_when_another_process_has_it_open(session, environ, emet, clock, monkeypatch, refused, written):
+    real = os.replace
+    tries = []
+
+    def replace(source, target):
+        if str(target).endswith(".stop.json"):
+            tries.append(clock.now)
+            if len(tries) <= refused:
+                raise PermissionError("in use")
+        real(source, target)
+
+    monkeypatch.setattr(os, "replace", replace)
+    finish(environ, clock)
+    start = clock.now
+    assert stop(session, environ) == 0
+    assert len(tries) == min(refused + 1, 5)
+    assert [round(at - start, 2) for at in tries] == [round(0.05 * number, 2) for number in range(len(tries))]
+    assert watch.stop_path(root(environ), SESSION).exists() is written
+    logged = log(environ) if (root(environ) / "emet.log").exists() else ""
+    assert ("stop not written PermissionError" in logged) is not written
+    assert "in use" not in logged and "watch error" not in logged
+    assert [path.name for path in (root(environ) / "state").iterdir() if path.name.endswith(".tmp")] == []
+
+
+def test_a_stop_file_that_cannot_be_written_for_another_reason_is_not_tried_again(session, environ, emet, clock):
+    watch.stop_path(root(environ), SESSION).mkdir()
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    start = clock.now
+    assert stop(session, environ) == 2
+    assert clock.now - start == 8
+    assert "stop not written" in log(environ)
+
+
+def test_a_write_that_fails_leaves_no_temporary_file_behind(tmp_path, monkeypatch):
+    def refuse(source, target):
+        raise PermissionError
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(PermissionError):
+        storage.write_private(tmp_path / "verdict.json", "March")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_temporary_file_of_a_verdict_older_than_a_day_is_removed(session, environ, emet, clock, tmp_path):
+    folder = root(environ) / "verdicts"
+    folder.mkdir()
+
+    def left(name, age):
+        path = folder / name
+        path.write_text("March", encoding="utf-8")
+        os.utime(path, (clock.now - age, clock.now - age))
+        return path
+
+    day = 24 * 3600
+    stale = left(f".{SESSION}.{T2}.1.json.4242.tmp", day + 60)
+    kept = [
+        left(f".{SESSION}.{T2}.2.json.4242.tmp", day - 60),
+        left(".notes.json.4242.tmp", day + 60),
+        left(f".{SESSION}.{T2}.1.json.tmp", day + 60),
+        left(f"{SESSION}.{T2}.1.json.4242.tmp", day + 60),
+        left(f".{SESSION}.{T2}.1.json.4242.tmp.txt", day + 60),
+    ]
+    finish(environ, clock)
+    stop(session, environ)
+    assert not stale.exists()
+    assert all(path.exists() for path in kept)
 
 
 @pytest.mark.parametrize(
@@ -826,8 +968,7 @@ def test_a_turn_not_ready_in_its_own_time_is_kept_for_the_next_prompt_once_a_lat
     emet.reports[T1] = []
     emet.report(T1, 200, document())
     emet.report(T2, 200, document(status="clear"))
-    session.prompt("And 3 + 3?")
-    session.text("msg_2", "6")
+    next_turn(session, clock)
     sleeper.at(302, lambda: deliver(environ, clock, T2))
     sleeper.at(302, lambda: finish(environ, clock))
     assert stop(session, environ) == 0
@@ -1150,8 +1291,9 @@ def test_a_flagged_report_that_was_held_back_uses_up_no_wake(session, environ, e
         trace = str(uuid.UUID(int=number))
         deliver(environ, clock, trace)
         emet.report(trace, 200, document())
-        # Delivered before the Stop, so it is an earlier turn and is held back
+        # Delivered before the turn that now ends had written its last entry, so it is an earlier turn
         clock.advance(5)
+        next_turn(session, clock)
         assert stop(session, environ) == 0
     assert [item["held"] for item in watch.checks(root(environ), SESSION)] == ["newer_turn"] * 3
     codes = []
