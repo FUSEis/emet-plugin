@@ -1,10 +1,15 @@
 """Keeps the manifests, the code and the docs consistent with each other."""
 
+import importlib.util
+import io
 import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from emet_claude import VERSION
 
@@ -193,3 +198,254 @@ def test_the_dev_settings_file_is_ignored():
     for name in ("dev/.env", "dev/.env.local", "dev/.env.swp"):
         assert ignored(name), name
     assert not ignored("dev/.env.example")
+
+
+def changelog_check():
+    """Loads the script CI runs. It lives outside any package, next to the workflow that calls it."""
+    spec = importlib.util.spec_from_file_location("changelog_check", ROOT / ".github" / "scripts" / "changelog_check.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+BASE_CHANGELOG = """# Changelog
+
+## [Unreleased]
+
+### Fixed
+
+- An entry already on the base branch.
+
+## [0.1.4] - 2026-11-19
+
+- Released.
+
+[Unreleased]: https://github.com/FUSEis/emet-plugin/compare/v0.1.4...HEAD
+"""
+WITH_ENTRY = BASE_CHANGELOG.replace("- An entry already", "- A new entry.\n- An entry already")
+# A release moves the entries under a new version and leaves Unreleased empty
+RELEASED = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n## [0.1.5] - 2026-12-01\n")
+ENTRY_REMOVED = BASE_CHANGELOG.replace("### Fixed\n\n- An entry already on the base branch.\n\n", "")
+OLD_RELEASE_EDITED = BASE_CHANGELOG.replace("- Released.", "- Released. And a new line here.")
+BLANK_LINES_ONLY = BASE_CHANGELOG.replace("### Fixed\n", "### Fixed\n\n\n")
+
+
+def checked(monkeypatch, tmp_path, paths, labels="[]", head=BASE_CHANGELOG):
+    """Runs the check as CI does: the changed paths on stdin, the base changelog in a file, the labels in the environment."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    if head is not None:
+        (checkout / "CHANGELOG.md").write_text(head, encoding="utf-8")
+    (tmp_path / "base-changelog").write_text(BASE_CHANGELOG, encoding="utf-8")
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(sys, "argv", ["changelog_check.py", str(tmp_path / "base-changelog")])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO("\0".join(paths).encode() + b"\0")))
+    monkeypatch.setenv("PR_LABELS", labels)
+    return changelog_check().main()
+
+
+CODE_FILE = "claude/scripts/emet_claude/watch.py"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        CODE_FILE,
+        "claude/scripts/emet_hook.py",
+        "claude/hooks/hooks.json",
+        "claude/skills/status/SKILL.md",
+        "claude/.claude-plugin/plugin.json",
+    ],
+)
+def test_a_change_to_what_the_plugin_ships_needs_a_changelog_entry(monkeypatch, tmp_path, capsys, path):
+    assert checked(monkeypatch, tmp_path, [path, "README.md"]) == 1
+    assert f"  {path}\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "path", ["claude/README.md", "claude/LICENSE", "tests/test_watch.py", "docs/enterprise.md", ".github/workflows/ci.yml"]
+)
+def test_a_change_to_anything_else_needs_no_entry(monkeypatch, tmp_path, path):
+    assert checked(monkeypatch, tmp_path, [path]) == 0
+
+
+def test_a_pull_request_that_changes_no_file_needs_no_entry(monkeypatch, tmp_path):
+    assert checked(monkeypatch, tmp_path, []) == 0
+
+
+@pytest.mark.parametrize(
+    ("head", "code"),
+    [
+        (WITH_ENTRY, 0),
+        (RELEASED, 0),
+        (BASE_CHANGELOG, 1),
+        # Deleted or renamed away
+        (None, 1),
+        ("", 1),
+        (ENTRY_REMOVED, 1),
+        (OLD_RELEASE_EDITED, 1),
+        (BLANK_LINES_ONLY, 1),
+    ],
+)
+def test_only_a_new_line_under_unreleased_or_a_new_version_counts_as_an_entry(monkeypatch, tmp_path, head, code):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE, "CHANGELOG.md"], head=head) == code
+
+
+def test_a_changelog_elsewhere_in_the_repository_is_not_the_changelog(monkeypatch, tmp_path):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE, "docs/CHANGELOG.md"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("labels", "code"),
+    [
+        ('["documentation", "no-changelog"]', 0),
+        # Only a label of exactly that name, in a list
+        ('["documentation"]', 1),
+        ('["no-changelog-needed"]', 1),
+        ('"no-changelog"', 1),
+        ("not json", 1),
+        ("", 1),
+    ],
+)
+def test_the_label_stands_in_for_an_entry(monkeypatch, tmp_path, labels, code):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE], labels) == code
+
+
+def test_the_check_reads_this_repositorys_own_changelog():
+    check = changelog_check()
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert check.UNRELEASED in text.splitlines()
+    assert f"## [{VERSION}]" in {line.split(" - ")[0] for line in check.versions(text)}
+    # The footnote links at the end are not entries
+    assert not any(line.startswith("[") for line in check.unreleased(text))
+
+
+def test_the_required_check_waits_for_the_changelog_job_and_runs_again_when_a_label_changes():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    triggers = re.search(r"^  pull_request:\n(?:    #.*\n)*    types: \[(.+)\]$", workflow, re.M)
+    assert triggers is not None
+    assert {"opened", "synchronize", "reopened", "labeled", "unlabeled"} <= set(triggers.group(1).split(", "))
+    required = workflow.partition("\n  ci:\n")[2]
+    needs = re.search(r"^    needs: \[(.+)\]$", required, re.M)
+    assert needs is not None
+    # A job the required check does not wait for and test could fail without holding a merge
+    jobs = set(re.findall(r"^  ([a-z]+):$", workflow.partition("\njobs:\n")[2], re.M)) - {"ci"}
+    assert set(needs.group(1).split(", ")) == jobs and "changelog" in jobs
+    for job in jobs:
+        assert f'[ "${{{{ needs.{job}.result }}}}" = "success" ]' in required, job
+    job = workflow.partition("\n  changelog:\n")[2].partition("\n  ci:\n")[0]
+    # The first parent of the merge commit CI checks out is the base branch, so two commits are enough
+    assert "fetch-depth: 2" in job
+    assert 'git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"' in job
+    assert 'git show HEAD^1:CHANGELOG.md > "$RUNNER_TEMP/base-changelog"' in job
+    assert 'python3 .github/scripts/changelog_check.py "$RUNNER_TEMP/base-changelog" < "$RUNNER_TEMP/changed"' in job
+    assert "PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in job
+    assert "if: github.event_name == 'pull_request'" in job
+    assert "pull_request_target" not in workflow
+
+
+def test_contributing_names_the_label_and_the_folders_the_changelog_check_reads():
+    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    check = changelog_check()
+    assert f"`{check.LABEL}`" in guide
+    (rule,) = [line for line in guide.splitlines() if "fails the `changelog` job" in line]
+    assert set(re.findall(r"`(claude/[a-z./-]+/)`", rule)) == set(check.SHIPPED)
+    for folder in check.SHIPPED:
+        assert (ROOT / folder).is_dir(), folder
+
+
+def section(path, heading):
+    """Returns the text under one heading of a Markdown file, up to the next heading of the same level."""
+    text = (ROOT / path).read_text(encoding="utf-8")
+    assert f"\n{heading}\n" in text, heading
+    return text.partition(f"\n{heading}\n")[2].partition("\n## ")[0]
+
+
+def test_the_readme_lists_the_files_an_installed_plugin_keeps_and_no_others():
+    from emet_claude import pause, pending, storage, transport, watch
+
+    kept = section("claude/README.md", "## Where data goes and what stays local")
+    here = Path("data")
+    for name in (
+        "queue/*.json",
+        "state/<session>.json",
+        pending.path(here, "<session>").relative_to(here).as_posix(),
+        pause.SENDS,
+        "status.json",
+        "emet.log",
+        "emet.log.1",
+        "*.lock",
+    ):
+        assert f"`{name}`" in kept, name
+    assert f"At most {transport.QUEUE_MAX_FILES} files or {transport.QUEUE_MAX_BYTES // 1024**2} MB" in kept
+    assert f"starts again at {storage.LOG_MAX_BYTES // 1_000_000} MB" in kept
+    # No hook starts the report check, so what it alone writes is not a user's concern
+    assert "watch" not in shipped_hook_modes()
+    for name in (
+        watch.checks_path(here, "s").name.partition(".")[2],
+        watch.stop_path(here, "s").name.partition(".")[2],
+        watch.verdict_folder(here).name,
+        pause.READS,
+        "reads_paused_until",
+        "report check",
+    ):
+        assert name not in kept, name
+    # A write cut short leaves a copy that the queue's limits never see
+    assert "`.<name>.<number>.tmp`" in kept and "is never sent" in kept
+    assert 'f".{path.name}.{os.getpid()}.tmp"' in Path(storage.__file__).read_text(encoding="utf-8")
+    assert "On Windows the plugin sets no access rules" in kept
+
+
+def shipped_hook_modes():
+    """Returns every mode a hook in the shipped hooks.json runs the script in."""
+    hooks = load(PLUGIN / "hooks" / "hooks.json")["hooks"]
+    return {hook["command"].rsplit(" ", 1)[1] for groups in hooks.values() for group in groups for hook in group["hooks"]}
+
+
+def test_the_security_policy_covers_what_an_installed_plugin_does():
+    from emet_claude import pause, watch
+
+    policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    assert "`localhost`, `127.0.0.1`, `::1`" in policy
+    assert "https://github.com/FUSEis/emet-plugin/security/advisories/new" in policy
+    for name in ("emet-report-data", "data block", watch.verdict_folder(Path("data")).name, pause.READS):
+        assert name not in policy, name
+    # True while no hook starts the report check, which hands report text to Claude. Wiring it changes this sentence
+    assert "watch" not in shipped_hook_modes()
+    assert "no text from one is shown to Claude" in policy
+    # The plugin sets no access rules on Windows
+    assert "On Windows the plugin sets no access rules" in policy
+
+
+def test_contributing_names_only_tests_that_exist():
+    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    named = set(re.findall(r"`(test_[a-z0-9_]+)`", guide))
+    defined = set()
+    for path in (ROOT / "tests").glob("test_*.py"):
+        defined |= set(re.findall(r"^def (test_[a-z0-9_]+)\(", path.read_text(encoding="utf-8"), re.M))
+    assert len(named) > 30
+    assert named <= defined, sorted(named - defined)
+    # The fixture the first rule names
+    assert "def no_wait_for_the_watcher_lock(" in (ROOT / "tests" / "test_watch.py").read_text(encoding="utf-8")
+    assert "`no_wait_for_the_watcher_lock`" in guide
+
+
+def test_contributing_lists_every_file_the_plugin_keeps_with_the_module_that_owns_it():
+    owners = section("CONTRIBUTING.md", "## Files the plugin keeps")
+    for name, owner in [
+        ("state/<session>.json", "commands.py"),
+        ("state/<session>.pending.jsonl", "pending.py"),
+        ("state/<session>.checks.jsonl", "watch.py"),
+        ("state/<session>.stop.json", "watch.py"),
+        ("verdicts/<session>.<trace>.<revision>.json", "watch.py"),
+        ("queue/<number>-<hash>.json", "transport.py"),
+        ("pause.json", "pause.py"),
+        ("read-pause.json", "pause.py"),
+        ("status.json", "commands.py"),
+        ("emet.log", "storage.py"),
+        ("*.lock", "storage.py"),
+    ]:
+        (row,) = [line for line in owners.splitlines() if line.startswith("|") and f"`{name}`" in line]
+        assert f"`{owner}`" in row.split("|")[-2], name
+        assert (ROOT / "claude" / "scripts" / "emet_claude" / owner).is_file()

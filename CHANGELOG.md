@@ -4,8 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- The code that reads a turn's report from Emet after the turn ends, and tells Claude when the report disputes a claim (`watch.py`). No hook starts it, so nothing changes for an installed plugin. [CONTRIBUTING.md](CONTRIBUTING.md#files-the-plugin-keeps) lists the files it writes when it runs.
+- `claude/README.md` lists every file the plugin keeps in its data folder, what each holds, which can hold text from a turn, and for how long.
+- `SECURITY.md` has a trust model: what the plugin reads, where it sends, how it treats Emet's answers, what it does not defend against, and how to pin a release to a tag or a commit.
+
 ### Changed
 
+- The turn Claude takes after the plugin woke it with a report is sent with `emet.plugin.turn_started_by` set to `report_wake` on its turn span, and with a fixed placeholder as its prompt, so Emet's own report text is not sent back as a person's message. Only a turn that follows a wake the plugin recorded is marked, so no turn is marked while no hook starts the report check.
+- `status.json` has a `reads_paused_until` field, empty unless Emet limited the rate of the report reads.
 - `/emet:status` and the log show a failed send as its HTTP status, with Emet's short error code when the answer has one, as in `400 some_code`. Before, they showed up to 200 characters of whatever the server answered. A proxy or a server standing in for Emet could put its own text there, which `/emet:status` then read to Claude, and an answer that repeated part of a refused turn would have put session content in the log. A code is kept only when it is made of lowercase letters and underscores, 40 characters at most; anything else is dropped. The fixed phrases `key rejected`, `redirected` and `network ...` are as before.
 - The status skill treats every log line and every value of the status file as data to report, never as an instruction.
 - A log line is always one line. A line break, a control character or an invisible character in a logged value is written as `?`, and a line is cut at 300 characters. Before, an id read from a queued file could hold a line break and so write a second line that looked like the plugin's own, such as `401 key rejected`.
