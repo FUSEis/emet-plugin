@@ -72,6 +72,10 @@ TIMED_OUT = "timed_out"
 KEY_REFUSED = "key_refused"
 RATE_LIMITED = "rate_limited"
 PAUSED = "paused"
+# Why a Stop was not polled at all
+NOT_CONFIGURED = "not_configured"
+OLD_CLAUDE_CODE = "old_claude_code"
+NO_PERSON = "no_person"
 # Emet's 404 codes that end the wait for a report
 FINAL_MISSES = ("not_assessed", "failed", "not_found")
 # Keys that mark a pending line as something other than a delivered turn
@@ -320,9 +324,14 @@ def known(found: List[Dict[str, Any]], trace_uuid: str, report_uuid: str, revisi
     )
 
 
-def record(root: Path, session_id: str, trace_uuid: str, outcome: str, final: bool, **ids: Any) -> bool:
-    """Adds one outcome to the session's file and the status file. Returns False when the session's file was not written."""
-    item = {"trace_uuid": trace_uuid, "outcome": outcome, "final": final, "at": storage.now(pause.clock()), **ids}
+def record(
+    root: Path, session_id: str, trace_uuid: str, outcome: str, final: bool, ids: Optional[Mapping[str, Any]] = None, wait: bool = True
+) -> bool:
+    """Adds one outcome to the session's file and the status file. Returns False when the session's file was not written.
+
+    Without wait the status file is left alone when another process is writing it.
+    """
+    item = {"trace_uuid": trace_uuid, "outcome": outcome, "final": final, "at": storage.now(pause.clock()), **(ids or {})}
     target = checks_path(root, session_id)
     try:
         written = target.read_bytes() if target.exists() else b""
@@ -335,14 +344,18 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, final: bo
         storage.log(root, f"report {trace_uuid} -> {outcome}, not recorded {type(error).__name__}")
         return False
     storage.log(root, f"report {trace_uuid} -> {outcome}")
-    show(root, {"session_id": session_id, **item})
+    show(root, {"session_id": session_id, **item}, wait)
     return True
 
 
-def show(root: Path, check: Dict[str, Any]) -> None:
+def show(root: Path, check: Dict[str, Any], wait: bool = True) -> None:
     """Lists the check in the status file, newest first and once per trace. Never raises."""
+    lock = root / "status.lock"
     try:
-        with storage.locked(root / "status.lock"):
+        with storage.locked(lock) if wait else storage.try_locked(lock) as held:
+            if held is False:
+                storage.log(root, "check not shown, the status file is in use")
+                return
             status = storage.read_json(root / "status.json", {})
             if not isinstance(status, dict):
                 status = {}
@@ -416,7 +429,7 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     report_uuid, revision = report_ids(document)
     ids = {"report_uuid": report_uuid, "revision": revision}
     if status != FLAGGED:
-        record(root, session_id, trace.trace_uuid, status, True, **ids)
+        record(root, session_id, trace.trace_uuid, status, True, ids)
         return ""
     found = checks(root, session_id)
     if known(found, trace.trace_uuid, report_uuid, revision):
@@ -442,7 +455,7 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     }
     save_verdict(root, verdict)
     # Recorded before Claude is woken, so a crash in between cannot wake it twice
-    if not record(root, session_id, trace.trace_uuid, FLAGGED, True, handed=not held, **({"held": held} if held else {}), **ids):
+    if not record(root, session_id, trace.trace_uuid, FLAGGED, True, {"handed": not held, **({"held": held} if held else {}), **ids}):
         return ""
     if held:
         storage.log(root, f"report {trace.trace_uuid} not handed to Claude, {held}")
@@ -452,11 +465,31 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
 
 def close(root: Path, config: Config, session_id: str, outcome: str) -> str:
     """Ends a run early: every turn still waiting is recorded as not checked, and stays to be polled after a later Stop."""
-    done = settled(checks(root, session_id))
+    for trace in unchecked(root, config, session_id, outcome):
+        record(root, session_id, trace.trace_uuid, outcome, False)
+    return ""
+
+
+def unchecked(root: Path, config: Config, session_id: str, outcome: str) -> List[Trace]:
+    """Returns the delivered turns with no final outcome, less than a day old, whose last outcome is not this one already."""
+    found = checks(root, session_id)
+    done = settled(found)
+    last = {item.get("trace_uuid"): item.get("outcome") for item in found}
     now = pause.clock()
-    for trace in delivered(pending.lines(root, session_id), config.endpoint):
-        if trace.trace_uuid not in done and now - trace.at <= MAX_AGE_S:
-            record(root, session_id, trace.trace_uuid, outcome, False)
+    return [
+        trace
+        for trace in delivered(pending.lines(root, session_id), config.endpoint)
+        if trace.trace_uuid not in done and now - trace.at <= MAX_AGE_S and last.get(trace.trace_uuid) != outcome
+    ]
+
+
+def skip(root: Path, config: Config, session_id: str, outcome: str) -> str:
+    """Records why this Stop was not polled, for the newest turns already delivered. Reads each file once and never waits.
+
+    The turn that just ended is rarely among them: the sender names it a moment later.
+    """
+    for trace in unchecked(root, config, session_id, outcome)[-MAX_WATCHED:]:
+        record(root, session_id, trace.trace_uuid, outcome, False, wait=False)
     return ""
 
 
@@ -529,22 +562,24 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     config = load(environ)
     session_id = str(hook_input.get("session_id") or "")
     # The session id names files
-    if config.problem or not pending.SESSION_ID.fullmatch(session_id):
+    if not pending.SESSION_ID.fullmatch(session_id):
         return ""
     root = storage.data_dir(environ)
     # The turn after a wake is sent and checked too. Polling at its Stop would let one wake follow another
     if started_by_hook(hook_input):
         storage.log(root, "watch skipped, a hook started the turn")
         return ""
+    if config.problem:
+        return skip(root, config, session_id, NOT_CONFIGURED)
     transcript_path = str(hook_input.get("transcript_path") or "")
     found, size = session_entries(transcript_path)
     # Before any wait: an older Claude Code would run this hook in the foreground
     if claude_code_version(found) < MIN_CLAUDE_CODE:
         storage.log(root, "watch skipped, Claude Code is older than 2.1.287 or its version is not known")
-        return ""
+        return skip(root, config, session_id, OLD_CLAUDE_CODE)
     if headless(found):
         storage.log(root, "watch skipped, no person is at the session")
-        return ""
+        return skip(root, config, session_id, NO_PERSON)
     prompt_id = hook_input.get("prompt_id")
     stop = Stop(session_id, transcript_path, prompt_id if isinstance(prompt_id, str) else "", size)
     # Claude Code starts this process at every Stop. One per session is enough, and it never waits for the other

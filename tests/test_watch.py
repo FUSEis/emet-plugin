@@ -93,6 +93,15 @@ def stop(transcript, environ, **fields):
     return watch.run(json.dumps({**transcript.hook_input(), **fields}).encode(), environ)
 
 
+def not_polled(transcript, environ, skipped_for):
+    """Makes the next Stop of the session one the poller skips for the named reason."""
+    if skipped_for == "not_configured":
+        del environ["CLAUDE_PLUGIN_OPTION_EMET_KEY"]
+    transcript.prompt("What is 2 + 2?", **({"source": "sdk"} if skipped_for == "no_person" else {}))
+    transcript.text("msg_1", "4", **({"version": "2.1.286"} if skipped_for == "old_claude_code" else {}))
+    return transcript
+
+
 def outcomes(environ, session_id=SESSION):
     return [(item["trace_uuid"], item["outcome"], item["final"]) for item in watch.checks(root(environ), session_id)]
 
@@ -515,7 +524,7 @@ def test_nothing_happens_on_a_claude_code_older_than_2_1_287(transcript, environ
     assert bool(emet.reads) is polled
     if not polled:
         assert clock.now == start
-        assert outcomes(environ) == []
+        assert outcomes(environ) == [(T1, "old_claude_code", False)]
 
 
 def test_the_version_is_the_last_one_the_session_file_names(transcript, environ, emet, clock):
@@ -544,6 +553,7 @@ def test_nothing_happens_without_a_session_file_to_read_the_version_from(session
     start = clock.now
     assert stop(session, environ, transcript_path=path) == 0
     assert emet.reads == [] and clock.now == start
+    assert outcomes(environ) == [(T1, "old_claude_code", False)]
 
 
 def test_a_turn_a_hook_started_is_not_polled(session, environ, emet, clock, capfdbinary):
@@ -553,7 +563,18 @@ def test_a_turn_a_hook_started_is_not_polled(session, environ, emet, clock, capf
     assert stop(session, environ, stop_hook_active=True) == 0
     assert capfdbinary.readouterr() == (b"", b"")
     assert emet.reads == [] and clock.now == start
+    assert outcomes(environ) == []
     assert stop(session, environ, stop_hook_active=False) == 2
+
+
+@pytest.mark.parametrize("skipped_for", ["no_person", "old_claude_code", "not_configured"])
+def test_nothing_is_recorded_for_a_turn_a_hook_started_whatever_else_would_skip_it(transcript, environ, emet, clock, skipped_for):
+    not_polled(transcript, environ, skipped_for)
+    deliver(environ, clock)
+    assert stop(transcript, environ, stop_hook_active=True) == 0
+    assert not watch.checks_path(root(environ), SESSION).exists()
+    assert stop(transcript, environ) == 0
+    assert outcomes(environ) == [(T1, skipped_for, False)]
 
 
 def test_a_second_watcher_of_a_session_leaves_at_once(session, environ, emet, clock, tmp_path):
@@ -685,6 +706,83 @@ def test_a_session_with_no_person_at_it_is_not_polled(transcript, environ, emet,
     assert stop(transcript, environ) == 0
     assert emet.reads == [] and clock.now == start
     assert "watch skipped, no person is at the session" in log(environ)
+    assert outcomes(environ) == [(T1, "no_person", False)]
+    assert status(environ)["checks"] == [{"session_id": SESSION, **watch.checks(root(environ), SESSION)[0]}]
+
+
+@pytest.mark.parametrize("skipped_for", ["no_person", "old_claude_code", "not_configured"])
+def test_a_stop_that_is_not_polled_writes_nothing_when_the_sender_has_not_named_the_turn_yet(transcript, environ, emet, clock, skipped_for):
+    not_polled(transcript, environ, skipped_for)
+    finish(environ, clock, ago=30)
+    start = clock.now
+    assert stop(transcript, environ) == 0
+    assert clock.now == start
+    assert not watch.checks_path(root(environ), SESSION).exists()
+
+
+@pytest.mark.parametrize("skipped_for", ["no_person", "old_claude_code", "not_configured"])
+def test_a_stop_that_is_not_polled_reads_the_pending_file_once_and_waits_for_nothing(
+    transcript, environ, emet, clock, monkeypatch, skipped_for
+):
+    not_polled(transcript, environ, skipped_for)
+    deliver(environ, clock, something_new=1)
+    reads = []
+    real = pending.lines
+
+    def counted(*args):
+        reads.append(args)
+        return real(*args)
+
+    def waited(*args, **kwargs):
+        raise AssertionError("waited for a lock")
+
+    monkeypatch.setattr(pending, "lines", counted)
+    monkeypatch.setattr(storage, "locked", waited)
+    start = clock.now
+    with storage.try_locked(root(environ) / "status.lock") as held:
+        assert held
+        assert stop(transcript, environ) == 0
+    assert len(reads) == 1 and clock.now == start and emet.reads == []
+    assert outcomes(environ) == [(T1, skipped_for, False)]
+    assert "watch error" not in log(environ)
+    assert "check not shown, the status file is in use" in log(environ)
+    assert not (root(environ) / "status.json").exists()
+
+
+def test_a_stop_that_is_not_polled_records_only_turns_still_waiting_and_the_five_newest(transcript, environ, emet, clock):
+    not_polled(transcript, environ, "no_person")
+    traces = [str(uuid.UUID(int=number)) for number in range(1, 10)]
+    deliver(environ, clock, traces[0], ago=24 * 3600 + 60)
+    for trace in traces[1:]:
+        deliver(environ, clock, trace)
+    watch.record(root(environ), SESSION, traces[8], "clear", True)
+    watch.record(root(environ), SESSION, traces[7], "timed_out", False)
+    assert stop(transcript, environ) == 0
+    assert outcomes(environ)[2:] == [(trace, "no_person", False) for trace in traces[3:8]]
+
+
+def test_the_same_reason_is_recorded_once_for_a_turn_until_another_outcome_follows(transcript, environ, emet, clock):
+    headless = not_polled(transcript, environ, "no_person")
+    deliver(environ, clock)
+    emet.report(T1, 401)
+    assert [stop(headless, environ) for _ in range(3)] == [0, 0, 0]
+    assert outcomes(environ) == [(T1, "no_person", False)]
+    headless.prompt("A person is back", entrypoint="cli")
+    assert [stop(headless, environ) for _ in range(3)] == [0, 0, 0]
+    assert outcomes(environ) == [(T1, "no_person", False), (T1, "key_refused", False)]
+    headless.prompt("And gone again", source="sdk")
+    assert stop(headless, environ) == 0
+    assert outcomes(environ)[2:] == [(T1, "no_person", False)]
+
+
+def test_a_turn_recorded_as_not_polled_is_polled_after_a_later_stop(transcript, environ, emet, clock):
+    not_polled(transcript, environ, "no_person")
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ) == 0
+    transcript.prompt("A person is back", entrypoint="cli")
+    assert stop(transcript, environ) == 2
+    assert outcomes(environ) == [(T1, "no_person", False), (T1, "flagged", True)]
 
 
 @pytest.mark.parametrize("fields", [{"turnOrigin": "human"}, {"entrypoint": "cli"}, {"entrypoint": 5}, {"source": "queued"}])
@@ -980,8 +1078,10 @@ def test_an_error_that_cannot_be_logged_still_exits_0(session, environ, monkeypa
 def test_nothing_is_asked_without_configuration(session, environ, emet, clock, name):
     deliver(environ, clock)
     del environ[name]
+    start = clock.now
     assert stop(session, environ) == 0
-    assert emet.reads == []
+    assert emet.reads == [] and clock.now == start
+    assert outcomes(environ) == [(T1, "not_configured", False)]
 
 
 def test_nothing_is_asked_of_a_host_other_than_emet(session, environ, emet, clock, monkeypatch):
