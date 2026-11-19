@@ -28,7 +28,7 @@ source = ["claude/scripts/emet_claude"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 95
 show_missing = true
 
 [tool.ruff]
