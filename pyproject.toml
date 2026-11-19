@@ -13,6 +13,9 @@ dev = [
     "pytest==8.4.2; python_version < '3.10'",
     "pytest==9.0.3; python_version >= '3.10'",
     "pytest-cov==7.1.0",
+    # Shuffles the tests on every run and prints the seed. pytest-randomly 4 needs Python 3.10, 5 needs 3.11
+    "pytest-randomly==3.16.0; python_version < '3.11'",
+    "pytest-randomly==5.1.0; python_version >= '3.11'",
     "ruff==0.17.5",
 ]
 
@@ -21,20 +24,27 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The eval harness in evals/ is imported by its tests
+pythonpath = ["."]
 addopts = "-ra --strict-markers"
+# A socket or file left open fails the test. One freed by the garbage collector reaches pytest as the second warning
+filterwarnings = [
+    "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.coverage.run]
 source = ["claude/scripts/emet_claude"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 95
 show_missing = true
 
 [tool.ruff]
 line-length = 140
 target-version = "py39"
-src = ["claude/scripts", "tests"]
+src = ["claude/scripts", "tests", "."]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "SIM", "RUF"]
@@ -48,9 +58,10 @@ ignore = [
 "claude/scripts/emet_claude/commands.py" = ["S603"]
 "claude/scripts/emet_claude/transport.py" = ["S310"]
 "claude/scripts/emet_claude/watch.py" = ["S310"]
+"evals/client.py" = ["S310"]
 
 [tool.mypy]
 python_version = "3.9"
 strict = true
 mypy_path = "claude/scripts"
-files = ["claude/scripts"]
+files = ["claude/scripts", "evals"]

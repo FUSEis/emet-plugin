@@ -268,7 +268,7 @@ def session_entries(transcript_path: str, around: Optional[int] = None) -> Tuple
     for raw in data.split(b"\n"):
         # The first line can be cut by the seek, and the last one still be in writing
         with contextlib.suppress(ValueError, RecursionError):
-            entry = json.loads(raw)
+            entry = storage.loads(raw)
             if isinstance(entry, dict):
                 found.append((position, entry))
         position += len(raw) + 1
@@ -453,7 +453,7 @@ def parsed(body: bytes) -> Any:
     if len(body) > REPORT_MAX_BYTES:
         return None
     try:
-        return json.loads(body)
+        return storage.loads(body)
     except (ValueError, RecursionError):
         return None
 
@@ -519,7 +519,7 @@ def checks(root: Path, session_id: str) -> List[Dict[str, Any]]:
     found = []
     for line in text.splitlines():
         with contextlib.suppress(ValueError, RecursionError):
-            item = json.loads(line)
+            item = storage.loads(line)
             if isinstance(item, dict):
                 found.append(item)
     return found
@@ -880,7 +880,7 @@ def attend(root: Path, config: Config, stop: Stop) -> str:
 def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     """Decides whether this Stop is polled at all, and polls. Returns the text to wake Claude with, or ""."""
     began = pause.clock()
-    hook_input = json.loads(raw or b"{}")
+    hook_input = storage.loads(raw or b"{}")
     if not isinstance(hook_input, dict):
         return ""
     config = load(environ)

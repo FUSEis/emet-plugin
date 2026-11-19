@@ -52,7 +52,7 @@ def lines(root: Path, session_id: str) -> List[Dict[str, Any]]:
     found = []
     for line in text.splitlines():
         with contextlib.suppress(ValueError, RecursionError):
-            item = json.loads(line)
+            item = storage.loads(line)
             if isinstance(item, dict):
                 found.append(item)
     return found
