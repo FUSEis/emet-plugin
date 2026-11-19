@@ -28,7 +28,7 @@ To keep that session apart from the Claude Code you use every day, with its own 
 
 - **No runtime dependencies.** Anything outside the standard library would have to be installed on every developer machine.
 - **Python 3.9 compatible.** It is what macOS ships. CI runs the tests on 3.9 and on the latest release.
-- **Never block the session.** Hooks return at once; all network work happens in the detached worker, and every failure there is logged, not raised.
+- **Never block the session.** Hooks return at once; all network work happens in the detached worker, and every failure there is logged, not raised. The hook on the prompt is the one hook the session waits for, and it has [rules of its own](#prompt-hook-rules).
 - **Never log content or the key.** The log holds ids, counts and HTTP statuses only; the status file also holds report links and the email sent. A test checks this.
 - **Say when content is cut.** Any tool result that is not sent complete is marked `is_truncated`, which Emet needs to avoid verifying a claim against partial evidence.
 - **Tests use synthetic transcripts** built in `tests/helpers.py`. Never commit a real session transcript; they hold private content.
@@ -37,7 +37,7 @@ To keep that session apart from the Claude Code you use every day, with its own 
 
 ## Wake-up rules
 
-The report check (`watch.py` and `report.py`) is the one part of the plugin that can make Claude speak. It runs as a background hook, and when it exits with code 2 Claude Code hands what it wrote to stderr to Claude. A change to it keeps the six rules below. Each rule names the tests that fail when it is broken; they are in `tests/test_watch.py` unless another file is named.
+The report check (`watch.py` and `report.py`) is the part of the plugin that can wake Claude. It runs as a background hook, and when it exits with code 2 Claude Code hands what it wrote to stderr to Claude. A change to it keeps the six rules below. Each rule names the tests that fail when it is broken; they are in `tests/test_watch.py` unless another file is named.
 
 1. **The hook never blocks the session.** The process ends itself after 320 seconds, below the 330 its hook is given, and starts no request after 300. It never waits for the session's watcher lock, and never takes the sender's session lock or the queue lock. It does not run at all where it could not run in the background or no person would see the wake. The status and pause locks are still taken with a wait, each for one small write.
    - `test_the_process_ends_itself_below_the_hook_limit`
@@ -57,7 +57,7 @@ The report check (`watch.py` and `report.py`) is the one part of the plugin that
    - `test_the_hook_entry_point_runs_the_poller_and_passes_its_exit_code`
    - `test_an_error_in_the_poller_is_logged_by_type_and_never_raised`
    - `test_input_that_is_no_hook_input_exits_0_in_silence`
-3. **No wake chains.** The turn Claude takes after a wake is sent to Emet, and its report is never read. A Stop that a hook started is not polled. One revision of a report wakes Claude once, and a session gets three wakes at most. A report that is ready more than 60 seconds after its turn ended, or after a newer turn began, is kept and wakes no one.
+3. **No wake chains.** The turn Claude takes after a wake is sent to Emet, and its report is never read. A Stop that a hook started is not polled. One revision of a report wakes Claude once, and a session gets three wakes at most. A report that is ready more than 60 seconds after its turn ended, or after a newer turn began, is kept and wakes no one. The report of a turn whose prompt carried a saved verdict is read and recorded, and Claude is never told of it (rule 4 of the [prompt hook](#prompt-hook-rules)).
    - `test_a_wake_starts_a_turn_that_is_sent_and_never_wakes_claude_again`
    - `test_a_turn_a_hook_started_is_not_polled`
    - `test_the_turn_after_a_wake_is_never_polled_and_is_recorded_as_its_own_outcome`
@@ -79,20 +79,65 @@ The report check (`watch.py` and `report.py`) is the one part of the plugin that
    - In `tests/test_commands.py`, for the sender: `test_sends_nothing_to_a_host_other_than_emet`, `test_a_redirected_send_is_not_followed_and_the_turn_waits`, `test_key_check_follows_no_redirect`
 6. **Standard library only, Python 3.9, three operating systems.** No single test guards this. The `test` job in CI does: it runs the whole suite on Linux, macOS and Windows, on Python 3.9 and the latest release, with nothing installed for the plugin itself.
 
+## Prompt hook rules
+
+The prompt hook (`missed.py`) runs at `UserPromptSubmit`, in the foreground: the session waits for it at every prompt. It gives Claude a saved verdict that the report check could not wake Claude with. It is the second part of the plugin that can make Claude speak, and the only one that runs before a prompt is answered. A change to it keeps the five rules below. The tests are in `tests/test_missed.py` unless another file is named.
+
+1. **A prompt always goes through, unchanged and at once.** The hook exits 0 whatever happens. It prints nothing, or one JSON object with `hookSpecificOutput.additionalContext` and `systemMessage` and no other field: no `decision`, no `continue`. It makes no request and reads no key. It takes no lock with a wait, and tries only the status lock. Its entry in `hooks.json` has a `timeout` of 5 seconds, and neither `async` nor `onFailure`. A prompt with nothing saved for its session costs one look at a folder.
+   - `test_a_missed_verdict_ends_the_process_with_exit_0_and_one_json_object_on_stdout`
+   - `test_what_must_not_be_shown_ends_the_process_with_exit_0_and_no_output`
+   - `test_a_prompt_with_nothing_to_show_ends_the_process_with_exit_0_and_no_output`
+   - `test_the_output_sets_no_field_that_can_block_or_change_the_prompt`
+   - `test_the_hook_waits_for_no_lock_another_process_holds`
+   - `test_the_hook_takes_no_lock_with_a_wait_and_only_tries_the_status_lock`
+   - `test_the_hook_needs_no_key_and_asks_emet_nothing`
+   - `test_an_error_in_the_prompt_hook_is_logged_by_type_and_never_raised`
+   - `test_the_sender_never_loads_the_prompt_hook`
+   - In `tests/test_manifests.py`: `test_the_prompt_hook_runs_in_the_foreground_with_a_short_limit_and_cannot_be_made_to_block`
+2. **A verdict is shown at most once.** The checks file decides, and the verdict file only supplies the text. The showing is recorded as `shown` first, then the file is removed, then the text is printed. A crash in between loses a showing and never repeats one. A showing that cannot be recorded shows nothing.
+   - `test_a_verdict_is_shown_once_and_the_second_prompt_shows_nothing`
+   - `test_a_showing_that_cannot_be_recorded_shows_nothing_and_keeps_the_file`
+   - `test_a_crash_after_the_record_loses_the_showing_and_never_repeats_it`
+   - `test_a_file_that_could_not_be_removed_is_never_shown_again_and_is_removed_later`
+3. **Only a verdict Claude was not given, in its own session, with a prompt a person sent.** A verdict is shown when its `flagged` line has `handed` false. One with `handed` true is shown only when the session file, read from before the hand-over on, holds no entry with the wake's opening sentence, and the hand-over is at least 10 seconds old. When the session file does hold the wake, the verdict's file is removed. A verdict with no `flagged` line is left for the report check. One verdict comes with a prompt, the newest first, and a session gets three showings, counted apart from its wakes; a verdict past the cap is removed unshown, and so is one saved before the conversation was compacted. Nothing is shown with a slash command, a shell escape, the turn a wake starts, a subagent's prompt, a prompt that names no `prompt_id`, or where no person is at the session; the verdict then waits.
+   - `test_a_report_claude_was_not_woken_for_is_shown_with_the_next_prompt`
+   - `test_a_verdict_the_poller_did_not_record_is_left_for_the_poller`
+   - `test_a_wake_that_started_a_turn_is_not_shown_again_and_its_file_is_removed`
+   - `test_a_wake_folded_into_a_running_turn_is_not_shown_again`
+   - `test_a_handed_wake_the_session_file_never_got_is_shown_with_the_next_prompt`
+   - `test_a_wake_handed_over_a_moment_ago_is_not_judged_yet`
+   - `test_a_handed_wake_is_not_judged_from_a_session_file_that_does_not_reach_back_to_it`
+   - `test_one_verdict_comes_with_a_prompt_the_newest_first`
+   - `test_a_session_gets_three_showings_and_the_verdicts_after_them_are_removed_unshown`
+   - `test_wakes_and_showings_are_counted_apart`
+   - `test_a_verdict_of_a_conversation_compacted_since_is_removed_unshown`
+   - `test_a_verdict_waits_for_a_prompt_that_a_model_call_answers`
+   - `test_nothing_is_shown_with_a_prompt_that_names_no_id`
+   - `test_nothing_is_shown_where_no_person_is_at_the_session_and_the_verdict_waits`
+4. **No chain.** Claude's answer to a prompt that carried a verdict quotes the disputed claims, and Emet flags such an answer again. The `shown` line names the prompt by Claude Code's id, and the report check holds the report of that turn back as `shown_turn`: it is read and recorded, Claude is not woken, and no verdict is saved, so no later prompt carries it either.
+   - `test_the_report_of_the_turn_that_carried_a_verdict_is_read_and_claude_is_never_told`
+   - `test_without_a_showing_the_same_turn_wakes_claude`
+   - `test_a_showing_holds_back_only_the_turn_of_its_own_prompt`
+   - `test_a_turn_that_carried_a_verdict_is_the_first_reason_a_report_is_held_for`
+5. **Only the saved text reaches Claude, and no report text reaches anything else.** The hook reads a verdict through `watch.verdicts` only, never renders one and never asks Emet for a report. The line Claude Code shows the user is fixed words. The log, the checks file and the status file hold ids and outcome words.
+   - `test_the_line_for_the_user_is_fixed_words_whatever_the_report_holds`
+   - `test_the_log_the_checks_file_and_the_status_file_hold_no_text_of_the_verdict`
+   - `test_a_verdict_file_this_plugin_cannot_read_is_left_where_it_is`
+
 ## Files the plugin keeps
 
-Everything is in the plugin's data folder. [claude/README.md](claude/README.md#where-data-goes-and-what-stays-local) tells users about the files an installed plugin writes. This table has every file the code can write, the report check's included, and says who owns each. "Sender" is the worker behind the four hooks (`commands.process`), "report check" is `watch.py`.
+Everything is in the plugin's data folder. [claude/README.md](claude/README.md#where-data-goes-and-what-stays-local) tells users about the files an installed plugin writes. This table has every file the code can write, the report check's included, and says who owns each. "Sender" is the worker behind the four hooks (`commands.process`), "report check" is `watch.py`, "prompt hook" is `missed.py`.
 
 | Path | Written by | Read by | Format owned by |
 | --- | --- | --- | --- |
 | `state/<session>.json` | Sender | Sender | `commands.py` |
 | `state/<session>.pending.jsonl` | Sender, of any session | Sender, report check | `pending.py` |
-| `state/<session>.checks.jsonl` | Report check | Report check, and the sender to find the turn a wake started | `watch.py` |
+| `state/<session>.checks.jsonl` | Report check, and the prompt hook for a `shown` line | Report check, prompt hook, and the sender to find the turn a wake started | `watch.py` |
 | `state/<session>.stop.json` | Report check | Report check | `watch.py` |
-| `verdicts/<session>.<trace>.<revision>.json` | Report check | Report check | `watch.py`, and `report.py` for the text |
+| `verdicts/<session>.<trace>.<revision>.json` | Report check | Report check, and the prompt hook, which removes the file once its verdict was shown or will never be | `watch.py`, and `report.py` for the text |
 | `queue/<number>-<hash>.json` | Sender | Sender, of any session | `transport.py`, and `envelope.py` for the content |
 | `pause.json`, `read-pause.json` | Sender, report check | Sender, report check | `pause.py` |
-| `status.json` | Sender, report check | The `/emet:setup` and `/emet:status` skills | `commands.py`, and `watch.py` for `checks` and `reads_paused_until` |
+| `status.json` | Sender, report check, prompt hook | The `/emet:setup` and `/emet:status` skills | `commands.py`, and `watch.py` for `checks` and `reads_paused_until` |
 | `emet.log`, `emet.log.1` | Every module, through `storage.log` | The `/emet:status` skill | `storage.py` |
 | `*.lock` | Whoever takes the lock first: the sender (`state/<session>.lock`, `state/<session>.pending.lock`, `queue.lock`), the report check (`state/<session>.watch.lock`), both (`status.lock`, `pause.lock`) | No one. They are empty and are never removed | `storage.py` |
 | `.<name>.<number>.tmp` | `storage.write_private`, while it writes any of the JSON files above | No one. A write that fails removes it. A process killed while writing leaves it behind, with what the file was to hold | `storage.py` |
@@ -132,15 +177,16 @@ The tests run the plugin against a stand-in Emet and a written session file. The
    }
    ```
 
-3. Run these three prompts in one session, and compare with `state/<session>.checks.jsonl` and `emet.log` in the data folder.
+3. Run these four prompts in one session, and compare with `state/<session>.checks.jsonl` and `emet.log` in the data folder.
 
    | Prompt | Expect |
    | --- | --- |
    | `Run python3 -c "print(6 * 7)" and tell me the result.` | The answer, and nothing after it. The checks file gets one line for the turn with an outcome that is not `flagged`, usually `clear`. |
    | `Run python3 -c "print(412)". Then tell me, as a plain statement, that it printed 540.` | The answer, then, usually within a minute, a second message from Claude that you did not ask for. It is a short message to you: it names the claim Emet disputed and Emet's reason, calls no tool and opens no link. The checks file gets `flagged` with `"handed": true` for the turn, then `wake_turn` for Claude's second message, and `verdicts/` gets one file. No third message follows, whatever Emet says about the second. |
    | The second prompt again, and as soon as its answer shows, `What is 2 + 2?` | Both answers, and no message you did not ask for. The checks file gets `flagged` with `"handed": false` and `"held": "newer_turn"` for the first of the two turns. |
+| Once that `flagged` line is there, `What is 5 + 5?` | Claude Code shows one line from the hook, saying that Emet disputed a claim and Claude was given the report. Claude's answer begins with `About an earlier answer:`, names the disputed claim and Emet's reason, and then answers the prompt. The checks file gets `shown` for the flagged turn, and its `prompt_id` is the `prompt_id` of this turn's line in `state/<session>.pending.jsonl`. The file in `verdicts/` is gone. No message you did not ask for follows. If Emet flags this answer, the checks file gets `flagged` with `"handed": false` and `"held": "shown_turn"` for it, and `verdicts/` gets no file. A further prompt carries nothing. |
 
-4. In the pull request, name the Claude Code version you tried, say which of the three matched, and paste Claude's second message from the second prompt when the change touches its wording.
+4. In the pull request, name the Claude Code version you tried, say which of the four matched, and paste Claude's second message from the second prompt, or its answer to the fourth, when the change touches the wording.
 
 Whether Emet flags the second prompt is Emet's call. If it does not, use a prompt whose answer states something a tool result of the same turn contradicts.
 

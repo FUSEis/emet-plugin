@@ -507,6 +507,8 @@ def test_a_wake_folded_into_a_running_turn_is_not_shown_again(session, environ, 
     # Claude Code can wrap the lines again
     folded = (WAKE_WRAPPER + wake_text(verdict)).replace(" checking an answer", "\nchecking  an answer", 1)
     session.write({"type": "attachment", "attachment": {"type": "queued_command", "prompt": [{"type": "text", "text": folded}]}})
+    # An entry that names no time is passed over
+    session.write({"type": "summary", "summary": "March", "timestamp": None})
     clock.advance(60)
     assert run(session, environ, capfdbinary) == b""
     assert files(environ) == []

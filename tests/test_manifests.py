@@ -429,6 +429,25 @@ def test_the_security_policy_covers_what_an_installed_plugin_does():
     assert "On Windows the plugin sets no access rules" in policy
 
 
+def test_the_documents_say_the_prompt_hook_adds_nothing_while_no_hook_saves_a_verdict():
+    # True while no hook starts the report check, which is what saves a verdict. Wiring it changes these sentences
+    assert "watch" not in shipped_hook_modes()
+    works = section("claude/README.md", "## How it works")
+    assert "The plugin registers five hooks." in works and "`UserPromptSubmit`" in works
+    assert "for 5 seconds at most" in works and "it cannot change or hold back a prompt" in works
+    assert "No hook of this version saves such a report, so it adds nothing to a prompt." in works
+    policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    assert "No hook of this version saves one, so it gives Claude nothing." in policy
+    assert "It cannot change the prompt or hold it back." in policy
+    (hook,) = load(PLUGIN / "hooks" / "hooks.json")["hooks"]["UserPromptSubmit"][0]["hooks"]
+    assert hook["timeout"] == 5
+
+
+def test_the_status_skill_explains_the_log_line_of_a_prompt_hook_that_failed():
+    assert "| `prompt hook error ...` |" in (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
+    assert 'f"prompt hook error {type(error).__name__}"' in (PLUGIN / "scripts" / "emet_claude" / "missed.py").read_text(encoding="utf-8")
+
+
 def test_contributing_names_only_tests_that_exist():
     guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     named = set(re.findall(r"`(test_[a-z0-9_]+)`", guide))

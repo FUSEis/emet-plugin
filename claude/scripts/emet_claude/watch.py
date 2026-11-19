@@ -8,7 +8,8 @@ state/<session_id>.checks.jsonl and shown in the status file. A flagged verdict 
 own file under verdicts/ before Claude is woken. Only that file holds text from a report.
 
 Exit code 2 hands the text to Claude Code. It does not prove Claude told the user: a wake that
-lands inside a running turn can go unseen. So the verdict file is kept either way.
+lands inside a running turn can go unseen. So the verdict file is kept either way, until the
+prompt hook (`missed.py`) finds the wake in the session file or shows the verdict with a prompt.
 
 Each line of the checks file holds one of these words under "outcome". A final outcome ends the
 polling of its turn. A turn without one is polled again after a later Stop.

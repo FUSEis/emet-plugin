@@ -149,9 +149,7 @@ def due(root: Path, session_id: str, saved: List[Dict[str, Any]], entries: Entri
             # Not recorded: the poller settles this report again, and may still wake Claude with it
             continue
         never_given = missed(line, entries)
-        if line.get("held") == watch.SHOWN_TURN:
-            remove(root, verdict, "its turn carried an earlier verdict")
-        elif never_given is False:
+        if never_given is False:
             remove(root, verdict, "Claude was woken with it")
         elif compacted(entries, saved_at(verdict)):
             remove(root, verdict, "the conversation was compacted since")
