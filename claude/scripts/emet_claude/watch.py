@@ -25,8 +25,8 @@ polling of its turn. A turn without one is polled again after a later Stop.
 | `expired` | yes | The turn was delivered more than a day ago and still has no report. It is no longer asked for. |
 | `timed_out` | no | The report was not ready within the 300 seconds of the run. |
 | `key_refused` | no | Emet refused the key on a report read (401 or 403), and the run stopped. |
-| `rate_limited` | no | Emet answered 429. The run stopped and started the pause every session shares. |
-| `paused` | no | The pause was in force, so no report was asked for. |
+| `rate_limited` | no | Emet answered 429 to a report read. The run stopped and paused the report reads of every session. |
+| `paused` | no | A pause was in force, so no report was asked for: Emet could not be reached, or it limited the reads. |
 | `not_configured` | no | The Stop was not polled: the key, the team or the endpoint is not set right. |
 | `old_claude_code` | no | The Stop was not polled: Claude Code is older than 2.1.287, or its version could not be read. |
 | `no_person` | no | The Stop was not polled: no person is at the session (`claude -p`, the SDK). |
@@ -427,8 +427,8 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
     return True
 
 
-def show(root: Path, check: Dict[str, Any], wait: bool = True) -> None:
-    """Lists the check in the status file, newest first and once per trace. Never raises."""
+def show(root: Path, check: Optional[Dict[str, Any]] = None, wait: bool = True) -> None:
+    """Lists the check in the status file, newest first and once per trace, with the pause of the report reads. Never raises."""
     lock = root / "status.lock"
     try:
         with storage.locked(lock) if wait else storage.try_locked(lock) as held:
@@ -438,10 +438,13 @@ def show(root: Path, check: Dict[str, Any], wait: bool = True) -> None:
             status = storage.read_json(root / "status.json", {})
             if not isinstance(status, dict):
                 status = {}
-            saved = status.get("checks")
-            earlier = saved if isinstance(saved, list) else []
-            others = [item for item in earlier if isinstance(item, dict) and item.get("trace_uuid") != check["trace_uuid"]]
-            status["checks"] = [check, *others][:RECENT_CHECKS]
+            if check is not None:
+                saved = status.get("checks")
+                earlier = saved if isinstance(saved, list) else []
+                others = [item for item in earlier if isinstance(item, dict) and item.get("trace_uuid") != check["trace_uuid"]]
+                status["checks"] = [check, *others][:RECENT_CHECKS]
+            # A time only. The sender's own pause is shown by the sender
+            status["reads_paused_until"] = pause.until(root, pause.READS)
             storage.write_json(root / "status.json", status)
     except OSError as error:
         storage.log(root, f"check not shown {type(error).__name__}")
@@ -591,7 +594,8 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         now = pause.clock()
         if now - start >= BUDGET_S:
             return close(root, config, session_id, TIMED_OUT)
-        if pause.until(root):
+        # Emet cannot be reached, or it limited the rate of the report reads
+        if pause.until(root) or pause.until(root, pause.READS):
             return close(root, config, session_id, PAUSED)
         # Read again at every step: the sender, or another Stop of this session, adds ids while this runs
         lines = pending.lines(root, session_id)
@@ -618,6 +622,9 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
             if pause.clock() - start >= BUDGET_S:
                 break
             answer = read_report(config, trace.trace_uuid)
+            if answer.status in (200, 202):
+                # Emet serves the reads again, so the next limit starts from the shortest pause
+                pause.clear(root, pause.READS)
             if answer.status == 200:
                 done.add(trace.trace_uuid)
                 # Read again here: a later Stop of the session can have left while this one ran
@@ -630,7 +637,9 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
             elif answer.status in (401, 403):
                 return close(root, config, session_id, KEY_REFUSED)
             elif answer.status == 429:
-                pause.extend(root, answer.retry_after)
+                # The reads alone: a limit on them must not hold the turns that wait to be sent
+                pause.extend(root, answer.retry_after, pause.READS)
+                show(root)
                 return close(root, config, session_id, RATE_LIMITED)
             else:
                 if answer.status != 202:

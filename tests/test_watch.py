@@ -380,7 +380,7 @@ def test_a_refused_key_stops_the_run(session, environ, emet, clock, capfdbinary,
     assert (T1, "clear", True) in outcomes(environ)
 
 
-def test_a_429_stops_the_run_and_starts_the_pause_every_session_shares(session, environ, emet, clock, capfdbinary):
+def test_a_429_stops_the_run_and_pauses_the_report_reads_of_every_session_but_no_send(session, environ, emet, clock, capfdbinary):
     deliver(environ, clock)
     deliver(environ, clock, T2)
     emet.report(T1, 429, retry_after="120")
@@ -388,9 +388,54 @@ def test_a_429_stops_the_run_and_starts_the_pause_every_session_shares(session, 
     assert capfdbinary.readouterr() == (b"", b"")
     assert len(emet.reads) == 1
     assert outcomes(environ) == [(T1, "rate_limited", False), (T2, "rate_limited", False)]
-    until = pause.until(root(environ))
-    assert until == storage.now(clock.now + 120)
-    assert transport.Sender(root(environ), config.load(environ)).held()
+    assert pause.until(root(environ), pause.READS) == storage.now(clock.now + 120)
+    assert pause.until(root(environ)) == "" and not pause.path(root(environ)).exists()
+    assert not transport.Sender(root(environ), config.load(environ)).held()
+    assert status(environ)["reads_paused_until"] == storage.now(clock.now + 120)
+    assert "report reads paused 120s" in log(environ)
+    assert json.loads(pause.path(root(environ), pause.READS).read_text(encoding="utf-8")).keys() == {"until", "delay"}
+
+
+def test_a_turn_is_sent_while_the_report_reads_are_paused(transcript, environ, emet, clock):
+    pause.extend(root(environ), 120, pause.READS)
+    transcript.prompt("What is 2 + 2?")
+    transcript.text("msg_1", "4")
+    commands.process(transcript.hook_input(), environ, wait=0)
+    assert len(emet.requests) == 1
+    assert status(environ)["paused_until"] == ""
+    assert status(environ)["reads_paused_until"] == storage.now(clock.now + 120)
+    # The send that got through ends the send pause only
+    assert pause.until(root(environ), pause.READS)
+
+
+def test_no_report_is_asked_for_while_the_reads_are_paused_by_any_session(session, environ, emet, clock):
+    deliver(environ, clock)
+    emet.report(T1, 200, document(status="clear"))
+    pause.extend(root(environ), None, pause.READS)
+    start = clock.now
+    assert stop(session, environ) == 0
+    assert emet.reads == [] and clock.now == start
+    assert outcomes(environ) == [(T1, "paused", False)]
+    clock.advance(31)
+    finish(environ, clock)
+    assert stop(session, environ) == 0
+    assert outcomes(environ)[-1] == (T1, "clear", True)
+    assert status(environ)["reads_paused_until"] == ""
+
+
+def test_a_read_that_emet_answers_ends_the_pause_of_the_reads_so_the_next_one_starts_short(session, environ, emet, clock):
+    deliver(environ, clock)
+    emet.report(T1, 429)
+    emet.report(T1, 202)
+    emet.report(T1, 429)
+    emet.report(T1, 404, "gone_fishing")
+    assert stop(session, environ) == 0
+    first = pause.until(root(environ), pause.READS)
+    assert first == storage.now(clock.now + 30)
+    clock.advance(31)
+    assert stop(session, environ) == 0
+    assert emet.polled(T1) == 3
+    assert pause.until(root(environ), pause.READS) == storage.now(clock.now + 30)
 
 
 def test_no_report_is_asked_for_during_a_pause(session, environ, emet, clock):

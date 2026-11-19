@@ -140,6 +140,7 @@ def update_status(
             problem=config.problem,
             queued=len(transport.queued(root)),
             paused_until=pause.until(root),
+            reads_paused_until=pause.until(root, pause.READS),
             updated_at=storage.now(),
         )
         status.update(fields)
