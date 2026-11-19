@@ -37,6 +37,8 @@ USER_LINE = "Emet disputed a claim in an earlier answer of this session. Claude 
 
 # How a wake begins, as report.render writes it, with its line break as a space
 WAKE_START = f"{report.WAKE_OPENING} {report.WAKE_NOTICE}"
+# What Claude Code puts first when it queues a notice, such as a wake
+NOTICE_START = "<task-notification>"
 
 Entries = List[Tuple[int, Dict[str, Any]]]
 
@@ -69,8 +71,22 @@ def strings(value: Any) -> Iterator[str]:
             waiting.extend(item)
 
 
+def enqueued(entry: Dict[str, Any], after: float) -> bool:
+    """Says whether the entry is Claude Code taking a wake into its queue, after seconds past the hand-over. Seen on 2.1.305.
+
+    Written the moment the wake arrives, whatever becomes of it: a turn of its own, or folded into a running one.
+    """
+    content = entry.get("content")
+    if entry.get("type") != "queue-operation" or entry.get("operation") != "enqueue" or not isinstance(content, str):
+        return False
+    # A person's prompt does not begin with the wrapper of a notice
+    if not content.startswith(NOTICE_START) or after > transcript.WAKE_WINDOW_S:
+        return False
+    return WAKE_START in " ".join(content[: transcript.WAKE_SCAN].split())
+
+
 def folded(entry: Dict[str, Any]) -> bool:
-    """Says whether the entry is a wake that landed in a running turn. Claude Code writes that as a queued_command attachment."""
+    """Says whether the entry is a wake that landed in a running turn, as a queued_command attachment. Assumed, not seen."""
     held = entry.get("attachment")
     if entry.get("type") != "attachment" or not isinstance(held, dict) or held.get("type") != "queued_command":
         return False
@@ -81,8 +97,9 @@ def folded(entry: Dict[str, Any]) -> bool:
 def woken(entries: Entries, handed_at: float) -> Optional[bool]:
     """Says whether the session file holds the wake that was handed over at that time. None when it cannot tell.
 
-    True when an entry written since then is the turn that wake started, by the test the sender marks such a turn with,
-    or the wake folded into a running turn. The sentence anywhere else, as in a prompt or a tool result, is no wake.
+    True when an entry written since then is the wake taken into Claude Code's queue, the turn that wake started,
+    by the test the sender marks such a turn with, or the wake folded into a running turn. The sentence anywhere
+    else, as in a prompt or a tool result, is no wake.
     False only when the part of the file that was read begins before the hand-over and holds none.
     """
     if pause.clock() - handed_at < HANDED_GRACE_S:
@@ -94,7 +111,7 @@ def woken(entries: Entries, handed_at: float) -> Optional[bool]:
             continue
         if at.timestamp() < handed_at:
             reaches_back = True
-        elif transcript.started_by_wake(entry, [handed_at]) or folded(entry):
+        elif enqueued(entry, at.timestamp() - handed_at) or transcript.started_by_wake(entry, [handed_at]) or folded(entry):
             return True
     return False if reaches_back else None
 

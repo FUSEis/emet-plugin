@@ -777,6 +777,95 @@ def test_a_wake_long_after_the_hand_over_is_not_that_verdicts_wake(session, envi
     )
 
 
+def queued(verdict, at, **changed):
+    """The entry Claude Code 2.1.305 writes the moment it receives a wake, with exactly the keys it has there."""
+    content = "<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n<system-reminder>\n"
+    entry = {
+        "type": "queue-operation",
+        "operation": "enqueue",
+        "timestamp": timestamps.text(datetime.fromtimestamp(at, timezone.utc)),
+        "sessionId": SESSION,
+        "content": content + WAKE_WRAPPER + wake_text(verdict),
+    }
+    entry.update(changed)
+    return {name: value for name, value in entry.items() if value is not None}
+
+
+def enqueue(transcript, entry):
+    with open(transcript.path, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(entry) + "\n")
+
+
+def test_a_wake_claude_code_took_into_its_queue_is_not_shown_again_whatever_became_of_it(session, environ, clock, capfdbinary):
+    clock.advance(20)
+    verdict = handed(environ, clock)
+    # The same second as the hand-over, which is recorded in whole seconds
+    entry = queued(verdict, clock.now + 0.442)
+    assert set(entry) == {"type", "operation", "timestamp", "sessionId", "content"} and entry["timestamp"].endswith(".442Z")
+    enqueue(session, entry)
+    enqueue(session, {"type": "queue-operation", "operation": "dequeue", "timestamp": entry["timestamp"], "sessionId": SESSION})
+    clock.advance(60)
+    assert run(session, environ, capfdbinary) == b"", "Claude Code received this wake, as a turn of its own or folded into one"
+    assert files(environ) == [] and f"verdict {T2} removed, Claude was woken with it" in log(environ)
+    assert lines(environ) == [(T2, "flagged")]
+
+
+def a_dequeue(verdict, at):
+    return queued(verdict, at + 1, operation="dequeue")
+
+
+def an_enqueue_without_content(verdict, at):
+    return queued(verdict, at + 1, content=None)
+
+
+def an_enqueue_whose_content_is_no_text(verdict, at):
+    return queued(verdict, at + 1, content=[WAKE_WRAPPER + wake_text(verdict)])
+
+
+def a_prompt_a_person_queued_with_the_wake_in_it(verdict, at):
+    return queued(verdict, at + 1, content="What does this mean? <task-notification> " + WAKE_WRAPPER + wake_text(verdict))
+
+
+def a_notice_with_the_opening_sentence_alone(verdict, at):
+    return queued(verdict, at + 1, content=f"<task-notification>\n<summary>Shell done</summary>\n{report.WAKE_OPENING}")
+
+
+def an_enqueue_before_the_hand_over(verdict, at):
+    return queued(verdict, at - 1)
+
+
+def an_enqueue_long_after_the_hand_over(verdict, at):
+    return queued(verdict, at + WAKE_WINDOW_S + 1)
+
+
+def another_kind_of_entry(verdict, at):
+    return queued(verdict, at + 1, type="queue-note")
+
+
+NOT_ENQUEUED = [a_dequeue, an_enqueue_without_content, an_enqueue_whose_content_is_no_text, a_prompt_a_person_queued_with_the_wake_in_it]
+NOT_ENQUEUED += [a_notice_with_the_opening_sentence_alone, an_enqueue_before_the_hand_over, an_enqueue_long_after_the_hand_over]
+NOT_ENQUEUED += [another_kind_of_entry]
+
+
+@pytest.mark.parametrize("entry", NOT_ENQUEUED)
+def test_a_queue_entry_that_is_not_this_wake_being_queued_does_not_stand_in_for_it(session, environ, clock, capfdbinary, entry):
+    clock.advance(20)
+    verdict = handed(environ, clock)
+    enqueue(session, entry(verdict, clock.now))
+    clock.advance(WAKE_WINDOW_S + 60)
+    session.prompt("Where were we?", promptId="prompt-2")
+    assert run(session, environ, capfdbinary) == expected(verdict), "only a wake taken into the queue after its hand-over proves it arrived"
+
+
+def test_a_queued_wake_at_the_end_of_its_ten_minutes_still_counts(session, environ, clock, capfdbinary):
+    clock.advance(20)
+    verdict = handed(environ, clock)
+    enqueue(session, queued(verdict, clock.now + WAKE_WINDOW_S))
+    clock.advance(WAKE_WINDOW_S + 60)
+    assert run(session, environ, capfdbinary) == b""
+    assert files(environ) == []
+
+
 def test_a_folded_wake_written_as_plain_text_is_recognised_too(session, environ, clock, capfdbinary):
     clock.advance(20)
     verdict = handed(environ, clock)
