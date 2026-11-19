@@ -10,7 +10,16 @@ if sys.version_info < (3, 9):  # noqa: UP036 - checked at run time, before anyth
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from emet_claude.commands import main
+
+def run() -> int:
+    """Runs the hook. Whatever fails, the session sees exit 0 and no output."""
+    try:
+        from emet_claude.commands import main
+
+        return main()
+    except Exception:  # noqa: BLE001 - a hook must never break the session
+        return 0
+
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

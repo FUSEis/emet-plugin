@@ -61,6 +61,7 @@ The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses an
 
 - `state/`: how far each session's transcript has been read.
 - `queue/`: turns that could not be delivered yet, retried oldest first on the next turn. At most 500 turns or 256 MB; the oldest are dropped beyond that.
+- `pause.json`: the time before which the plugin asks Emet nothing, written after Emet could not be reached.
 - `status.json` and `emet.log`: what `/emet:status` reports. They hold ids, counts, HTTP statuses, report links and the email sent, never content or the key.
 
 Emet's handling of the data it receives is covered by the [Emet privacy policy](https://emet.so/privacy).
@@ -72,9 +73,9 @@ The plugin registers four hooks (`SessionStart`, `Stop`, `SubagentStop`, `Sessio
 1. reads the session transcript from where it last stopped;
 2. groups it into turns (a prompt and everything up to the next prompt), and each turn into model calls, tool calls and subagents;
 3. applies the capture mode, then sends the turn to `POST /api/v1/traces/` with the key as a bearer token;
-4. queues the turn if Emet cannot be reached, and retries it on the next run.
+4. queues the turn if Emet cannot be reached, and retries it on a later run. After a failed send every session on the machine waits before asking Emet again: about 30 seconds at first, twice as long after each further failure, 10 minutes at most, or the time Emet names in `Retry-After`. Turns are still read and queued meanwhile.
 
-A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. `SessionStart` also checks that Emet accepts the key, without sending a trace. Unless `emet_email` is set, each run reads the signed-in email from Claude Code's account file (`~/.claude.json`), keeping only `oauthAccount.emailAddress`.
+A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. When a session starts, is resumed or is forked, `SessionStart` also checks that Emet accepts the key, with one `GET /api/v1/traces/{id}/report/` for an id no trace has. It sends no trace. Unless `emet_email` is set, each run reads the signed-in email from Claude Code's account file (`~/.claude.json`), keeping only `oauthAccount.emailAddress`.
 
 ## Turn it off
 

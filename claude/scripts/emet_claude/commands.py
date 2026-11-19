@@ -11,10 +11,10 @@ import time
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, Collection, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar
 from urllib.parse import urlencode
 
-from . import VERSION, envelope, pending, storage, transcript, transport
+from . import VERSION, envelope, pause, pending, storage, transcript, transport
 from .config import FROM_CLAUDE_ACCOUNT, Config, load
 from .spans import Builder, Capture
 
@@ -27,6 +27,8 @@ HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
 TURN_END_MODES = ("stop", "session-end")
 # Deliveries listed by /emet:status
 RECENT_DELIVERIES = 5
+# SessionStart sources where the key cannot have changed since the last check
+SAME_KEY_SOURCES = ("clear", "compact")
 Made = TypeVar("Made")
 
 
@@ -137,6 +139,7 @@ def update_status(
             key_hint=config.key_hint,
             problem=config.problem,
             queued=len(transport.queued(root)),
+            paused_until=pause.until(root),
             updated_at=storage.now(),
         )
         status.update(fields)
@@ -161,21 +164,25 @@ def update_status(
 
 
 def check_key(root: Path, config: Config) -> None:
-    """Asks Emet whether the key is accepted, without sending a trace.
-
-    Emet checks the key before the body, so an empty envelope gets 400 with a good key and 401 or 403 with a bad one.
-    """
-    outcome = transport.post(config, {})
-    if outcome.status in (401, 403):
-        result = "rejected"
-    elif outcome.status == 400:
-        result = "accepted"
-    elif outcome.status == 0:
-        result = "unreachable"
-    else:
-        result = f"unexpected {outcome.status}"
+    """Asks Emet whether the key is accepted, with one read that sends no trace. Not asked during a pause."""
+    if config.problem:
+        return
+    if pause.until(root):
+        storage.log(root, "key check skipped, paused")
+        return
+    result = transport.check_key(config)
     storage.log(root, f"key check -> {result}")
     update_status(root, config, key_check=result, key_checked_at=storage.now())
+
+
+def forget(state: Dict[str, Any], refused: Collection[str]) -> None:
+    """Stops following the traces Emet refused, so nothing is added later to a trace that does not exist."""
+    if str(state.get("last_trace") or "") in refused:
+        state["last_trace"] = ""
+    agents = state.get("agents")
+    if isinstance(agents, dict):
+        for agent_id in [key for key, agent in agents.items() if isinstance(agent, dict) and str(agent.get("trace_id")) in refused]:
+            del agents[agent_id]
 
 
 def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
@@ -276,6 +283,7 @@ def process(
             agent["offset"] = agent_end
 
         state["offset"] = offset
+        forget(state, sender.refused(session_id))
         storage.write_json(state_file, state)
         update_status(root, config, sender.accepted, skipped, **last_error(sender))
 
@@ -284,9 +292,11 @@ def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -
     root = storage.data_dir(environ)
     try:
         hook_input = json.loads(raw or b"{}")
-        if mode == "session-start":
+        if not isinstance(hook_input, dict):
+            hook_input = {}
+        if mode == "session-start" and hook_input.get("source") not in SAME_KEY_SOURCES:
             check_key(root, load_with_sign_in(environ))
-        process(hook_input if isinstance(hook_input, dict) else {}, environ, turn_ended=mode in TURN_END_MODES)
+        process(hook_input, environ, turn_ended=mode in TURN_END_MODES)
     except Exception as error:  # noqa: BLE001 - an exporter failure must never reach the session
         storage.log(root, f"worker error {type(error).__name__}")
 
@@ -306,5 +316,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         with contextlib.suppress(OSError):
             update_status(storage.data_dir(), config)
         return 0
-    spawn_worker(mode, raw)
+    try:
+        spawn_worker(mode, raw)
+    except Exception as error:  # noqa: BLE001 - a worker that cannot start must never break the hook
+        with contextlib.suppress(Exception):
+            storage.log(storage.data_dir(), f"worker start failed {type(error).__name__}")
     return 0

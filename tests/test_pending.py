@@ -86,20 +86,22 @@ def test_a_turn_sent_in_batches_is_kept_once_its_last_batch_is_accepted(transcri
     assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
 
 
-def test_a_queued_turn_is_kept_when_its_session_retries_it(transcript, environ, emet):
+def test_a_queued_turn_is_kept_when_its_session_retries_it(transcript, environ, emet, clock):
     emet.statuses = [503]
     prompt = finished_turn(transcript)
     run(transcript, environ)
     assert kept(environ) == []
+    clock.advance(60)
     run(transcript, environ)
     assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
 
 
-def test_a_queued_turn_another_session_delivers_is_kept_for_its_own_session(tmp_path, environ, emet):
+def test_a_queued_turn_another_session_delivers_is_kept_for_its_own_session(tmp_path, environ, emet, clock):
     queued, current = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
     emet.statuses = [503]
     late = finished_turn(queued)
     run(queued, environ)
+    clock.advance(60)
     # This session's worker flushes the shared queue first, then sends its own turn
     prompt = finished_turn(current)
     run(current, environ)
@@ -108,10 +110,11 @@ def test_a_queued_turn_another_session_delivers_is_kept_for_its_own_session(tmp_
     assert kept(environ, "session-0") == [emet.trace_uuids[late["uuid"]]]
 
 
-def test_a_retried_turn_is_kept_even_when_the_rest_of_the_run_fails(transcript, environ, emet, monkeypatch):
+def test_a_retried_turn_is_kept_even_when_the_rest_of_the_run_fails(transcript, environ, emet, monkeypatch, clock):
     emet.statuses = [503]
     prompt = finished_turn(transcript)
     run(transcript, environ)
+    clock.advance(60)
 
     def broken(*args, **kwargs):
         raise RuntimeError("unreadable transcript")
@@ -135,11 +138,12 @@ def test_a_run_after_a_finished_turn_stamps_its_end(transcript, environ, emet):
     assert all(value for value in (lines[0]["at"], lines[1]["finished"]))
 
 
-def test_the_stamp_counts_what_is_still_queued(transcript, environ, emet):
+def test_the_stamp_counts_what_is_still_queued(transcript, environ, emet, clock):
     emet.statuses = [503]
     prompt = finished_turn(transcript)
     run(transcript, environ)
     assert [item["queued"] for item in stamps(environ)] == [1]
+    clock.advance(60)
     run(transcript, environ)
     assert [item["queued"] for item in stamps(environ)] == [1, 0]
     assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
@@ -190,6 +194,35 @@ def test_readable_lines_survive_damaged_ones(environ):
     pending.note(root(environ), "session-1", newer, "")
     assert kept(environ) == [TRACE, newer]
     assert all(isinstance(item, dict) for item in pending.lines(root(environ), "session-1"))
+
+
+def test_a_refused_turn_is_marked_and_never_read_as_a_report_to_fetch(environ):
+    pending.note(root(environ), "session-1", TRACE, "")
+    # Even a refused id that has the form of Emet's own
+    pending.refuse(root(environ), "session-1", "00000000-0000-4000-8000-000000000002", 400, "https://app.emet.so")
+    pending.refuse(root(environ), "session-1", "turn-at-12", 413, "https://app.emet.so")
+    assert kept(environ) == [TRACE]
+    assert pending.refused(root(environ), "session-1") == {"00000000-0000-4000-8000-000000000002", "turn-at-12"}
+    marks = [item for item in pending.lines(root(environ), "session-1") if "refused" in item]
+    assert [(item["refused"], item["status"], "trace_uuid" in item, bool(item["at"])) for item in marks] == [
+        ("00000000-0000-4000-8000-000000000002", 400, False, True),
+        ("turn-at-12", 413, False, True),
+    ]
+
+
+@pytest.mark.parametrize("line", ['{"refused": ["x"]}', '{"refused": ""}', '{"refused": null}', '{"refused": 5}', '{"trace_uuid": "x"}'])
+def test_a_damaged_refused_line_marks_nothing(environ, line):
+    pending.path(root(environ), "session-1").write_text(line + "\n", encoding="utf-8")
+    assert pending.refused(root(environ), "session-1") == set()
+    assert pending.refused(root(environ), "../session-1") == set()
+
+
+def test_a_refusal_that_cannot_be_written_still_holds_for_the_run(tmp_path):
+    sender = transport.Sender(tmp_path / "missing", None)
+    refused = {"conversation_id": "session-1", "trace_id": "turn-a", "spans": [], "end": True}
+    sender.record(refused, transport.Outcome(400, False, True, ""))
+    assert sender.refused("session-1") == {"turn-a"}
+    assert sender.is_refused(refused)
 
 
 def test_a_line_cut_short_without_a_newline_does_not_swallow_the_next_one(environ):

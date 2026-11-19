@@ -8,7 +8,7 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Optional
 
 LOG_MAX_BYTES = 1_000_000
 
@@ -67,8 +67,9 @@ def locked(path: Path) -> Iterator[None]:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+def now(at: Optional[float] = None) -> str:
+    """Writes the current time, or the one at seconds since the epoch, the one way the plugin's files hold a time."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(at))
 
 
 def log(root: Path, message: str) -> None:

@@ -14,6 +14,7 @@ description: Link the Emet reports of the latest turns, and report whether the p
    - Key check: `key_check` and `key_checked_at`.
    - Delivery: `last_delivery`, and `last_error` if it is more recent.
    - Retries: `queued` envelopes waiting. They are retried on the next turn, oldest first.
+   - Pause: if `paused_until` is set and that time has not passed, Emet could not be reached and the plugin makes no request before then. Turns are still read and queued, and sending resumes by itself on the first turn after that time. `status.json` is written when a turn ends, so a `paused_until` in the past means the pause is over.
    - Skipped: if `skipped_turns` is set, that many turns or later additions to a turn could not be read from the session file and were not sent. Give the time and `reason` of `last_skipped`. Turns after a skipped one are still sent.
 4. Explain the most recent problem in the log, if any:
 
@@ -21,6 +22,10 @@ description: Link the Emet reports of the latest turns, and report whether the p
 | --- | --- | --- |
 | `401 key rejected` or `403 key rejected` | Emet does not accept the key | Restart Claude Code, which picks up a key the administrator replaced, then `/emet:setup`. Do not tell a developer whose organization manages Claude Code to enter or issue a key: they ask their administrator for the current one, unless they once saved a key themselves, which beats the administrator's (then `/emet:setup` has them enter the current team key) |
 | `network ...` | Emet could not be reached | Check the network or proxy; turns stay queued and are retried |
+| `302 redirected` (any status from 300 to 399) | The address answered a send by pointing to another address, as a proxy or a sign-in page does. The plugin does not follow it, so the key goes nowhere else | Check the network or proxy; turns stay queued and are sent once Emet answers itself |
+| `paused 30s` (any number), `paused, queued without sending` | A send failed, so the plugin waits before it asks Emet again: about 30 seconds at first, twice as long after each further failure, 10 minutes at most, or the time Emet named. Every session on the machine shares the wait | Nothing to do while the network or Emet recovers; turns stay queued and are sent after the pause |
+| `key check -> unexpected 404` | The address answered, but not as Emet does. Seen with a proxy that answers in Emet's place, or a local Emet without the report endpoint | Check the proxy. The key was neither accepted nor refused |
+| `worker start failed ...` | The background process that sends the turn could not be started. The session was not affected | Report it with the log line and the plugin version; the turn is sent by the next hook that starts |
 | `400 ...` | Emet refused a turn as invalid | Report it at https://github.com/FUSEis/emet-plugin/issues with the log line |
 | `queue full, dropped ...` | Emet was unreachable long enough for the retry queue to fill | Fix the connection; the oldest queued turns were dropped |
 | `turn skipped ...` | One turn could not be read from the session file, for example because it had no usable time. It was left out and the rest of the session was sent | Report it at https://github.com/FUSEis/emet-plugin/issues with the log line, the plugin version and the Claude Code version |
