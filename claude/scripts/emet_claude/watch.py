@@ -25,6 +25,7 @@ polling of its turn. A turn without one is polled again after a later Stop.
 | `failed` | yes | Emet answered that its check of the turn failed (404 `failed`). |
 | `not_found` | yes | Emet answered that it has no trace with this id (404 `not_found`). |
 | `expired` | yes | The turn was delivered more than a day ago and still has no report. It is no longer asked for. |
+| `wake_turn` | yes | The turn Claude took after this plugin woke it with a report. It is sent to Emet, and its report is never asked for. |
 | `timed_out` | no | The report was not ready within the 300 seconds of the run. |
 | `key_refused` | no | Emet refused the key on a report read (401 or 403), and the run stopped. |
 | `rate_limited` | no | Emet answered 429 to a report read. The run stopped and paused the report reads of every session. |
@@ -121,6 +122,8 @@ PAUSED = "paused"
 NOT_CONFIGURED = "not_configured"
 OLD_CLAUDE_CODE = "old_claude_code"
 NO_PERSON = "no_person"
+# The turn after a wake: sent, and never polled
+WAKE_TURN = "wake_turn"
 # Emet's 404 codes that end the wait for a report
 FINAL_MISSES = ("not_assessed", "failed", "not_found")
 # Every outcome a check can hold, with whether it ends the polling of its turn. The table above says what each means
@@ -129,6 +132,7 @@ OUTCOMES: Dict[str, bool] = {
     UNREADABLE: True,
     **dict.fromkeys(FINAL_MISSES, True),
     EXPIRED: True,
+    WAKE_TURN: True,
     TIMED_OUT: False,
     KEY_REFUSED: False,
     RATE_LIMITED: False,
@@ -391,11 +395,16 @@ def parsed(body: bytes) -> Any:
         return None
 
 
-def delivered(lines: List[Dict[str, Any]], endpoint: str) -> List[Trace]:
-    """Returns the turns delivered to this endpoint, once each, oldest first. Any other line is not a trace to poll."""
+def delivered(lines: List[Dict[str, Any]], endpoint: str, by_plugin: bool = False) -> List[Trace]:
+    """Returns the turns delivered to this endpoint, once each, oldest first. Any other line is not a trace to poll.
+
+    With by_plugin, the turns a hook of this plugin started instead. Those are never polled.
+    """
     found: Dict[str, Trace] = {}
     for item in lines:
         if any(key in item for key in NOT_A_TRACE) or item.get("endpoint") != endpoint:
+            continue
+        if (pending.STARTED_BY in item) != by_plugin:
             continue
         at = timestamps.parse(item.get("at"))
         if at is None:
@@ -459,6 +468,12 @@ def final_outcome(outcome: Any) -> bool:
 def wakes(found: List[Dict[str, Any]]) -> int:
     """Counts the reports handed to Claude in this session."""
     return sum(1 for item in found if item.get("handed") is True and item.get("outcome") == FLAGGED)
+
+
+def handed_times(root: Path, session_id: str) -> List[float]:
+    """Returns when each report was handed to Claude in this session. The sender takes a turn for one a wake started only after one."""
+    found = [timestamps.parse(item.get("at")) for item in checks(root, session_id) if wakes([item])]
+    return [at.timestamp() for at in found if at is not None]
 
 
 def known(found: List[Dict[str, Any]], trace_uuid: str, report_uuid: str, revision: int) -> bool:
@@ -707,6 +722,11 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         # Read again at every step: the sender, or another Stop of this session, adds ids while this runs
         lines = pending.lines(root, session_id)
         done |= settled(checks(root, session_id))
+        # Recorded, so the turn after a wake does not look like one that was missed
+        for trace in delivered(lines, config.endpoint, by_plugin=True):
+            if trace.trace_uuid not in done:
+                done.add(trace.trace_uuid)
+                record(root, session_id, trace.trace_uuid, WAKE_TURN)
         waiting = []
         for trace in delivered(lines, config.endpoint):
             if trace.trace_uuid in done:

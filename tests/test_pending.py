@@ -1,11 +1,13 @@
 import json
 import sys
 import threading
+from datetime import datetime, timezone
 
 import pytest
 
-from emet_claude import commands, envelope, pending, storage, transport
-from helpers import Transcript
+from emet_claude import commands, envelope, pending, report, storage, timestamps, transport, watch
+from helpers import WAKE_WRAPPER, Transcript
+from test_report import document
 
 TRACE = "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
 
@@ -18,6 +20,21 @@ def finished_turn(transcript, text="What is 2 + 2?", answer="4"):
     prompt = transcript.prompt(text)
     transcript.text(f"msg_{prompt['uuid'][:8]}", answer)
     return prompt
+
+
+def woken_turn(transcript, environ, clock, handed=True, answer="Emet disputes one claim."):
+    """The turn Claude takes after this plugin woke it with a report. With handed, the poller recorded that wake."""
+    if handed:
+        assert watch.record(root(environ), transcript.session_id, TRACE, "flagged", {"handed": True})
+    started = timestamps.text(datetime.fromtimestamp(clock.now + 14, timezone.utc))
+    text = WAKE_WRAPPER + report.wake_message(document(), "https://app.emet.so", "session-1")
+    prompt = transcript.notice(text, timestamp=started)
+    transcript.text(f"msg_{prompt['uuid'][:8]}", answer)
+    return prompt
+
+
+def marks(environ, session_id="session-1"):
+    return [(item["trace_uuid"], item.get("started_by")) for item in pending.lines(root(environ), session_id) if "trace_uuid" in item]
 
 
 def root(environ):
@@ -311,3 +328,77 @@ def test_the_trace_id_is_normalized():
 
 def test_a_deeply_nested_reply_gives_no_trace():
     assert transport.accepted_trace(b"[" * 100_000) == ""
+
+
+def test_the_line_of_the_turn_after_a_wake_carries_a_mark(transcript, environ, emet, clock):
+    first = finished_turn(transcript)
+    wake = woken_turn(transcript, environ, clock)
+    notice = transcript.notice("<task-notification>Background command finished</task-notification>")
+    transcript.text("msg_notice", "The build passed.")
+    run(transcript, environ)
+    assert len(emet.envelopes) == 3
+    assert marks(environ) == [
+        (emet.trace_uuids[first["uuid"]], None),
+        (emet.trace_uuids[wake["uuid"]], "report_wake"),
+        (emet.trace_uuids[notice["uuid"]], None),
+    ]
+    (line,) = [item for item in pending.lines(root(environ), "session-1") if "started_by" in item]
+    assert set(line) == {"trace_uuid", "at", "endpoint", "conversation_uuid", "started_by"} and line["endpoint"] == emet.url
+
+
+def test_the_mark_is_kept_when_another_session_delivers_the_turn_from_the_queue(tmp_path, environ, emet, clock):
+    queued, current = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    emet.statuses = [503]
+    wake = woken_turn(queued, environ, clock)
+    run(queued, environ)
+    assert marks(environ, "session-0") == []
+    clock.advance(60)
+    prompt = finished_turn(current)
+    run(current, environ)
+    assert marks(environ, "session-0") == [(emet.trace_uuids[wake["uuid"]], "report_wake")]
+    assert marks(environ, "session-1") == [(emet.trace_uuids[prompt["uuid"]], None)]
+
+
+def test_a_marked_turn_sent_in_batches_is_marked_by_its_first_batch(transcript, environ, emet, monkeypatch, clock):
+    monkeypatch.setattr(envelope, "MAX_SPANS_PER_BATCH", 1)
+    # The last batch holds no root span, and here it is never accepted
+    emet.statuses = [202, 503]
+    wake = woken_turn(transcript, environ, clock)
+    run(transcript, environ)
+    assert [item["end"] for item in emet.envelopes] == [False, True]
+    assert marks(environ) == [(emet.trace_uuids[wake["uuid"]], "report_wake")]
+
+
+def test_a_marked_turn_is_written_once_however_many_batches_it_has(transcript, environ, emet, monkeypatch, clock):
+    monkeypatch.setattr(envelope, "MAX_SPANS_PER_BATCH", 1)
+    wake = woken_turn(transcript, environ, clock)
+    run(transcript, environ)
+    transcript.text("msg_late", "one more thing")
+    run(transcript, environ)
+    assert len(emet.envelopes) == 3
+    assert marks(environ) == [(emet.trace_uuids[wake["uuid"]], "report_wake")]
+
+
+def test_a_notice_with_the_wake_text_is_not_marked_unless_the_poller_recorded_a_wake_before_it(transcript, environ, emet, clock):
+    notice = woken_turn(transcript, environ, clock, handed=False)
+    run(transcript, environ)
+    assert marks(environ) == [(emet.trace_uuids[notice["uuid"]], None)]
+    assert report.WAKE_OPENING in json.dumps(emet.envelopes[0])
+
+
+@pytest.mark.parametrize(
+    ("line", "counts"),
+    [
+        ({"handed": True}, True),
+        ({"handed": True, "held": "wake_cap"}, True),
+        ({"handed": False, "held": "newer_turn"}, False),
+        ({}, False),
+        ({"handed": "yes"}, False),
+    ],
+)
+def test_only_a_flagged_report_handed_to_claude_counts_as_a_wake_for_the_sender(environ, clock, line, counts):
+    assert watch.record(root(environ), "session-1", TRACE, "flagged", line)
+    assert watch.record(root(environ), "session-1", TRACE, "wake_turn", {"handed": True})
+    assert watch.record(root(environ), "session-2", TRACE, "flagged", {"handed": True})
+    assert watch.handed_times(root(environ), "session-1") == ([clock.now] if counts else [])
+    assert watch.handed_times(root(environ), "session-3") == []

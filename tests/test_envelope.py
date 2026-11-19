@@ -3,19 +3,32 @@ import json
 
 import pytest
 
-from emet_claude import envelope
+from emet_claude import envelope, report, timestamps
 from emet_claude import transcript as tr
 from emet_claude.config import Config
 from emet_claude.spans import Builder, Capture
+from helpers import WAKE_WRAPPER
+from test_report import document
+
+WAKE = WAKE_WRAPPER + report.wake_message(document(), "https://app.emet.so", "session-1")
+STARTED_BY = "emet.plugin.turn_started_by"
+# The poller handed a report to Claude when the synthetic sessions begin, so their first minutes follow a wake
+HANDED = (timestamps.parse("2026-10-20T10:00:00.000Z").timestamp(),)
+
+
+def wake_turn(transcript, **fields):
+    transcript.notice(WAKE, **fields)
+    transcript.text("msg_wake", "Emet disputes one claim: spend rose 9% in March, not 12%.")
+
 
 CONFIG = Config("Abcd1234.ZyxwVuts98765432QwertyUiop123456", "engineering", "https://app.emet.so", "sanitized")
 
 
-def build(transcript, mode="sanitized"):
+def build(transcript, mode="sanitized", handed=HANDED):
     config = Config(CONFIG.emet_key, CONFIG.tenant_ref, CONFIG.endpoint, mode)
     builder = Builder(transcript.path, Capture(mode, secrets=(config.emet_key,)))
     _, turns = tr.split_turns(tr.read_entries(transcript.path, 0)[0])
-    return [envelope.for_turn(config, builder, transcript.session_id, turn, "/work/acme-app") for turn in turns]
+    return [envelope.for_turn(config, builder, transcript.session_id, turn, "/work/acme-app", handed) for turn in turns]
 
 
 def spans_of(result):
@@ -319,3 +332,96 @@ def test_no_nul_characters_leave(transcript, mode):
     transcript.text("msg_1", "ok \x00")
     _, envelopes, _ = build(transcript, mode)[0]
     assert "\\u0000" not in json.dumps(envelopes)
+
+
+@pytest.mark.parametrize("mode", ["sanitized", "full", "metadata"])
+def test_the_turn_after_a_wake_is_sent_and_says_which_hook_started_it(transcript, mode):
+    simple_turn(transcript)
+    wake_turn(transcript)
+    first, second = build(transcript, mode)
+    assert STARTED_BY not in first[1][0]["spans"][0]["attributes"]
+    (env,) = second[1]
+    assert env["end"] is True and env["conversation_id"] == transcript.session_id
+    root = env["spans"][0]
+    assert root["kind"] == "turn"
+    assert root["attributes"] == {"claude_code.prompt_source": "system", STARTED_BY: "report_wake"}
+    assert envelope.started_by(env) == "report_wake" and envelope.started_by(first[1][0]) == ""
+    (model,) = by_kind(env["spans"], "model")
+    assert model["is_final_output"] is True
+
+
+@pytest.mark.parametrize("mode", ["sanitized", "full"])
+def test_the_report_text_is_not_sent_back_as_the_user_message(transcript, mode):
+    wake_turn(transcript)
+    _, envelopes, _ = build(transcript, mode)[0]
+    (model,) = by_kind(envelopes[0]["spans"], "model")
+    assert model["payload"]["input_messages"] == [{"role": "user", "parts": [{"type": "text", "content": envelope.WAKE_PROMPT}]}]
+    # The prompt was left out, and Emet is told so
+    assert model["is_truncated"] is True
+    assert model["payload"]["output_messages"][0]["parts"][0]["content"].startswith("Emet disputes one claim")
+    sent = json.dumps(envelopes)
+    assert "Stop hook blocking error" not in sent and report.WAKE_OPENING not in sent and "March export" not in sent
+
+
+def test_in_metadata_mode_the_turn_after_a_wake_carries_no_text_at_all(transcript):
+    wake_turn(transcript)
+    _, envelopes, _ = build(transcript, "metadata")[0]
+    assert all(not span.get("payload") for span in envelopes[0]["spans"])
+    assert "No person wrote" not in json.dumps(envelopes) and "Emet disputes" not in json.dumps(envelopes)
+    assert envelopes[0]["spans"][0]["attributes"][STARTED_BY] == "report_wake"
+
+
+@pytest.mark.parametrize("fields", [{}, {"promptSource": None}])
+def test_a_title_is_never_taken_from_the_turn_after_a_wake(transcript, fields):
+    wake_turn(transcript, **fields)
+    _, envelopes, _ = build(transcript)[0]
+    assert "conversation_title" not in envelopes[0]
+
+
+def test_another_task_notification_is_sent_as_before(transcript):
+    text = "<task-notification><summary>Background command finished</summary></task-notification>"
+    transcript.notice(text)
+    transcript.text("msg_1", "The build passed.")
+    _, envelopes, _ = build(transcript)[0]
+    assert envelopes[0]["spans"][0]["attributes"] == {"claude_code.prompt_source": "system"}
+    (model,) = by_kind(envelopes[0]["spans"], "model")
+    assert model["payload"]["input_messages"][0]["parts"][0]["content"] == text
+    assert model["is_truncated"] is False
+
+
+def test_a_person_who_pastes_the_wake_gets_an_ordinary_turn(transcript):
+    transcript.prompt(f"Explain this.\n{WAKE}", turnOrigin="human")
+    transcript.text("msg_1", "It lists one disputed claim.")
+    _, envelopes, _ = build(transcript)[0]
+    assert envelopes[0]["conversation_title"] == "Explain this."
+    assert envelopes[0]["spans"][0]["attributes"] == {"claude_code.prompt_source": "typed"}
+    (model,) = by_kind(envelopes[0]["spans"], "model")
+    assert report.WAKE_OPENING in model["payload"]["input_messages"][0]["parts"][0]["content"]
+
+
+@pytest.mark.parametrize(
+    "spans",
+    [
+        None,
+        "turn",
+        [None, 7],
+        [{"kind": "turn"}],
+        [{"kind": "turn", "attributes": []}],
+        [{"kind": "turn", "attributes": {STARTED_BY: "something_else"}}],
+        [{"kind": "turn", "attributes": {STARTED_BY: True}}],
+        [{"kind": "model", "attributes": {STARTED_BY: "report_wake"}}],
+    ],
+)
+def test_only_the_root_span_of_an_envelope_names_the_hook_that_started_its_turn(spans):
+    assert envelope.started_by({"spans": spans}) == ""
+    assert envelope.started_by({}) == ""
+
+
+def test_a_notice_with_the_wake_text_that_follows_no_recorded_wake_is_sent_as_an_ordinary_turn(transcript):
+    wake_turn(transcript)
+    _, envelopes, _ = build(transcript, handed=())[0]
+    assert envelopes[0]["spans"][0]["attributes"] == {"claude_code.prompt_source": "system"}
+    assert envelope.started_by(envelopes[0]) == ""
+    (model,) = by_kind(envelopes[0]["spans"], "model")
+    assert report.WAKE_OPENING in model["payload"]["input_messages"][0]["parts"][0]["content"]
+    assert model["is_truncated"] is False
