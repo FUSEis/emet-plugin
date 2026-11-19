@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import subprocess
 import sys
@@ -63,7 +62,7 @@ def signed_in_email(environ: Mapping[str, str], root: Optional[Path] = None) -> 
     """
     path = Path(environ.get("CLAUDE_CONFIG_DIR") or Path.home()) / ".claude.json"
     try:
-        account = json.loads(path.read_text(encoding="utf-8")).get("oauthAccount")
+        account = storage.loads(path.read_text(encoding="utf-8")).get("oauthAccount")
     except FileNotFoundError:
         return "", "no Claude account file"
     # AttributeError: the file holds a JSON list or string, which has no .get
@@ -272,10 +271,25 @@ def process(
 
         for agent_id in known:
             agent = state["agents"].get(agent_id)
-            agent_path = Path(agent["path"]) if agent else None
-            if agent_path is None or not agent_path.is_file():
+            if not isinstance(agent, dict):
                 continue
-            items, agent_end = transcript.read_entries(agent_path, int(agent.get("offset") or 0), sidechain=True)
+            agent_path = Path(str(agent.get("path") or ""))
+            start = agent.get("offset", 0)
+            # A damaged entry is passed over, as one that is no record is
+            if not (isinstance(start, int) and start >= 0 and isinstance(agent.get("trace_id"), str)):
+                continue
+            if not isinstance(agent.get("parent_span_id"), str):
+                continue
+            # The state file is not proof: a path it names is sent only from the session's own subagents folder
+            own = transcript.own_subagent_file(path, agent_path)
+            if own and not agent_path.is_file():
+                continue
+            read = transcript.read_subagent(path, agent_path, start) if own else None
+            if read is None:
+                del state["agents"][agent_id]
+                storage.log(root, "subagent skipped, its file is outside the session's folder or is a link")
+                continue
+            items, agent_end = read
             if items:
                 late = attempt(
                     partial(envelope.for_tail, config, builder, session_id, agent["trace_id"], items, agent["parent_span_id"], cwd)
@@ -294,7 +308,7 @@ def process(
 def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -> None:
     root = storage.data_dir(environ)
     try:
-        hook_input = json.loads(raw or b"{}")
+        hook_input = storage.loads(raw or b"{}")
         if not isinstance(hook_input, dict):
             hook_input = {}
         if mode == "session-start" and hook_input.get("source") not in SAME_KEY_SOURCES:

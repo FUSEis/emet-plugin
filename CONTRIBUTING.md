@@ -33,6 +33,7 @@ To keep that session apart from the Claude Code you use every day, with its own 
 - **Say when content is cut.** Any tool result that is not sent complete is marked `is_truncated`, which Emet needs to avoid verifying a claim against partial evidence.
 - **Tests use synthetic transcripts** built in `tests/helpers.py`. Never commit a real session transcript; they hold private content.
 - A change to what is sent, to the transcript parsing, or to what a user sees needs a test and a `CHANGELOG.md` entry under **Unreleased**. CI holds part of this: a pull request that changes anything under `claude/scripts/`, `claude/hooks/`, `claude/skills/` or `claude/.claude-plugin/` and adds no line under **Unreleased** in the `CHANGELOG.md` at the root fails the `changelog` job. A release passes too, because it adds a version heading. The job does not read what the entry says, and it does not look at `claude/README.md`, `docs/` or the tests. When the change alters nothing a user sees and nothing Emet receives, such as a refactor, a comment or a type, add the `no-changelog` label in place of an entry. The job runs again when a label is added or removed.
+- A change to the words Claude reads about a report (`report.py`) posts its before and after eval table in the pull request. Both are made from the branch, the before one with `--plugin-scripts` naming a checkout of `main`. See [evals/README.md](evals/README.md).
 
 ## Wake-up rules
 
@@ -92,7 +93,7 @@ Everything is in the plugin's data folder. [claude/README.md](claude/README.md#w
 | `status.json` | Sender, report check | The `/emet:setup` and `/emet:status` skills | `commands.py`, and `watch.py` for `checks` and `reads_paused_until` |
 | `emet.log`, `emet.log.1` | Every module, through `storage.log` | The `/emet:status` skill | `storage.py` |
 | `*.lock` | Whoever takes the lock first: the sender (`state/<session>.lock`, `state/<session>.pending.lock`, `queue.lock`), the report check (`state/<session>.watch.lock`), both (`status.lock`, `pause.lock`) | No one. They are empty and are never removed | `storage.py` |
-| `.<name>.<number>.tmp` | `storage.write_private`, while it writes any of the JSON files above | No one. A write cut short leaves it behind, with what the file was to hold | `storage.py` |
+| `.<name>.<number>.tmp` | `storage.write_private`, while it writes any of the JSON files above | No one. A write that fails removes it. A process killed while writing leaves it behind, with what the file was to hold | `storage.py` |
 
 These files outlive an update, and a session that started before an update keeps running the old code next to a new one. So:
 
