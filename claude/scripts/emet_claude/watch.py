@@ -7,6 +7,32 @@ own file under verdicts/ before Claude is woken. Only that file holds text from 
 
 Exit code 2 hands the text to Claude Code. It does not prove Claude told the user: a wake that
 lands inside a running turn can go unseen. So the verdict file is kept either way.
+
+Each line of the checks file holds one of these words under "outcome". A final outcome ends the
+polling of its turn. A turn without one is polled again after a later Stop.
+
+| Outcome | Final | Meaning |
+| --- | --- | --- |
+| `flagged` | yes | Emet's report disputes a claim. "handed" says whether Claude Code was given the text. |
+| `clarified` | yes | Emet's report, shown by Emet as Clarified. Claude is not woken. |
+| `clear` | yes | Emet's report, shown by Emet as Verified. |
+| `unchecked` | yes | Emet's report, shown by Emet as Skipped. |
+| `nothing` | yes | Emet's report, shown by Emet as Skipped. |
+| `unreadable` | yes | A report came that this version of the plugin cannot read, or with a status it does not know. |
+| `not_assessed` | yes | Emet answered that it did not assess the turn (404 `not_assessed`). |
+| `failed` | yes | Emet answered that its check of the turn failed (404 `failed`). |
+| `not_found` | yes | Emet answered that it has no trace with this id (404 `not_found`). |
+| `expired` | yes | The turn was delivered more than a day ago and still has no report. It is no longer asked for. |
+| `timed_out` | no | The report was not ready within the 300 seconds of the run. |
+| `key_refused` | no | Emet refused the key on a report read (401 or 403), and the run stopped. |
+| `rate_limited` | no | Emet answered 429. The run stopped and started the pause every session shares. |
+| `paused` | no | The pause was in force, so no report was asked for. |
+| `not_configured` | no | The Stop was not polled: the key, the team or the endpoint is not set right. |
+| `old_claude_code` | no | The Stop was not polled: Claude Code is older than 2.1.287, or its version could not be read. |
+| `no_person` | no | The Stop was not polled: no person is at the session (`claude -p`, the SDK). |
+
+A `flagged` line that was not handed over names the reason under "held": `wake_cap` (the session
+already had 5 wakes) or `newer_turn` (a later turn had started or been delivered).
 """
 
 from __future__ import annotations
@@ -67,7 +93,10 @@ RECENT_CHECKS = 5
 WAKE_EXIT = 2
 
 FLAGGED = report.FLAGGED
+# Every word report.status can return, each recorded as the outcome of a report that is ready
+REPORT_STATUSES = (FLAGGED, "clarified", "clear", "unchecked", "nothing")
 UNREADABLE = "unreadable"
+EXPIRED = "expired"
 TIMED_OUT = "timed_out"
 KEY_REFUSED = "key_refused"
 RATE_LIMITED = "rate_limited"
@@ -78,6 +107,20 @@ OLD_CLAUDE_CODE = "old_claude_code"
 NO_PERSON = "no_person"
 # Emet's 404 codes that end the wait for a report
 FINAL_MISSES = ("not_assessed", "failed", "not_found")
+# Every outcome a check can hold, with whether it ends the polling of its turn. The table above says what each means
+OUTCOMES: Dict[str, bool] = {
+    **dict.fromkeys(REPORT_STATUSES, True),
+    UNREADABLE: True,
+    **dict.fromkeys(FINAL_MISSES, True),
+    EXPIRED: True,
+    TIMED_OUT: False,
+    KEY_REFUSED: False,
+    RATE_LIMITED: False,
+    PAUSED: False,
+    NOT_CONFIGURED: False,
+    OLD_CLAUDE_CODE: False,
+    NO_PERSON: False,
+}
 # Keys that mark a pending line as something other than a delivered turn
 NOT_A_TRACE = ("finished", "skipped", "refused")
 
@@ -324,14 +367,12 @@ def known(found: List[Dict[str, Any]], trace_uuid: str, report_uuid: str, revisi
     )
 
 
-def record(
-    root: Path, session_id: str, trace_uuid: str, outcome: str, final: bool, ids: Optional[Mapping[str, Any]] = None, wait: bool = True
-) -> bool:
+def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Optional[Mapping[str, Any]] = None, wait: bool = True) -> bool:
     """Adds one outcome to the session's file and the status file. Returns False when the session's file was not written.
 
-    Without wait the status file is left alone when another process is writing it.
+    Only an outcome of OUTCOMES can be recorded. Without wait the status file is left alone when another process is writing it.
     """
-    item = {"trace_uuid": trace_uuid, "outcome": outcome, "final": final, "at": storage.now(pause.clock()), **(ids or {})}
+    item = {"trace_uuid": trace_uuid, "outcome": outcome, "final": OUTCOMES[outcome], "at": storage.now(pause.clock()), **(ids or {})}
     target = checks_path(root, session_id)
     try:
         written = target.read_bytes() if target.exists() else b""
@@ -423,13 +464,14 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     """
     session_id = stop.session_id
     status = report.status(document)
-    if not status:
-        record(root, session_id, trace.trace_uuid, UNREADABLE, True)
+    # Also a word report.py knows and this module does not list
+    if status not in REPORT_STATUSES:
+        record(root, session_id, trace.trace_uuid, UNREADABLE)
         return ""
     report_uuid, revision = report_ids(document)
     ids = {"report_uuid": report_uuid, "revision": revision}
     if status != FLAGGED:
-        record(root, session_id, trace.trace_uuid, status, True, ids)
+        record(root, session_id, trace.trace_uuid, status, ids)
         return ""
     found = checks(root, session_id)
     if known(found, trace.trace_uuid, report_uuid, revision):
@@ -455,7 +497,7 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     }
     save_verdict(root, verdict)
     # Recorded before Claude is woken, so a crash in between cannot wake it twice
-    if not record(root, session_id, trace.trace_uuid, FLAGGED, True, {"handed": not held, **({"held": held} if held else {}), **ids}):
+    if not record(root, session_id, trace.trace_uuid, FLAGGED, {"handed": not held, **({"held": held} if held else {}), **ids}):
         return ""
     if held:
         storage.log(root, f"report {trace.trace_uuid} not handed to Claude, {held}")
@@ -466,7 +508,7 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
 def close(root: Path, config: Config, session_id: str, outcome: str) -> str:
     """Ends a run early: every turn still waiting is recorded as not checked, and stays to be polled after a later Stop."""
     for trace in unchecked(root, config, session_id, outcome):
-        record(root, session_id, trace.trace_uuid, outcome, False)
+        record(root, session_id, trace.trace_uuid, outcome)
     return ""
 
 
@@ -489,7 +531,7 @@ def skip(root: Path, config: Config, session_id: str, outcome: str) -> str:
     The turn that just ended is rarely among them: the sender names it a moment later.
     """
     for trace in unchecked(root, config, session_id, outcome)[-MAX_WATCHED:]:
-        record(root, session_id, trace.trace_uuid, outcome, False, wait=False)
+        record(root, session_id, trace.trace_uuid, outcome, wait=False)
     return ""
 
 
@@ -516,7 +558,7 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
                 continue
             if now - trace.at > MAX_AGE_S:
                 done.add(trace.trace_uuid)
-                record(root, session_id, trace.trace_uuid, TIMED_OUT, True)
+                record(root, session_id, trace.trace_uuid, EXPIRED)
                 continue
             waiting.append(trace)
         watched = waiting[-MAX_WATCHED:]
@@ -536,7 +578,7 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
                     return text
             elif answer.status == 404 and answer.code in FINAL_MISSES:
                 done.add(trace.trace_uuid)
-                record(root, session_id, trace.trace_uuid, answer.code, True)
+                record(root, session_id, trace.trace_uuid, answer.code)
             elif answer.status in (401, 403):
                 return close(root, config, session_id, KEY_REFUSED)
             elif answer.status == 429:

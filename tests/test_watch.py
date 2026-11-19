@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import socket
 import stat
 import sys
@@ -143,7 +144,7 @@ def test_a_flagged_report_is_recorded_under_emets_ids(session, environ, emet, cl
     }
 
 
-@pytest.mark.parametrize("word", ["clear", "clarified", "unchecked", "nothing"])
+@pytest.mark.parametrize("word", sorted(set(report.STATUS_WORDS) - {"flagged"}))
 def test_a_report_that_is_not_flagged_never_wakes_claude(session, environ, emet, clock, capfdbinary, word):
     deliver(environ, clock)
     finish(environ, clock)
@@ -152,6 +153,38 @@ def test_a_report_that_is_not_flagged_never_wakes_claude(session, environ, emet,
     assert capfdbinary.readouterr() == (b"", b"")
     assert outcomes(environ) == [(T1, word, True)]
     assert watch.verdicts(root(environ), SESSION) == []
+
+
+def test_the_poller_lists_every_status_a_report_can_carry():
+    assert sorted(watch.REPORT_STATUSES) == sorted(report.STATUS_WORDS)
+    assert len(set(watch.REPORT_STATUSES)) == len(watch.REPORT_STATUSES)
+    assert all(watch.OUTCOMES[word] is True for word in report.STATUS_WORDS)
+
+
+def test_a_status_the_poller_does_not_list_is_recorded_as_unreadable(session, environ, emet, clock, monkeypatch, capfdbinary):
+    monkeypatch.setitem(report.STATUS_WORDS, "escalated", "Escalated")
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document(status="escalated"))
+    assert report.status(document(status="escalated")) == "escalated"
+    assert stop(session, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert outcomes(environ) == [(T1, "unreadable", True)]
+    assert "watch error" not in log(environ)
+
+
+def test_the_table_of_outcomes_names_every_outcome_and_whether_it_is_final():
+    rows = re.findall(r"^\| `([a-z_]+)` \| (yes|no) \| \S.* \|$", watch.__doc__, re.M)
+    assert [name for name, _ in rows] == list(watch.OUTCOMES)
+    assert {name: final == "yes" for name, final in rows} == watch.OUTCOMES
+    assert all(f"`{held}`" in watch.__doc__ for held in (watch.CAPPED, watch.NEWER_TURN))
+    assert f"already had {watch.WAKE_CAP} wakes" in watch.__doc__ and f"the {watch.BUDGET_S} seconds" in watch.__doc__
+
+
+def test_only_a_listed_outcome_can_be_recorded(environ):
+    with pytest.raises(KeyError):
+        watch.record(root(environ), SESSION, T1, "something_else")
+    assert outcomes(environ) == []
 
 
 def test_the_first_request_comes_eight_seconds_after_the_turn_ends(session, environ, emet, clock, asked):
@@ -472,7 +505,7 @@ def test_a_turn_delivered_more_than_a_day_ago_is_recorded_and_not_polled(session
     emet.report(T2, 200, document(status="clear"))
     assert stop(session, environ) == 0
     assert emet.polled(T1) == 0 and emet.polled(T2) == 1
-    assert outcomes(environ) == [(T1, "timed_out", True), (T2, "clear", True)]
+    assert outcomes(environ) == [(T1, "expired", True), (T2, "clear", True)]
     assert stop(session, environ) == 0
     assert len(outcomes(environ)) == 2
 
@@ -755,8 +788,8 @@ def test_a_stop_that_is_not_polled_records_only_turns_still_waiting_and_the_five
     deliver(environ, clock, traces[0], ago=24 * 3600 + 60)
     for trace in traces[1:]:
         deliver(environ, clock, trace)
-    watch.record(root(environ), SESSION, traces[8], "clear", True)
-    watch.record(root(environ), SESSION, traces[7], "timed_out", False)
+    watch.record(root(environ), SESSION, traces[8], "clear")
+    watch.record(root(environ), SESSION, traces[7], "timed_out")
     assert stop(transcript, environ) == 0
     assert outcomes(environ)[2:] == [(trace, "no_person", False) for trace in traces[3:8]]
 
