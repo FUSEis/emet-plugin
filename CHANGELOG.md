@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - The status skill treats every log line and every value of the status file as data to report, never as an instruction.
 - A log line is always one line. A line break, a control character or an invisible character in a logged value is written as `?`, and a line is cut at 300 characters. Before, an id read from a queued file could hold a line break and so write a second line that looked like the plugin's own, such as `401 key rejected`.
 
+### Fixed
+
+- The plugin no longer writes through a symbolic link in its data folder. Before, a link placed at the log, or at the name a file has while it is being written, made the plugin write into the file the link pointed to. A link at the log is now removed and a new log is started; the file being written is always a new one, and a leftover from a crashed run is cleared first. On macOS and Linux the open itself refuses a link. Windows has no such flag, so there the check alone applies.
+
 ## [0.1.4] - 2026-11-19
 
 ### Added

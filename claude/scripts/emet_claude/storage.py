@@ -15,6 +15,8 @@ from typing import Any, Iterator, Mapping, Optional
 LOG_MAX_BYTES = 1_000_000
 # No line the plugin writes is near this long, so a longer one holds text from somewhere else
 LOG_LINE_MAX = 300
+# Makes an open fail on a symbolic link. Windows has no such flag
+NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
 def data_dir(environ: Mapping[str, str] = os.environ) -> Path:
@@ -28,10 +30,19 @@ def data_dir(environ: Mapping[str, str] = os.environ) -> Path:
 
 
 def write_private(path: Path, text: str) -> None:
-    """Writes atomically with owner-only permissions, since files can hold session content."""
+    """Writes atomically with owner-only permissions, since files can hold session content.
+
+    Never writes through a symbolic link: the temporary file is always a new one, and the rename replaces a link at path itself.
+    """
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW
     try:
-        fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            fd = os.open(str(temp), flags, 0o600)
+        except FileExistsError:
+            # Left by a crashed run with this process id, or planted. Removing a link leaves its target alone
+            temp.unlink()
+            fd = os.open(str(temp), flags, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
         os.replace(temp, path)
@@ -131,9 +142,12 @@ def log(root: Path, message: str) -> None:
     path = root / "emet.log"
     message = one_line(message)
     try:
+        # A link in the log's place is removed, never written through. The flag below closes the gap after this check
+        if path.is_symlink():
+            path.unlink()
         if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
             os.replace(path, root / "emet.log.1")
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND | NOFOLLOW, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(f"{now()} {message}\n")
     except OSError:
