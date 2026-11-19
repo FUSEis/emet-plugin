@@ -425,7 +425,7 @@ def test_a_skipped_turn_is_marked_in_the_sessions_own_file_before_the_run_is_sta
     lines = pending.lines(storage.data_dir(environ), "session-1")
     assert [sorted(line) for line in lines] == [
         ["reason", "skipped"],
-        ["at", "conversation_uuid", "endpoint", "trace_uuid"],
+        ["at", "conversation_uuid", "ended", "endpoint", "trace_uuid"],
         ["finished", "queued"],
     ]
     assert lines[0]["reason"] == "Unreadable"

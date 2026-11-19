@@ -166,6 +166,9 @@ class Trace:
     trace_uuid: str
     at: float
     conversation_uuid: str
+    # Claude Code's id of the turn and the time of its last entry, "" and 0 for a line that names none
+    prompt_id: str = ""
+    ended: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -348,18 +351,34 @@ def latest(root: Path, own: Stop) -> Stop:
     if type(size) is not int or size < own.size:
         return own
     ended = timestamps.parse(saved.get("ended"))
-    return Stop(own.session_id, own.transcript_path, plain(prompt_id), size, at.timestamp(), token, ended.timestamp() if ended else 0.0)
+    return Stop(
+        own.session_id, own.transcript_path, pending.plain(prompt_id), size, at.timestamp(), token, ended.timestamp() if ended else 0.0
+    )
 
 
-def plain(prompt_id: Any) -> str:
-    """Returns the turn's id when it is a plain name, else "". It is written to a file and compared, never trusted."""
-    return prompt_id if isinstance(prompt_id, str) and pending.SESSION_ID.fullmatch(prompt_id) else ""
+def earlier_turn(trace: Trace, stop: Stop) -> bool:
+    """Says whether the trace is of a turn before the one the Stop ended."""
+    if trace.prompt_id and stop.prompt_id:
+        return trace.prompt_id != stop.prompt_id
+    # Without both ids: a turn is delivered after it ends, so one delivered before the last entry of the latest turn is an earlier one
+    return trace.at < int(stop.ended)
 
 
-def newer_trace(root: Path, endpoint: str, session_id: str, trace_uuid: str) -> bool:
-    """Says whether a later turn of the session has been delivered since."""
+def newer_trace(root: Path, endpoint: str, session_id: str, trace: Trace) -> bool:
+    """Says whether a later turn of the session has been delivered."""
     found = delivered(pending.lines(root, session_id), endpoint)
-    return bool(found) and found[-1].trace_uuid != trace_uuid
+    ids = [other.trace_uuid for other in found]
+    after = ids[ids.index(trace.trace_uuid) + 1 :] if trace.trace_uuid in ids else ids
+    for other in found:
+        if other.trace_uuid == trace.trace_uuid:
+            continue
+        # The retry queue can deliver an older turn after a newer one, so the turns' own ends decide when both name one
+        if trace.ended and other.ended:
+            if other.ended > trace.ended:
+                return True
+        elif other.trace_uuid in after:
+            return True
+    return False
 
 
 def read_report(config: Config, trace_uuid: str) -> Answer:
@@ -419,7 +438,17 @@ def delivered(lines: List[Dict[str, Any]], endpoint: str, by_plugin: bool = Fals
         except (ValueError, TypeError, AttributeError):
             continue
         conversation = item.get("conversation_uuid")
-        found.setdefault(trace_uuid, Trace(trace_uuid, at.timestamp(), conversation if isinstance(conversation, str) else ""))
+        ended = timestamps.parse(item.get("ended"))
+        found.setdefault(
+            trace_uuid,
+            Trace(
+                trace_uuid,
+                at.timestamp(),
+                conversation if isinstance(conversation, str) else "",
+                pending.plain(item.get("prompt_id")),
+                ended.timestamp() if ended else 0.0,
+            ),
+        )
     return list(found.values())
 
 
@@ -643,12 +672,11 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     held = ""
     if wakes(found) >= WAKE_CAP:
         held = CAPPED
-    # A turn is delivered after it ends, so one delivered before the last entry of the latest turn is an earlier one.
-    # And a wake that lands in a running turn is folded into it and can go unseen
-    elif trace.at < int(stop.ended) or newer_trace(root, config.endpoint, session_id, trace.trace_uuid) or newer_turn(stop):
+    # A wake that lands in a running turn is folded into it and can go unseen
+    elif earlier_turn(trace, stop) or newer_trace(root, config.endpoint, session_id, trace) or newer_turn(stop):
         held = NEWER_TURN
-    # The user has moved on by then. Counted from the last entry of the turn, or from its Stop when none could be read
-    elif pause.clock() - (stop.ended or stop.at) > LATE_S:
+    # The user has moved on by then. Counted from the turn's own end, else from what the Stop knows of it
+    elif pause.clock() - (trace.ended or stop.ended or stop.at) > LATE_S:
         held = LATE
     link = (config.endpoint, session_id, trace.conversation_uuid)
     verdict = {
@@ -841,7 +869,7 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     if headless(found, environ):
         storage.log(root, "watch skipped, no person is at the session")
         return skip(root, config, session_id, NO_PERSON)
-    stop = Stop(session_id, transcript_path, plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found))
+    stop = Stop(session_id, transcript_path, pending.plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found))
     # Written before the lock is tried: the watcher already running judges this turn by it
     announce(root, stop)
     return attend(root, config, stop)

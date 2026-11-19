@@ -149,7 +149,7 @@ def test_a_run_after_a_finished_turn_stamps_its_end(transcript, environ, emet):
     assert stamps(environ) == []
     run(transcript, environ)
     lines = pending.lines(root(environ), "session-1")
-    assert [sorted(item) for item in lines] == [["at", "conversation_uuid", "endpoint", "trace_uuid"], ["finished", "queued"]]
+    assert [sorted(item) for item in lines] == [["at", "conversation_uuid", "ended", "endpoint", "trace_uuid"], ["finished", "queued"]]
     assert lines[0]["conversation_uuid"] == emet.conversations[0]
     assert lines[0]["endpoint"] == emet.url
     assert lines[1]["queued"] == 0
@@ -343,7 +343,8 @@ def test_the_line_of_the_turn_after_a_wake_carries_a_mark(transcript, environ, e
         (emet.trace_uuids[notice["uuid"]], None),
     ]
     (line,) = [item for item in pending.lines(root(environ), "session-1") if "started_by" in item]
-    assert set(line) == {"trace_uuid", "at", "endpoint", "conversation_uuid", "started_by"} and line["endpoint"] == emet.url
+    assert set(line) == {"trace_uuid", "at", "endpoint", "conversation_uuid", "started_by", "prompt_id", "ended"}
+    assert line["endpoint"] == emet.url
 
 
 def test_the_mark_is_kept_when_another_session_delivers_the_turn_from_the_queue(tmp_path, environ, emet, clock):
@@ -402,3 +403,95 @@ def test_only_a_flagged_report_handed_to_claude_counts_as_a_wake_for_the_sender(
     assert watch.record(root(environ), "session-2", TRACE, "flagged", {"handed": True})
     assert watch.handed_times(root(environ), "session-1") == ([clock.now] if counts else [])
     assert watch.handed_times(root(environ), "session-3") == []
+
+
+def trace_lines(environ, session_id="session-1"):
+    return [item for item in pending.lines(root(environ), session_id) if "trace_uuid" in item]
+
+
+def test_a_trace_line_names_the_turn_by_claude_codes_id_and_the_time_of_its_last_entry(transcript, environ, emet):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1", timestamp="2026-10-20T10:00:01.250Z")
+    transcript.tool_use("msg_1", "toolu_1", "Bash", {"command": "ls"}, timestamp="2026-10-20T10:00:02.000Z")
+    transcript.tool_result("toolu_1", "a.txt", timestamp="2026-10-20T10:00:09.875Z")
+    transcript.text("msg_2", "4", timestamp="2026-10-20T10:00:04+00:00")
+    run(transcript, environ)
+    (line,) = trace_lines(environ)
+    # The latest time of the turn, as the root span ends, in the one form the plugin writes
+    assert (line["prompt_id"], line["ended"]) == ("prompt-1", "2026-10-20T10:00:09.875Z")
+    assert line["ended"] == emet.spans()[0]["ended_at"]
+
+
+def test_the_turns_identity_is_kept_on_this_machine_and_never_sent(transcript, environ, emet, monkeypatch, clock):
+    monkeypatch.setattr(envelope, "MAX_SPANS_PER_BATCH", 1)
+    emet.statuses = [503]
+    transcript.prompt("What is 2 + 2?", promptId="prompt-kept-here")
+    transcript.text("msg_1", "4")
+    run(transcript, environ)
+    queued = [storage.read_json(path, {}) for path in transport.queued(root(environ))]
+    assert len(queued) > 1 and all(item[envelope.LOCAL]["prompt_id"] == "prompt-kept-here" for item in queued)
+    clock.advance(60)
+    run(transcript, environ)
+    assert trace_lines(environ)[0]["prompt_id"] == "prompt-kept-here"
+    assert len(emet.requests) > 2
+    for request in emet.requests:
+        assert envelope.LOCAL not in request["body"], "what the plugin keeps for its own files was sent to Emet"
+        assert "prompt-kept-here" not in json.dumps(request["body"])
+        assert set(request["body"]) <= {
+            "tenant_ref",
+            "conversation_id",
+            "trace_id",
+            "session_ref",
+            "enduser_ref",
+            "ingestion_mode",
+            "semconv_version",
+            "resource",
+            "end",
+            "conversation_title",
+            "spans",
+        }
+
+
+def test_the_turns_identity_survives_the_queue_and_delivery_by_another_sessions_worker(tmp_path, environ, emet, monkeypatch, clock):
+    # The batch that ends the turn holds no root span
+    monkeypatch.setattr(envelope, "MAX_SPANS_PER_BATCH", 1)
+    queued, current = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    emet.statuses = [503]
+    queued.prompt("What is 2 + 2?", promptId="prompt-0")
+    last = queued.text("msg_1", "4")
+    run(queued, environ)
+    assert trace_lines(environ, "session-0") == []
+    clock.advance(60)
+    current.prompt("And 3 + 3?", promptId="prompt-1")
+    current.text("msg_2", "6")
+    run(current, environ)
+    (line,) = trace_lines(environ, "session-0")
+    assert (line["prompt_id"], line["ended"]) == ("prompt-0", last["timestamp"])
+    assert trace_lines(environ, "session-1")[0]["prompt_id"] == "prompt-1"
+
+
+@pytest.mark.parametrize("prompt_id", [None, "", 5, ["prompt-1"], "prompt 1", "prompt/../1", "p" * 101, "prompt-1\n"])
+def test_a_turn_id_that_is_not_a_plain_name_is_left_out_of_the_line(transcript, environ, emet, prompt_id):
+    transcript.prompt("What is 2 + 2?", **({} if prompt_id is None else {"promptId": prompt_id}))
+    transcript.text("msg_1", "4")
+    run(transcript, environ)
+    (line,) = trace_lines(environ)
+    assert "prompt_id" not in line and "ended" in line
+
+
+@pytest.mark.parametrize(
+    ("local", "kept"),
+    [
+        ({"prompt_id": "prompt-1", "ended": "2026-10-20T10:00:02+00:00"}, {"prompt_id": "prompt-1", "ended": "2026-10-20T10:00:02.000Z"}),
+        ({"prompt_id": "a b", "ended": "soon"}, {}),
+        ({"prompt_id": 5, "ended": 1_800_000_000}, {}),
+        ({"ended": "2026-10-20T10:00:02"}, {}),
+        ("prompt-1", {}),
+        (None, {}),
+    ],
+)
+def test_what_a_queued_envelope_says_of_its_turn_is_checked_again_before_it_is_written(environ, local, kept):
+    sender = transport.Sender(root(environ), type("Settings", (), {"endpoint": "https://app.emet.so"})())
+    sent = {"conversation_id": "session-1", "end": True, envelope.LOCAL: local}
+    sender.record(sent, transport.Outcome(202, True, True, "", "", TRACE))
+    (line,) = trace_lines(environ)
+    assert {key: value for key, value in line.items() if key in ("prompt_id", "ended")} == kept

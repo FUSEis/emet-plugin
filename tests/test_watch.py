@@ -1659,6 +1659,157 @@ def test_a_report_held_back_as_late_uses_up_no_wake(session, environ, emet, cloc
     assert watch.checks(root(environ), SESSION)[-1]["held"] == "wake_cap"
 
 
+def two_turns(transcript, clock):
+    """A session whose second turn just ended. Returns the time the first one ended, as a trace line holds it."""
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    first = transcript.text("msg_1", "4")["timestamp"]
+    clock.advance(1)
+    transcript.prompt("And 3 + 3?", promptId="prompt-2")
+    transcript.text("msg_2", "6")
+    return first
+
+
+def test_an_older_turn_delivered_after_the_newer_one_ended_keeps_claude_asleep(transcript, environ, emet, clock, capfdbinary):
+    first = two_turns(transcript, clock)
+    # The retry queue delivers the older turn late. The newer turn has no line: skipped, refused, or its send failed
+    clock.advance(2)
+    deliver(environ, clock, T1, prompt_id="prompt-1", ended=first)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-2") == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
+
+
+@pytest.mark.parametrize(
+    ("line_id", "stop_id", "code"),
+    [
+        pytest.param("prompt-2", "prompt-2", 2, id="the same id is the turn that ended"),
+        pytest.param("prompt-1", "prompt-2", 0, id="another id is an earlier turn"),
+        pytest.param("Prompt-2", "prompt-2", 0, id="ids that differ in case are different turns"),
+        pytest.param(None, "prompt-2", 2, id="a line without the id falls back to the times"),
+        pytest.param("prompt-1", None, 2, id="a Stop without the id falls back to the times"),
+        pytest.param("prompt 1", "prompt-2", 2, id="an id with a space is no id"),
+        pytest.param("prompt-1\n", "prompt-2", 2, id="an id with a line break is no id"),
+        pytest.param("../prompt-1", "prompt-2", 2, id="an id with a path in it is no id"),
+        pytest.param(5, "prompt-2", 2, id="an id that is a number is no id"),
+        pytest.param("prompt-1", "prompt 2", 2, id="a Stop id with a space is no id"),
+    ],
+)
+def test_the_turn_a_report_is_about_is_told_by_its_id_and_by_the_times_only_without_one(
+    transcript, environ, emet, clock, line_id, stop_id, code
+):
+    two_turns(transcript, clock)
+    clock.advance(2)
+    deliver(environ, clock, T1, **({} if line_id is None else {"prompt_id": line_id}))
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, **({} if stop_id is None else {"prompt_id": stop_id})) == code
+    assert watch.checks(root(environ), SESSION)[0].get("held") == (None if code else "newer_turn")
+
+
+def test_the_turn_that_ended_wakes_claude_by_its_id_even_when_it_was_delivered_before_its_last_entry(session, environ, emet, clock):
+    deliver(environ, clock, T1, prompt_id="prompt-1")
+    clock.advance(5)
+    # Written to the turn after the sender had delivered it
+    session.text("msg_late", "One more thing.")
+    emet.report(T1, 200, document())
+    assert stop(session, environ, prompt_id="prompt-1") == 2
+    session.text("msg_later", "And another.")
+    deliver(environ, clock, T2, ago=5)
+    emet.report(T2, 200, document())
+    # Without the id on the line, the times say it is an earlier turn
+    assert stop(session, environ, prompt_id="prompt-1") == 0
+    assert watch.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
+
+
+@pytest.mark.parametrize(("with_ends", "code"), [(True, 2), (False, 0)])
+def test_an_older_turn_the_queue_delivers_last_does_not_hold_back_the_newer_turns_report(transcript, environ, emet, clock, with_ends, code):
+    first = two_turns(transcript, clock)
+    second = stamp(clock)
+    clock.advance(2)
+    deliver(environ, clock, T2, prompt_id="prompt-2", **({"ended": second} if with_ends else {}))
+    deliver(environ, clock, T1, prompt_id="prompt-1", **({"ended": first} if with_ends else {}))
+    emet.report(T2, 200, document())
+    emet.report(T1, 202)
+    finish(environ, clock)
+    assert stop(transcript, environ, prompt_id="prompt-2") == code
+    (check,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T2]
+    # Without the ends of both turns, the order of the lines is all there is
+    assert check.get("held") == (None if code else "newer_turn")
+
+
+def test_a_newer_turn_delivered_first_still_holds_back_the_older_turns_report(transcript, environ, emet, clock):
+    first = two_turns(transcript, clock)
+    deliver(environ, clock, T2, prompt_id="prompt-1", ended=stamp(clock))
+    deliver(environ, clock, T1, prompt_id="prompt-1", ended=first)
+    emet.report(T1, 200, document())
+    emet.report(T2, 202)
+    finish(environ, clock)
+    # Both lines name the Stop's turn, so only their ends tell which is the older one
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    (check,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T1]
+    assert check["held"] == "newer_turn"
+
+
+def test_a_turn_the_queue_delivers_after_a_newer_turn_was_refused_wakes_no_one(
+    tmp_path, transcript, environ, emet, clock, sender_on_the_clock
+):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    emet.statuses = [503]
+    send(transcript, environ)
+    assert pending.traces(root(environ), SESSION) == []
+    clock.advance(60)
+    transcript.prompt("And 3 + 3?", promptId="prompt-2")
+    transcript.text("msg_2", "6")
+    # The worker of the second Stop delivers the first turn from the queue, and Emet refuses the second
+    emet.statuses = [202, 400]
+    send(transcript, environ)
+    (first,) = pending.traces(root(environ), SESSION)
+    (line,) = [item for item in pending.lines(root(environ), SESSION) if "trace_uuid" in item]
+    assert line["prompt_id"] == "prompt-1" and timestamps.parse(line["ended"]).timestamp() == clock.now - 60
+    emet.report(first, 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-2") == 0
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["trace_uuid"], check["handed"], check["held"]) == (first, False, "newer_turn")
+
+
+def test_the_minute_is_counted_from_the_end_the_trace_line_names_before_what_the_stop_read(session, environ, emet, clock, asked):
+    # The poller read the session file before Claude Code had written the final answer, which took 40 seconds
+    clock.advance(40)
+    deliver(environ, clock, T1, prompt_id="prompt-1", ended=stamp(clock))
+    for _ in range(3):
+        emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    assert stop(session, environ, prompt_id="prompt-1") == 2
+    # Ready 78 seconds after the last entry the poller saw, 38 after the turn ended
+    assert [at for at, _ in asked] == [48, 53, 63, 78]
+
+
+def test_a_report_is_late_by_the_end_the_trace_line_names_even_when_the_stop_read_a_later_one(session, environ, emet, clock, asked):
+    ended = stamp(clock)
+    clock.advance(30)
+    # An entry written long after the turn ended, such as a late tool result
+    session.tool_result("toolu_late", "done")
+    deliver(environ, clock, T1, prompt_id="prompt-1", ended=ended)
+    for _ in range(3):
+        emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    finish(environ, clock)
+    assert stop(session, environ, prompt_id="prompt-1") == 0
+    assert [at for at, _ in asked] == [38, 43, 53, 68]
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "late"
+
+
+@pytest.mark.parametrize("ended", ["soon", "", None, 5, "2027-01-15T08:00:00"])
+def test_an_end_the_trace_line_names_that_cannot_be_read_is_not_used(session, environ, emet, clock, ended):
+    deliver(environ, clock, T1, ended=ended)
+    emet.report(T1, 200, document())
+    assert stop(session, environ) == 2
+
+
 def long_session(transcript, monkeypatch):
     """A session file whose first turn is longer than what the poller reads before and after its start."""
     monkeypatch.setattr(watch, "TAIL_BYTES", 2000)
