@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from . import VERSION, content, timestamps, transcript
 from .config import Config
@@ -119,9 +119,11 @@ def for_turn(
     session_id: str,
     turn: List[Tuple[int, transcript.Entry]],
     cwd: str,
+    handed: Sequence[float] = (),
 ) -> Tuple[str, List[Dict[str, Any]], Built]:
     """Returns the trace id, envelopes and built spans (for the subagents to track) of one turn.
 
+    handed holds the times the poller handed a report to Claude in this session, which a turn a wake started must follow.
     Raises timestamps.Unreadable for a turn with no time that can be read."""
     first = turn[0][1]
     times = timestamps.of(entry for _, entry in turn)
@@ -132,7 +134,7 @@ def for_turn(
     trace_id = uuid if isinstance(uuid, str) and uuid else f"turn-at-{turn[0][0]}"
     capture = builder.capture
     text = transcript.prompt_text(first)
-    woken = transcript.started_by_wake(first)
+    woken = transcript.started_by_wake(first, handed)
     built = Built()
     # The report text is not sent back to Emet as a person's message; marked as left out, like an image
     opening = builder.message("user", WAKE_PROMPT, True) if woken else builder.message("user", text, transcript.has_binary(first))

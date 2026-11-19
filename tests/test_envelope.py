@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from emet_claude import envelope, report
+from emet_claude import envelope, report, timestamps
 from emet_claude import transcript as tr
 from emet_claude.config import Config
 from emet_claude.spans import Builder, Capture
@@ -12,6 +12,8 @@ from test_report import document
 
 WAKE = WAKE_WRAPPER + report.wake_message(document(), "https://app.emet.so", "session-1")
 STARTED_BY = "emet.plugin.turn_started_by"
+# The poller handed a report to Claude when the synthetic sessions begin, so their first minutes follow a wake
+HANDED = (timestamps.parse("2026-10-20T10:00:00.000Z").timestamp(),)
 
 
 def wake_turn(transcript, **fields):
@@ -22,11 +24,11 @@ def wake_turn(transcript, **fields):
 CONFIG = Config("Abcd1234.ZyxwVuts98765432QwertyUiop123456", "engineering", "https://app.emet.so", "sanitized")
 
 
-def build(transcript, mode="sanitized"):
+def build(transcript, mode="sanitized", handed=HANDED):
     config = Config(CONFIG.emet_key, CONFIG.tenant_ref, CONFIG.endpoint, mode)
     builder = Builder(transcript.path, Capture(mode, secrets=(config.emet_key,)))
     _, turns = tr.split_turns(tr.read_entries(transcript.path, 0)[0])
-    return [envelope.for_turn(config, builder, transcript.session_id, turn, "/work/acme-app") for turn in turns]
+    return [envelope.for_turn(config, builder, transcript.session_id, turn, "/work/acme-app", handed) for turn in turns]
 
 
 def spans_of(result):
@@ -413,3 +415,13 @@ def test_a_person_who_pastes_the_wake_gets_an_ordinary_turn(transcript):
 def test_only_the_root_span_of_an_envelope_names_the_hook_that_started_its_turn(spans):
     assert envelope.started_by({"spans": spans}) == ""
     assert envelope.started_by({}) == ""
+
+
+def test_a_notice_with_the_wake_text_that_follows_no_recorded_wake_is_sent_as_an_ordinary_turn(transcript):
+    wake_turn(transcript)
+    _, envelopes, _ = build(transcript, handed=())[0]
+    assert envelopes[0]["spans"][0]["attributes"] == {"claude_code.prompt_source": "system"}
+    assert envelope.started_by(envelopes[0]) == ""
+    (model,) = by_kind(envelopes[0]["spans"], "model")
+    assert report.WAKE_OPENING in model["payload"]["input_messages"][0]["parts"][0]["content"]
+    assert model["is_truncated"] is False

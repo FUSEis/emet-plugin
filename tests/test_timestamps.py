@@ -165,10 +165,10 @@ def test_any_error_while_building_a_turn_skips_only_that_turn(transcript, enviro
     after = turn(transcript, "And 3 + 3?", "6")
     real = envelope.for_turn
 
-    def for_turn(config, builder, session_id, entries, cwd):
+    def for_turn(config, builder, session_id, entries, cwd, handed):
         if entries[0][1]["uuid"] == broken["uuid"]:
             raise KeyError("a field Claude Code no longer writes")
-        return real(config, builder, session_id, entries, cwd)
+        return real(config, builder, session_id, entries, cwd, handed)
 
     monkeypatch.setattr(envelope, "for_turn", for_turn)
     run(transcript, environ)
@@ -312,10 +312,10 @@ def test_skips_add_up_within_a_run_and_across_runs(transcript, environ, emet, mo
     transcript.text("msg_a", "6", timestamp="")
     real = envelope.for_turn
 
-    def for_turn(config, builder, session_id, entries, cwd):
+    def for_turn(config, builder, session_id, entries, cwd, handed):
         if entries[0][1]["uuid"] == broken["uuid"]:
             raise KeyError("a field Claude Code no longer writes")
-        return real(config, builder, session_id, entries, cwd)
+        return real(config, builder, session_id, entries, cwd, handed)
 
     monkeypatch.setattr(envelope, "for_turn", for_turn)
     run(transcript, environ)

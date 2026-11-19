@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import report
+from . import report, timestamps
 
 Entry = Dict[str, Any]
 
@@ -25,6 +25,8 @@ BINARY_PARTS = ("image", "document")
 NOTICE_ORIGINS = ("task_notification", "task-notification")
 # How much of a prompt is searched for the plugin's own sentence; a wake is far shorter
 WAKE_SCAN = 64 * 1024
+# How long after the poller handed a report to Claude a turn can still be the one that wake started
+WAKE_WINDOW_S = 600
 
 
 def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List[Tuple[int, Entry]], int]:
@@ -99,19 +101,25 @@ def by_person(entry: Entry) -> bool:
     return source in PERSON_SOURCES
 
 
-def started_by_wake(entry: Entry) -> bool:
-    """Says whether this plugin's own wake started the turn: a notice turn whose text holds the wake's opening sentence.
+def started_by_wake(entry: Entry, handed: Sequence[float] = ()) -> bool:
+    """Says whether this plugin's own wake started the turn. handed holds the times the poller handed a report to Claude in this session.
 
-    Both are needed. A finished background command starts a notice turn too, and a person can paste the sentence.
+    Three things are needed: Claude Code names the turn a notice and nothing names a person, the text holds the wake's
+    opening sentence, and the poller recorded a wake shortly before. A finished background command starts a notice turn
+    too, and anyone can print or paste the sentence.
     """
     origin = entry.get("origin")
-    named = (entry.get("turnOrigin"), origin.get("kind") if isinstance(origin, dict) else None)
-    if not any(isinstance(name, str) and name in NOTICE_ORIGINS for name in named):
+    named = [name for name in (entry.get("turnOrigin"), origin.get("kind") if isinstance(origin, dict) else None) if name is not None]
+    # Every field that names an origin must name a notice
+    if not named or not all(isinstance(name, str) and name in NOTICE_ORIGINS for name in named):
         return False
-    if entry.get("turnOrigin") == "human" or entry.get("promptSource") in PERSON_SOURCES:
+    if entry.get("promptSource") in PERSON_SOURCES:
         return False
     # Claude Code can wrap the lines again, and a cut keeps the start
-    return report.WAKE_OPENING in " ".join(text_of(entry)[:WAKE_SCAN].split())
+    if report.WAKE_OPENING not in " ".join(text_of(entry)[:WAKE_SCAN].split()):
+        return False
+    start = timestamps.parse(entry.get("timestamp"))
+    return start is not None and any(0 <= start.timestamp() - at <= WAKE_WINDOW_S for at in handed)
 
 
 def prompt_text(entry: Entry) -> str:

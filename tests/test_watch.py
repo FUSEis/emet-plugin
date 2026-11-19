@@ -6,7 +6,6 @@ import re
 import socket
 import stat
 import sys
-import time
 import uuid
 from datetime import datetime, timezone
 
@@ -108,6 +107,23 @@ def finish(environ, clock, queued=0, ago=-1.0):
 
 def stop(transcript, environ, **fields):
     return watch.run(json.dumps({**transcript.hook_input(), **fields}).encode(), environ)
+
+
+def stamp(clock):
+    """The time of the tests' clock, as Claude Code writes a time."""
+    return timestamps.text(datetime.fromtimestamp(clock.now, timezone.utc))
+
+
+@pytest.fixture
+def sender_on_the_clock(monkeypatch, clock):
+    """The sender stamps its lines by the tests' clock, as the poller does."""
+    real = storage.now
+    monkeypatch.setattr(storage, "now", lambda at=None: real(clock.now if at is None else at))
+
+
+def send(transcript, environ):
+    """Runs the sender for the session, as the worker of a Stop does."""
+    commands.process(transcript.hook_input(), environ, wait=0)
 
 
 def next_turn(transcript, clock, text="And 3 + 3?", **extra):
@@ -661,9 +677,7 @@ def test_a_run_that_ends_early_does_not_count_the_turn_after_a_wake_as_waiting(s
     assert outcomes(environ) == [(T2, "wake_turn", True), (T1, "key_refused", False)]
 
 
-def test_a_wake_starts_a_turn_that_is_sent_and_never_wakes_claude_again(transcript, environ, emet, clock, capfdbinary):
-    # The sender stamps its lines with the real time
-    clock.now = time.time()
+def test_a_wake_starts_a_turn_that_is_sent_and_never_wakes_claude_again(transcript, environ, emet, clock, capfdbinary, sender_on_the_clock):
     transcript.write(
         {"type": "user", "message": {"role": "user", "content": "How did March go?"}, "promptSource": "typed", "version": "2.1.305"}
     )
@@ -673,8 +687,8 @@ def test_a_wake_starts_a_turn_that_is_sent_and_never_wakes_claude_again(transcri
     emet.report(first, 200, document())
     assert stop(transcript, environ) == 2
     _, err = capfdbinary.readouterr()
-    transcript.notice(WAKE_WRAPPER + err.decode("utf-8"), version="2.1.305")
-    transcript.text("msg_2", "Emet disputes this: spend rose 12% in March.", version="2.1.305")
+    transcript.notice(WAKE_WRAPPER + err.decode("utf-8"), version="2.1.305", timestamp=stamp(clock))
+    transcript.text("msg_2", "Emet disputes this: spend rose 12% in March.", version="2.1.305", timestamp=stamp(clock))
     commands.process(transcript.hook_input(), environ, wait=0)
     first, second = pending.traces(root(environ), SESSION)
     assert len(emet.envelopes) == 2

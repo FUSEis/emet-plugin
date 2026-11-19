@@ -470,6 +470,14 @@ def wakes(found: List[Dict[str, Any]]) -> int:
     return sum(1 for item in found if item.get("handed") is True and item.get("outcome") == FLAGGED)
 
 
+def handed_times(root: Path, session_id: str) -> List[float]:
+    """Returns when each report was handed to Claude in this session. The sender takes a turn for one a wake started only after one."""
+    if not pending.SESSION_ID.fullmatch(session_id):
+        return []
+    found = [timestamps.parse(item.get("at")) for item in checks(root, session_id) if wakes([item])]
+    return [at.timestamp() for at in found if at is not None]
+
+
 def known(found: List[Dict[str, Any]], trace_uuid: str, report_uuid: str, revision: int) -> bool:
     """Says whether this revision of the trace's report was already recorded as flagged. Emet can check a trace again."""
     key = (trace_uuid, report_uuid, revision)

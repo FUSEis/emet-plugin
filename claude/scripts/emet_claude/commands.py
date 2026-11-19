@@ -249,6 +249,8 @@ def process(
             turns = turns[:-1]
 
         known = set((state.get("agents") or {}).keys())
+        # The poller's own record of its wakes, which a turn must follow to be taken for one a wake started
+        handed = watch.handed_times(root, session_id) if turns else []
         if head and state.get("last_trace"):
             tail = attempt(partial(envelope.for_tail, config, builder, session_id, state["last_trace"], head, "turn", cwd))
             if tail is not None:
@@ -258,7 +260,7 @@ def process(
             # Slash commands and local shell escapes look like prompts but no model call answers them
             if not transcript.answered(turn):
                 continue
-            made = attempt(partial(envelope.for_turn, config, builder, session_id, turn, cwd))
+            made = attempt(partial(envelope.for_turn, config, builder, session_id, turn, cwd, handed))
             if made is None:
                 # Whatever is added to this turn later must not join the turn before it
                 state["last_trace"] = ""
