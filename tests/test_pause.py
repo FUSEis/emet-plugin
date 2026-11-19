@@ -171,6 +171,10 @@ def test_reads_a_wait_given_as_a_date(clock):
     assert pause.named(formatdate(clock.now + 90_000, usegmt=True)) == 3600
     # A date with no zone is read as UTC, as HTTP dates are
     assert pause.named("Fri, 15 Jan 2027 08:01:30 -0000") == 90
+    # The first and last dates a header can name are read like any other
+    assert pause.named("Fri, 31 Dec 9999 23:59:59 -2359") == 3600
+    assert pause.named("Mon, 01 Jan 0001 00:00:00 +2359") == 0
+    assert pause.named("Fri, 31 Dec 99999 23:59:59 GMT") is None
 
 
 def test_a_wait_emet_names_is_capped_at_an_hour(environ, clock):

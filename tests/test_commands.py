@@ -258,7 +258,7 @@ def test_a_subagent_of_a_turn_another_worker_saw_refused_is_not_followed(transcr
     transcript.text("msg_2", "Started a background agent.")
     run(transcript, environ)
     assert "bg1" in state(environ)["agents"]
-    pending.refuse(storage.data_dir(environ), "session-1", prompt["uuid"], 400)
+    pending.refuse(storage.data_dir(environ), "session-1", prompt["uuid"], 400, emet.url)
     transcript.tool_use("msg_s1", "toolu_s1", "Grep", {"pattern": "x"}, path=agent_path, isSidechain=True)
     transcript.tool_result("toolu_s1", "found x", path=agent_path, isSidechain=True)
     run(transcript, environ)
@@ -272,7 +272,7 @@ def queued_batch(environ, session_id, trace_id):
 
 def test_a_queued_batch_of_a_turn_refused_in_an_earlier_run_is_dropped_unsent(environ, emet):
     root = storage.data_dir(environ)
-    pending.refuse(root, "session-0", "turn-a", 400)
+    pending.refuse(root, "session-0", "turn-a", 400, emet.url)
     queued_batch(environ, "session-0", "turn-a")
     queued_batch(environ, "session-0", "turn-b")
     assert transport.Sender(root, commands.load(environ)).flush() == 0
@@ -295,6 +295,31 @@ def test_a_refusal_holds_for_the_session_it_was_given_to_only(environ, emet):
     assert sender.refused("session-1") == set()
 
 
+def test_a_refusal_another_worker_writes_during_a_run_is_seen_at_once(environ, emet):
+    root = storage.data_dir(environ)
+    sender = transport.Sender(root, commands.load(environ))
+    late = {"conversation_id": "session-0", "trace_id": "turn-a", "spans": [], "end": True}
+    assert not sender.is_refused(late)
+    queued_batch(environ, "session-0", "turn-a")
+    # Another worker gets the refusal after this one first looked
+    pending.refuse(root, "session-0", "turn-a", 400, emet.url)
+    assert sender.refused("session-0") == {"turn-a"}
+    sender.send([late])
+    assert sender.flush() == 0
+    assert emet.requests == []
+    assert transport.queued(root) == []
+
+
+@pytest.mark.parametrize("code", [400, 403])
+def test_a_refused_turn_sent_in_batches_is_marked_once(transcript, environ, emet, monkeypatch, code):
+    monkeypatch.setattr(envelope, "MAX_SPANS_PER_BATCH", 1)
+    emet.statuses = [code]
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert len(emet.requests) == 1
+    assert len([item for item in pending.lines(storage.data_dir(environ), "session-1") if "refused" in item]) == 1
+
+
 @pytest.mark.parametrize("code", [400, 401, 403, 413])
 def test_a_refusal_is_never_counted_as_a_turn_that_could_not_be_read(transcript, environ, emet, code):
     emet.statuses = [code]
@@ -305,7 +330,7 @@ def test_a_refusal_is_never_counted_as_a_turn_that_could_not_be_read(transcript,
     assert status(environ)["last_error"]["detail"].startswith(str(code))
     assert "turn skipped" not in (root / "emet.log").read_text(encoding="utf-8")
     marks = [item for item in pending.lines(root, "session-1") if "finished" not in item]
-    assert [(item.get("refused"), item.get("status")) for item in marks] == [(prompt["uuid"], code)]
+    assert [(item.get("refused"), item.get("status"), item.get("endpoint")) for item in marks] == [(prompt["uuid"], code, emet.url)]
     assert all(item["at"] for item in marks)
 
 

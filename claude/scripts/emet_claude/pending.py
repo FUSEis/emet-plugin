@@ -6,7 +6,7 @@ turn. A finished line ends one run and counts the envelopes still in the retry q
 is above zero, a later run of any session can still add an id here. A skipped line marks a turn or
 a later addition that could not be built and was never sent, with the error's type as its reason.
 A refused line names a turn Emet refused for good, by the id the plugin sent it under, with the
-HTTP status. It holds no trace_uuid, so it is never read as a report to fetch.
+HTTP status and the endpoint that refused it. It holds no trace_uuid, so it is never read as a report to fetch.
 """
 
 from __future__ import annotations
@@ -84,9 +84,9 @@ def note(root: Path, session_id: str, trace_uuid: str, endpoint: str) -> None:
     append(root, session_id, {"trace_uuid": trace_uuid, "at": storage.now(), "endpoint": endpoint}, once=trace_uuid)
 
 
-def refuse(root: Path, session_id: str, trace_id: str, status: int) -> None:
+def refuse(root: Path, session_id: str, trace_id: str, status: int, endpoint: str) -> None:
     """Marks a turn Emet refused for good. Written by the worker that got the answer, for the session the turn belongs to."""
-    append(root, session_id, {"refused": trace_id, "at": storage.now(), "status": status})
+    append(root, session_id, {"refused": trace_id, "at": storage.now(), "status": status, "endpoint": endpoint})
 
 
 def refused(root: Path, session_id: str) -> Set[str]:

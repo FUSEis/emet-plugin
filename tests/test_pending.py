@@ -199,8 +199,8 @@ def test_readable_lines_survive_damaged_ones(environ):
 def test_a_refused_turn_is_marked_and_never_read_as_a_report_to_fetch(environ):
     pending.note(root(environ), "session-1", TRACE, "")
     # Even a refused id that has the form of Emet's own
-    pending.refuse(root(environ), "session-1", "00000000-0000-4000-8000-000000000002", 400)
-    pending.refuse(root(environ), "session-1", "turn-at-12", 413)
+    pending.refuse(root(environ), "session-1", "00000000-0000-4000-8000-000000000002", 400, "https://app.emet.so")
+    pending.refuse(root(environ), "session-1", "turn-at-12", 413, "https://app.emet.so")
     assert kept(environ) == [TRACE]
     assert pending.refused(root(environ), "session-1") == {"00000000-0000-4000-8000-000000000002", "turn-at-12"}
     marks = [item for item in pending.lines(root(environ), "session-1") if "refused" in item]

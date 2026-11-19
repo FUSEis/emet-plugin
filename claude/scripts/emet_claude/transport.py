@@ -219,14 +219,15 @@ class Sender:
         # Every envelope Emet accepted in this run, queued ones included
         self.accepted: List[Accepted] = []
         self.failures: List[Outcome] = []
-        # Per session, the traces Emet refused for good. Read from the session's own file, then added to by this run
+        # Per session, the traces Emet refused in this run. Kept here too, in case the session's file cannot be written
         self.refusals: Dict[str, Set[str]] = {}
 
     def refused(self, session_id: str) -> Set[str]:
-        """Returns the session's traces Emet refused for good, to any worker. Nothing more is sent to them."""
-        if session_id not in self.refusals:
-            self.refusals[session_id] = pending.refused(self.root, session_id)
-        return self.refusals[session_id]
+        """Returns the session's traces Emet refused for good, to any worker. Nothing more is sent to them.
+
+        Read from the session's file each time: another worker can add a refusal while this one runs.
+        """
+        return pending.refused(self.root, session_id) | self.refusals.get(session_id, set())
 
     def is_refused(self, envelope: Dict[str, Any]) -> bool:
         session_id, trace_id = turn_of(envelope)
@@ -255,9 +256,9 @@ class Sender:
             pause.clear(self.root)
             if not outcome.delivered:
                 session_id, trace_id = turn_of(envelope)
-                self.refused(session_id).add(trace_id)
+                self.refusals.setdefault(session_id, set()).add(trace_id)
                 # Kept for the envelope's own session, which may not be the one this worker runs for
-                pending.refuse(self.root, session_id, trace_id, outcome.status)
+                pending.refuse(self.root, session_id, trace_id, outcome.status, str(getattr(self.config, "endpoint", "")))
         else:
             pause.extend(self.root, outcome.retry_after)
 
