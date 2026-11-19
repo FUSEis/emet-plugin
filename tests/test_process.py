@@ -24,7 +24,7 @@ T1 = "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
 CONVERSATION = "7d3c1c52-0d0a-4a52-8d0e-0c7e3a1b2c3d"
 # Two, three and four byte characters: a pipe that is not UTF-8 would change or refuse them
 BEYOND_ASCII = "São Paulo → \U00020bb7"
-# Far above what any run here takes, with room for a slow machine
+# Above the 8 seconds an unchanged run waits before its first read, with room for a slow machine
 PROCESS_TIMEOUT_S = 60
 # Names of the developer's own session that would change what the child does
 INHERITED = ("CLAUDE_PLUGIN_OPTION_", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR", watch.ENTRYPOINT_NAME, "PYTHONPATH")
@@ -133,6 +133,17 @@ def test_a_flagged_report_ends_the_process_with_exit_2_and_the_wake_text_on_stde
     assert out == b"", "stdout of a background hook is not shown to Claude: nothing is written there"
     assert emet.polled(T1) == 1, "one read is enough for a report that is ready"
     assert outcomes(environ) == [(T1, "flagged")], "the wake is recorded before the process exits, so it is never handed over twice"
+
+
+def test_the_unchanged_command_wakes_claude_after_its_real_first_wait(
+    session: Transcript, environ: Dict[str, str], emet: FakeEmet, ready: Dict[str, Any]
+) -> None:
+    # No startup file: this run waits the real 8 seconds in the child, the test itself does not sleep
+    code, out, err = hook(environ, stop_input(session))
+    assert (code, out) == (2, b""), (
+        f"the hook exactly as Claude Code runs it exits 2 with an empty stdout for a flagged report (log: {log(environ)!r})"
+    )
+    assert err == wake_bytes(emet, ready), "the hook exactly as Claude Code runs it writes the rendered report to stderr as UTF-8 bytes"
 
 
 @pytest.mark.parametrize("word", sorted(set(report.STATUS_WORDS) - {report.FLAGGED}), ids=lambda word: f"report_is_{word}")
