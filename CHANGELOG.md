@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- A turn that the plugin's own report notice started is sent marked. When Claude takes a turn because the plugin handed it an Emet report, the turn's root span carries the attribute `emet.plugin.turn_started_by` with the value `report_wake`, and its prompt, which is Emet's report text and not a person's message, is sent as one fixed line in place of that text. To recognise such a turn the plugin reads three things: Claude Code names the turn a task notification in the session file, the prompt holds the notice's opening sentence, and the plugin recorded handing a report to Claude in the ten minutes before. Nothing hands a report to Claude yet, so no turn is marked today and every turn is sent as before.
+- The plugin keeps two more values for each delivered turn, in its own folder: Claude Code's id of the turn (`promptId` in the session file) and the time of the turn's last entry. They are written to the session's `pending.jsonl` file next to Emet's id of the turn, and wait with a turn in the retry queue. Neither is sent: they are taken off before a request is made, and Emet receives the same envelope as before.
+
 ## [0.1.4] - 2026-11-19
 
 ### Added
