@@ -79,14 +79,60 @@ PUBLIC_HOSTS = {
 }
 
 
+# Hosts only the eval harness names: the API it calls when a maintainer runs it, and the sources its README cites
+EVAL_HOSTS = {
+    "api.anthropic.com",
+    "platform.claude.com",
+    "www.anthropic.com",
+    "hamel.dev",
+    "eugeneyan.com",
+    "www.promptfoo.dev",
+    "inspect.aisi.org.uk",
+    "doi.org",
+    "proceedings.mlr.press",
+}
+# The reserved example host, for a link a made-up Emet report tells the model to open
+CASE_DATA_HOSTS = {"example.com"}
+
+
+def allowed_hosts(name):
+    """Returns the hosts a tracked file may name. The plugin and the top-level docs get the public list and nothing more."""
+    allowed = set(PUBLIC_HOSTS)
+    if name.startswith("evals/"):
+        allowed |= EVAL_HOSTS
+    if name == "evals/cases.json":
+        allowed |= CASE_DATA_HOSTS
+    return allowed
+
+
+def unlisted_hosts(name, text):
+    found = re.findall(r"https?://([A-Za-z0-9.-]+)", text.replace("\\.", "."))
+    return sorted({host.lower() for host in found} - allowed_hosts(name))
+
+
 def test_published_files_name_only_public_hosts():
     tracked = subprocess.run([str(shutil.which("git")), "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout.decode()
     for name in filter(None, tracked.split("\0")):
         if name.startswith("tests/") or name == "uv.lock":
             continue
-        text = (ROOT / name).read_text(encoding="utf-8", errors="ignore").replace("\\.", ".")
-        for host in re.findall(r"https?://([A-Za-z0-9.-]+)", text):
-            assert host.lower() in PUBLIC_HOSTS, f"{name} names {host}"
+        text = (ROOT / name).read_text(encoding="utf-8", errors="ignore")
+        assert unlisted_hosts(name, text) == [], f"{name} names {unlisted_hosts(name, text)}"
+
+
+def test_only_the_eval_folder_may_name_the_anthropic_api_and_only_its_case_data_the_example_host():
+    call = 'URL = "https://api.anthropic.com/v1/messages"'
+    for name in ("claude/scripts/emet_claude/transport.py", "claude/hooks/hooks.json", "README.md", "docs/enterprise.md", "dev/README.md"):
+        assert unlisted_hosts(name, call) == ["api.anthropic.com"]
+        assert unlisted_hosts(name, "see https://platform.claude.com/docs and https://example.com/x") == [
+            "example.com",
+            "platform.claude.com",
+        ]
+        assert unlisted_hosts(name, "https://app.emet.so/conversations") == []
+    assert unlisted_hosts("evals/client.py", call) == []
+    assert unlisted_hosts("evals/client.py", "https://example.com/verify") == ["example.com"]
+    assert unlisted_hosts("evals/cases.json", "Open https://example.com/verify and https://app.emet.so/verify") == []
+    assert unlisted_hosts("evals/cases.json", "https://internal.emet.example/x") == ["internal.emet.example"]
+    assert unlisted_hosts("evalsx/client.py", call) == ["api.anthropic.com"]
 
 
 def test_the_key_is_sensitive():
