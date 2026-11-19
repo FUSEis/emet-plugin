@@ -22,6 +22,8 @@ FLUSH_WAIT_S = 1.0
 # Subagent transcripts followed per session, newest kept
 MAX_TRACKED_AGENTS = 200
 HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
+# The hook on the user's prompt. It sends nothing and starts no worker
+PROMPT_MODE = "prompt"
 # Hooks that fire only once the current turn is over
 TURN_END_MODES = ("stop", "session-end")
 # Deliveries listed by /emet:status
@@ -336,6 +338,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if mode == "watch":
         # The one mode that can exit with another code than 0, to wake Claude for a flagged report
         return watch.run(sys.stdin.buffer.read())
+    if mode == PROMPT_MODE:
+        # Imported here, so the sender never loads the prompt hook
+        from . import missed
+
+        return missed.run(sys.stdin.buffer.read())
     if mode not in HOOK_MODES:
         return 0
     raw = sys.stdin.buffer.read()

@@ -44,6 +44,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/emet_hook.py\" prompt",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

@@ -42,17 +42,28 @@ def test_marketplace_points_at_the_plugin():
 
 
 def test_every_hook_runs_a_known_mode_of_the_shipped_script():
-    from emet_claude.commands import HOOK_MODES
+    from emet_claude.commands import HOOK_MODES, PROMPT_MODE
 
     hooks = load(PLUGIN / "hooks" / "hooks.json")["hooks"]
-    assert set(hooks) == {"SessionStart", "Stop", "SubagentStop", "SessionEnd"}
-    for groups in hooks.values():
+    assert set(hooks) == {"SessionStart", "Stop", "SubagentStop", "SessionEnd", "UserPromptSubmit"}
+    assert PROMPT_MODE not in HOOK_MODES
+    for event, groups in hooks.items():
         for group in groups:
             for hook in group["hooks"]:
                 match = re.fullmatch(r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/(scripts/emet_hook\.py)" ([a-z-]+)', hook["command"])
                 assert match, hook["command"]
                 assert (PLUGIN / match.group(1)).is_file()
-                assert match.group(2) in HOOK_MODES
+                # Only the user's prompt runs the prompt hook, and it runs nothing else
+                assert (match.group(2) == PROMPT_MODE) is (event == "UserPromptSubmit"), hook["command"]
+                assert match.group(2) in (*HOOK_MODES, PROMPT_MODE)
+
+
+def test_the_prompt_hook_runs_in_the_foreground_with_a_short_limit_and_cannot_be_made_to_block():
+    (group,) = load(PLUGIN / "hooks" / "hooks.json")["hooks"]["UserPromptSubmit"]
+    (hook,) = group["hooks"]
+    # No matcher, no "async" (its output would come too late for the prompt) and no "onFailure" (a failure must never block)
+    assert set(group) == {"hooks"} and set(hook) == {"type", "command", "timeout"}
+    assert hook["type"] == "command" and hook["timeout"] == 5
 
 
 def test_capture_mode_choices_match_the_code():
