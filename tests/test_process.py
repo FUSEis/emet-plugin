@@ -27,7 +27,7 @@ BEYOND_ASCII = "São Paulo → \U00020bb7"
 # Above the 8 seconds an unchanged run waits before its first read, with room for a slow machine
 PROCESS_TIMEOUT_S = 60
 # Names of the developer's own session that would change what the child does
-INHERITED = ("CLAUDE_PLUGIN_OPTION_", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR", watch.ENTRYPOINT_NAME, "PYTHONPATH")
+INHERITED = ("CLAUDE_PLUGIN_OPTION_", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR", watch.ENTRYPOINT_NAME, "PYTHONPATH", "PYTHONIOENCODING")
 Result = Tuple[int, bytes, bytes]
 
 
@@ -117,10 +117,19 @@ def wake_bytes(emet: FakeEmet, doc: Dict[str, Any]) -> bytes:
     return report.wake_message(doc, emet.url, SESSION, CONVERSATION).encode("utf-8")
 
 
+# What Python would encode text written to the child's streams with. The wake is written as bytes, so none of them changes it
+STREAM_ENCODINGS = [
+    pytest.param("", id="streams_as_the_system_sets_them"),
+    pytest.param("ascii", id="streams_that_refuse_all_but_ascii"),
+    pytest.param("cp1252", id="streams_in_a_windows_code_page"),
+]
+
+
+@pytest.mark.parametrize("encoding", STREAM_ENCODINGS)
 def test_a_flagged_report_ends_the_process_with_exit_2_and_the_wake_text_on_stderr(
-    session: Transcript, environ: Dict[str, str], emet: FakeEmet, ready: Dict[str, Any], at_once: Path
+    session: Transcript, environ: Dict[str, str], emet: FakeEmet, ready: Dict[str, Any], at_once: Path, encoding: str
 ) -> None:
-    code, out, err = hook(environ, stop_input(session), at_once)
+    code, out, err = hook({**environ, **({"PYTHONIOENCODING": encoding} if encoding else {})}, stop_input(session), at_once)
     expected = wake_bytes(emet, ready)
     assert BEYOND_ASCII.encode("utf-8") in expected, "the report under test must hold characters outside ASCII, or the bytes prove nothing"
     assert code == watch.WAKE_EXIT == 2, (
@@ -211,6 +220,16 @@ def test_garbage_on_stdin_ends_the_process_with_exit_0_and_no_output(environ: Di
     assert result == (0, b"", b""), "a hook must never break the session: input it cannot read ends in exit 0 with no traceback on stderr"
     assert emet.reads == [], "nothing is asked of Emet for a Stop that names no session"
     assert list((root(environ) / "state").iterdir()) == [], "a session id that is not a plain name must never name a file"
+
+
+def test_a_session_id_that_is_a_path_never_names_a_file(
+    session: Transcript, environ: Dict[str, str], emet: FakeEmet, tmp_path: Path
+) -> None:
+    # Everything else about this Stop is in order, so only the check of the id keeps it from being followed
+    result = hook(environ, stop_input(session, session_id="../escaped"))
+    assert result == (0, b"", b""), "a Stop whose session id is not a plain name is left alone: exit 0 and nothing on either stream"
+    assert list(tmp_path.rglob("*escaped*")) == [], "the session id names files, so one that is a path must never reach a file name"
+    assert emet.reads == [], "nothing is asked of Emet for a session id that is not a plain name"
 
 
 @pytest.fixture
