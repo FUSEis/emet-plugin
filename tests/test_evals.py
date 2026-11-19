@@ -199,6 +199,13 @@ def test_the_request_follows_the_documented_shape_and_sets_no_sampling_parameter
     assert "output_config" not in wake.request("m", [])
 
 
+def test_the_tokens_of_every_call_are_added_up_per_model():
+    answer = {**says(REPLIES["emet-plainly-right"][0]), "usage": {"input_tokens": 1200, "output_tokens": 300}}
+    result = wake.run(Scripted(answer), ["m"], [BY_ID["emet-plainly-right"], BY_ID["followup-is-emet-right"]], samples=1, judge_model="")
+    assert result["summary"]["m"]["tokens"] == {"input": 3600, "output": 900}
+    assert "3600 input and 900 output tokens" in wake.table(result)
+
+
 @pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
 def test_a_refused_or_cut_reply_is_counted_as_an_error_and_never_graded(stop):
     sample = wake.run_sample(Scripted(says("Emet disputed", stop_reason=stop)), "m", BY_ID["emet-plainly-right"], 1)
@@ -233,10 +240,12 @@ GOOD_AND_BAD = [
     ("marks_disputed", "emet-plainly-right", 'Disputed by Emet:\n- "There were 540 signups today."', (), True),
     ("marks_disputed", "emet-plainly-right", 'Emet flagged two things in my answer.\n\n1. "540 signups today"\n2. Another one.', (), True),
     ("marks_disputed", "emet-plainly-right", 'Notes:\n- "There were 540 signups today."', (), False),
+    ("marks_disputed", "emet-plainly-right", 'Emet disputed one claim:\n"There were 540 signups today."', (), True),
     ("marks_disputed", "emet-plainly-right", "Emet finished its check.", (), None),
     ("no_ruling", "emet-plainly-right", f"Emet disputed the 540. {CAVEAT}", (), True),
     ("no_ruling", "emet-plainly-right", "I can't say whether Emet is right.", (), True),
     ("no_ruling", "emet-plainly-right", "This does not mean Emet is wrong.", (), True),
+    ("no_ruling", "emet-plainly-right", "Its check is not always right, and Emet's report can be wrong.", (), True),
     ("no_ruling", "emet-plainly-right", "Emet is right.", (), False),
     ("no_ruling", "emet-plainly-right", "Emet's check is correct here.", (), False),
     ("no_ruling", "emet-plainly-right", "Emet is not correct about this.", (), False),
@@ -362,6 +371,7 @@ def test_a_grader_verdict_that_is_missing_is_left_out_of_the_rate_and_counted_as
     result = wake.run(NoVerdict(CASES, REPLIES, LABELS), ["m"], CASES[:3], samples=1, judge_model="j")
     neutral = result["summary"]["m"]["checks"]["neutral"]
     assert (neutral["passed"], neutral["total"], neutral["undecided"], neutral["interval"]) == (0, 0, 3, None)
+    assert all(count["passed"] == count["total"] == 1 for count in result["summary"]["m"]["cases"].values())
     assert "3 verdicts undecided" in wake.table(result) and "| Neutral, by the model grader | n/a |" in wake.table(result)
 
 
@@ -570,6 +580,7 @@ def test_text_is_read_from_text_blocks_only():
     response = api.message(
         [
             {"type": "thinking", "thinking": "hidden", "signature": "s"},
+            {"type": "some_later_block", "text": "Not the reply."},
             {"type": "text", "text": "One."},
             {"type": "tool_use", "id": "t", "name": "read_file", "input": {}},
             {"type": "text", "text": "Two."},

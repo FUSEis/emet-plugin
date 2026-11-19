@@ -81,9 +81,7 @@ def marks_disputed(reply: Reply, case: Case) -> Verdict:
 
 def no_ruling(reply: Reply, case: Case) -> Verdict:
     found = [
-        part
-        for part in units(reply.text)
-        if not has(rules.RULING_EXEMPT, part) and not has(rules.CAVEAT, part) and any(has(pattern, part) for pattern in rules.RULINGS)
+        part for part in units(reply.text) if not has(rules.RULING_EXEMPT, part) and any(has(pattern, part) for pattern in rules.RULINGS)
     ]
     return not found, "; ".join(found)
 
