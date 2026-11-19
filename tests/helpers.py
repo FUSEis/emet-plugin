@@ -156,6 +156,8 @@ class FakeEmet:
         self.gaps: List[str] = []
         # Sent as Retry-After with every send that is not accepted
         self.retry_after: Optional[str] = None
+        # The body of every send that is not accepted
+        self.error_body = b"{}"
         # Where a send answered with a redirect status points
         self.location = "/elsewhere/"
         # Report reads, kept apart from the sends; each is answered with the next (status, content type, body), then Emet's not found
@@ -171,7 +173,7 @@ class FakeEmet:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 owner.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
                 status = owner.statuses.pop(0) if owner.statuses else 202
-                reply = b"{}"
+                reply = owner.error_body
                 if status == 202:
                     owner.conversations.append(owner.reply or str(uuid.uuid4()))
                     gaps = {"missing_tool_arguments": owner.gaps, "missing_tool_results": owner.gaps}

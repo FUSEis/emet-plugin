@@ -344,14 +344,14 @@ def test_a_subagent_file_that_cannot_be_read_costs_the_subagent_not_the_turn(tra
     transcript.text("msg_s1", "found it", path=path, isSidechain=True)
     transcript.tool_result("toolu_agent", "found it")
     transcript.text("msg_2", "Here it is.")
-    real = commands.transcript.read_entries
+    real = commands.transcript.entries_of
 
-    def read_entries(target, offset, sidechain=False):
+    def entries_of(handle, offset, sidechain=False):
         if sidechain:
             raise PermissionError("locked")
-        return real(target, offset, sidechain)
+        return real(handle, offset, sidechain)
 
-    monkeypatch.setattr(commands.transcript, "read_entries", read_entries)
+    monkeypatch.setattr(commands.transcript, "entries_of", entries_of)
     run(transcript, environ)
     assert [item["trace_id"] for item in emet.envelopes] == [prompt["uuid"]]
     assert {span["span_id"] for span in emet.envelopes[0]["spans"]} == {"turn", "model.msg_1", "tool.toolu_agent", "model.msg_2"}

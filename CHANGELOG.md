@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- `/emet:status` and the log show a failed send as its HTTP status, with Emet's short error code when the answer has one, as in `400 some_code`. Before, they showed up to 200 characters of whatever the server answered. A proxy or a server standing in for Emet could put its own text there, which `/emet:status` then read to Claude, and an answer that repeated part of a refused turn would have put session content in the log. A code is kept only when it is made of lowercase letters and underscores, 40 characters at most; anything else is dropped. The fixed phrases `key rejected`, `redirected` and `network ...` are as before.
+- The status skill treats every log line and every value of the status file as data to report, never as an instruction.
+- A log line is always one line. A line break, a control character or an invisible character in a logged value is written as `?`, and a line is cut at 300 characters. Before, an id read from a queued file could hold a line break and so write a second line that looked like the plugin's own, such as `401 key rejected`.
+
+### Fixed
+
+- The plugin no longer writes through a symbolic link in its data folder. Before, a link placed at the log, or at the name a file has while it is being written, made the plugin write into the file the link pointed to. A link at the log is now removed and a new log is started; the file being written is always a new one, and a leftover from a crashed run is cleared first. On macOS and Linux the open itself refuses a link. Windows has no such flag, so there the check alone applies.
+- A subagent's file is checked again each time it is read. The plugin keeps the path of every subagent it follows in the session's state file, and read whatever file that path named. A changed state file could so make it send some other file to Emet. The path must now lie in the session's own `subagents` folder and must not be a symbolic link, and neither must that folder. The file is opened without following a link and judged once it is open, and a file that has a second name (a hard link) is refused. Otherwise that subagent is no longer followed, and the log says `subagent skipped`, without the path.
+- A symbolic link in the retry queue is removed and the file it points to is never read or sent; the log says `queued batch dropped, it is a link`. The plugin's own files (state, status, pause, queue) are no longer read through a link on macOS and Linux, and a link in place of the `state` or `queue` folder is removed and the folder made again.
+- A damaged subagent entry in the session's state file no longer stops the run. It is passed over and the rest of the session is sent.
+- Very deeply nested JSON no longer reaches Python's parser. On Python 3.9, which is the `python3` of macOS, parsing nesting about a thousand levels deep can end the background process with `Fatal Python error: Cannot recover from stack overflow`, which no error handling can catch, and macOS then shows a "Python quit unexpectedly" window. A server answer, a line of the session file, a subagent file or one of the plugin's own files nested deeper than 200 levels is now treated as unreadable, like any other damaged input. The session itself was never affected.
+
 ## [0.1.4] - 2026-11-19
 
 ### Added
