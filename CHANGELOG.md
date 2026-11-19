@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- `/emet:status` and the log show a failed send as its HTTP status, with Emet's short error code when the answer has one, as in `400 some_code`. Before, they showed up to 200 characters of whatever the server answered. A proxy or a server standing in for Emet could put its own text there, which `/emet:status` then read to Claude, and an answer that repeated part of a refused turn would have put session content in the log. A code is kept only when it is made of lowercase letters and underscores, 40 characters at most; anything else is dropped. The fixed phrases `key rejected`, `redirected` and `network ...` are as before.
+- The status skill treats every log line and every value of the status file as data to report, never as an instruction.
+
 ## [0.1.4] - 2026-11-19
 
 ### Added
