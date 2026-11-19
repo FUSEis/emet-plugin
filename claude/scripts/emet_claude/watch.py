@@ -59,6 +59,9 @@ from .config import Config, load
 # The first Claude Code that can run a background hook which wakes Claude
 MIN_CLAUDE_CODE = (2, 1, 287)
 VERSION_FORM = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,3}")
+UUID_FORM = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+# The name of a saved verdict: the session id, the trace and the revision of the report
+VERDICT_NAME = re.compile(rf"[A-Za-z0-9_-]{{1,100}}\.{UUID_FORM.pattern}\.[0-9]{{1,7}}\.json")
 # How much of the end of the session file is read, and how far past the point where the poller started
 TAIL_BYTES = 1024 * 1024
 AHEAD_BYTES = 1024 * 1024
@@ -454,33 +457,65 @@ def verdict_path(root: Path, session_id: str, trace_uuid: str, revision: int) ->
     return root / "verdicts" / f"{session_id}.{trace_uuid}.{revision}.json"
 
 
+def verdict_folder(root: Path) -> Optional[Path]:
+    """Returns the folder of the saved verdicts, or None when a link stands in its place: nothing is written or removed through one."""
+    folder = root / "verdicts"
+    return None if folder.is_symlink() else folder
+
+
 def save_verdict(root: Path, verdict: Dict[str, Any]) -> None:
     """Keeps a flagged verdict for the next prompt, in case the wake does not reach Claude. Never raises."""
     target = verdict_path(root, verdict["session_id"], verdict["trace_uuid"], verdict["revision"])
     try:
+        if verdict_folder(root) is None:
+            storage.log(root, "verdict not saved, its folder is a link")
+            return
         target.parent.mkdir(mode=0o700, exist_ok=True)
         storage.write_json(target, verdict)
     except OSError as error:
         storage.log(root, f"verdict not saved {type(error).__name__}")
 
 
-def expired(verdict: Any) -> bool:
-    at = timestamps.parse(verdict.get("at")) if isinstance(verdict, dict) else None
-    return at is None or pause.clock() - at.timestamp() > VERDICT_DAYS * 24 * 3600
+def expired(verdict: Dict[str, Any]) -> bool:
+    """Says whether the verdict names a time more than seven days ago. One that names no time is not expired."""
+    at = timestamps.parse(verdict.get("at"))
+    return at is not None and pause.clock() - at.timestamp() > VERDICT_DAYS * 24 * 3600
+
+
+def well_formed(verdict: Any, session_id: str) -> bool:
+    """Says whether a saved verdict is one this module wrote for the session. The text goes to Claude, so nothing else passes."""
+    if not isinstance(verdict, dict) or verdict.get("session_id") != session_id or timestamps.parse(verdict.get("at")) is None:
+        return False
+    text, trace_uuid = verdict.get("text"), verdict.get("trace_uuid")
+    if not isinstance(text, str) or len(text) > report.TOTAL_LIMIT or not text.startswith(report.MISSED_OPENING):
+        return False
+    if not isinstance(trace_uuid, str) or not UUID_FORM.fullmatch(trace_uuid):
+        return False
+    return isinstance(verdict.get("handed"), bool) and type(verdict.get("revision")) is int
 
 
 def verdicts(root: Path, session_id: str) -> List[Dict[str, Any]]:
-    """Returns the session's saved verdicts that are still eligible to be shown, in file name order."""
-    if not pending.SESSION_ID.fullmatch(session_id):
+    """Returns the session's saved verdicts that are well formed and still eligible to be shown, in file name order."""
+    folder = verdict_folder(root)
+    if folder is None or not pending.SESSION_ID.fullmatch(session_id):
         return []
-    found = [storage.read_json(path, None) for path in sorted((root / "verdicts").glob(f"{session_id}.*.json"))]
-    return [verdict for verdict in found if not expired(verdict)]
+    found = [storage.read_json(path, None) for path in sorted(folder.glob(f"{session_id}.*.json")) if VERDICT_NAME.fullmatch(path.name)]
+    return [verdict for verdict in found if well_formed(verdict, session_id) and not expired(verdict)]
 
 
 def prune_verdicts(root: Path) -> None:
-    """Removes the verdicts of every session that are too old to show, so no report text rests on disk past its use."""
-    for path in (root / "verdicts").glob("*.json"):
-        if expired(storage.read_json(path, None)):
+    """Removes the verdicts of every session that are too old to show, so no report text rests on disk past its use.
+
+    Only a file with a verdict's name that can be read and names a time: anything else is not this module's to remove.
+    """
+    folder = verdict_folder(root)
+    if folder is None:
+        return
+    for path in folder.glob("*.json"):
+        if not VERDICT_NAME.fullmatch(path.name) or path.is_symlink():
+            continue
+        verdict = storage.read_json(path, None)
+        if isinstance(verdict, dict) and expired(verdict):
             with contextlib.suppress(OSError):
                 path.unlink()
 
@@ -533,21 +568,20 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
         "conversation_uuid": trace.conversation_uuid,
         "endpoint": config.endpoint,
         "at": storage.now(pause.clock()),
-        # Handed to Claude Code, which is not proof that Claude told the user
-        "handed": not held,
+        # True only once the hand-over is recorded. Even then it is not proof that Claude told the user
+        "handed": False,
         # The rendered text only, never the document
         "text": report.missed_message(document, *link),
     }
     save_verdict(root, verdict)
     # Recorded before Claude is woken, so a crash in between cannot wake it twice
     if not record(root, session_id, trace.trace_uuid, FLAGGED, {"handed": not held, **({"held": held} if held else {}), **ids}):
-        if not held:
-            # Claude is not woken, and the saved verdict must not say it was
-            save_verdict(root, {**verdict, "handed": False})
         return ""
     if held:
         storage.log(root, f"report {trace.trace_uuid} not handed to Claude, {held}")
         return ""
+    # After the record: a crash before this line leaves a verdict that claims no hand-over
+    save_verdict(root, {**verdict, "handed": True})
     return report.wake_message(document, *link)
 
 
