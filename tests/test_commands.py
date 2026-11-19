@@ -1362,7 +1362,9 @@ def test_a_session_left_alone_over_its_state_file_still_sends_what_waits_in_the_
     assert transport.queued(root) == []
     assert state_file(environ).read_bytes() == newer
     assert [line["queued"] for line in pending.lines(root, "session-1") if "finished" in line] == [0, 2, 0]
-    assert status(environ)["queued"] == 0 and status(environ)["recent"][0]["session_id"] == "session-1"
+    # What the flush delivered is shown, as after any run
+    assert status(environ)["queued"] == 0
+    assert [item["session_id"] for item in status(environ)["recent"]] == ["session-1", "session-0"]
     assert (root / "emet.log").read_text(encoding="utf-8").count("session not sent") == 2
 
 

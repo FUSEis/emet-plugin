@@ -2516,8 +2516,27 @@ def test_a_verdict_file_that_grows_after_its_size_was_read_is_never_shown(enviro
         path.write_text(json.dumps(verdict_of(clock, added_later="x" * watch.VERDICT_MAX_BYTES)), encoding="utf-8")
         return found
 
+    taken = []
+    read = os.read
     monkeypatch.setattr(os, "fstat", grow)
+    monkeypatch.setattr(os, "read", lambda fd, size: taken.append(read(fd, size)) or taken[-1])
     assert read_back(environ, verdict_of(clock)) == (None, ["verdict not shown, size"])
+    # No more of it is taken into memory than shows that it is too long
+    assert sum(map(len, taken)) == watch.VERDICT_MAX_BYTES + 1
+
+
+@pytest.mark.parametrize("failing", ["fstat", "read"])
+def test_a_verdict_file_that_cannot_be_read_once_open_is_unreadable_and_is_closed(environ, clock, monkeypatch, failing):
+    closed = []
+    close = os.close
+
+    def refuse(*args):
+        raise OSError("no")
+
+    monkeypatch.setattr(os, failing, refuse)
+    monkeypatch.setattr(os, "close", lambda fd: closed.append(fd) or close(fd))
+    assert read_back(environ, verdict_of(clock)) == (None, ["verdict not shown, unreadable"])
+    assert len(closed) == 1
 
 
 def test_a_verdict_file_is_opened_once_and_judged_by_what_was_opened(environ, clock, opened, monkeypatch):
