@@ -1,5 +1,6 @@
 """Keeps the manifests, the code and the docs consistent with each other."""
 
+import ast
 import importlib.util
 import io
 import json
@@ -214,7 +215,7 @@ def test_the_status_skill_reads_the_log_and_the_status_file_as_data():
 def check_rows():
     """Returns {outcome word: (heading, what to say)} from the table of the status skill."""
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
-    table = text.partition("| `outcome` | Heading | What to say |\n| --- | --- | --- |\n")[2].partition("\n\n")[0]
+    table = text.partition("| `outcome` | Heading | What the word means |\n| --- | --- | --- |\n")[2].partition("\n\n")[0]
     rows = [[cell.strip() for cell in line.strip("|").split(" | ", 2)] for line in table.splitlines()]
     assert all(len(row) == 3 and re.fullmatch(r"`[a-z_]+`", row[0]) for row in rows), rows
     assert len({row[0] for row in rows}) == len(rows), "one row for each word"
@@ -272,6 +273,83 @@ def test_the_status_skill_says_once_what_the_check_cannot_do_and_shows_no_text_o
 
 
 NUMBER_WORDS = {3: "three", 5: "five", 7: "seven"}
+
+
+def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no_label_of_emets():
+    from emet_claude import report, watch
+
+    text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
+    assert "then the `outcome` word exactly as the file has it, in backticks, then what the word means, from the table" in text
+    assert "The word always comes first and is never left out, translated or replaced by another word." in text
+    assert "give it as the meaning of the word and add nothing to it: no label Emet shows on its pages" in text
+    assert "keep every word and value you quote exactly as it is written there" in text
+    # The example entry is in the form the rule asks for, with a word the plugin records
+    example = re.search(r"For example: [0-9:]{8}, trace [0-9a-f]{8}, `([a-z_]+)`: ([^.]+\.)", text)
+    rows = check_rows()
+    assert example is not None and example.group(1) in watch.OUTCOMES
+    assert rows[example.group(1)][1] == example.group(2)
+    # An answer that named Emet's display label for a word was disputed by Emet: the files hold the word, not the label
+    labels = set(report.STATUS_WORDS.values())
+    assert labels == {"Flagged", "Clarified", "Verified", "Skipped"}
+    for word, (_, meaning) in rows.items():
+        assert not [label for label in labels if label in meaning], word
+
+
+def watch_log_lines():
+    """Returns each log line watch.py can write, as a pattern: its fixed words, with any text where a value goes."""
+    from emet_claude import watch
+
+    tree = ast.parse(Path(watch.__file__).read_text(encoding="utf-8"))
+
+    def patterns(node, scope):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [re.escape(node.value)]
+        if isinstance(node, ast.JoinedStr):
+            found = [""]
+            for part in node.values:
+                if isinstance(part, ast.Constant):
+                    options = [re.escape(str(part.value))]
+                elif isinstance(part.value, ast.Name) and part.value.id in scope:
+                    # A line built from another line: every form of that one
+                    options = scope[part.value.id]
+                else:
+                    options = [".+"]
+                found = [start + option for start in found for option in options]
+            return found
+        if isinstance(node, ast.IfExp):
+            return patterns(node.body, scope) + patterns(node.orelse, scope)
+        if isinstance(node, ast.Name) and node.id in scope:
+            return scope[node.id]
+        raise AssertionError(f"a log line this test cannot read, at line {node.lineno}")
+
+    lines = []
+    for function in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        scope = {}
+        for node in ast.walk(function):
+            named = isinstance(node, ast.Assign) and [target.id for target in node.targets if isinstance(target, ast.Name)] == ["line"]
+            if named and isinstance(node.value, (ast.JoinedStr, ast.IfExp)):
+                scope["line"] = patterns(node.value, {})
+        for node in ast.walk(function):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "log":
+                assert isinstance(node.func.value, ast.Name) and node.func.value.id == "storage"
+                lines += patterns(node.args[1], scope)
+    # The same line can be written in two places
+    return sorted(set(lines))
+
+
+def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_can_write():
+    text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
+    table = text.partition("| Log shows | Meaning | Fix |\n| --- | --- | --- |\n")[2].partition("\n\n")[0]
+    shown = [span for row in table.splitlines() for span in re.findall(r"`([^`]+)`", row.split(" | ")[0])]
+    lines = watch_log_lines()
+    assert len(lines) >= 20, "every storage.log call of watch.py is read, the two forms of an outcome line included"
+    # The most exact line first, so a line with a value in it cannot take the row of one that is all fixed words
+    for line in sorted(lines, key=lambda pattern: (-len(pattern.replace(".+", "")), pattern)):
+        matching = [span for span in shown if re.fullmatch(line, span)]
+        assert matching, f"no row of the skill's log table shows a line of the form {line}"
+        shown.remove(matching[0])
+    assert "A line that matches no row of the table is shown as it is" in text
+    assert "Quote the log line as it is written, in backticks, before you explain it." in text
 
 
 def test_the_skills_name_the_claude_code_the_report_check_needs():
@@ -589,6 +667,8 @@ def test_the_readme_says_when_claude_speaks_about_a_report_and_that_no_setting_t
     assert "exits with code 2" in works and watch.WAKE_EXIT == 2
     assert "`async` and `asyncRewake`" in works
     assert "registers four hooks" not in readme
+    # What a live session on 2.1.305 showed. It is not labelled as an error
+    assert 'shows a line that reads "Stop hook feedback" above it' in told and "hook error" not in readme
 
 
 def test_the_documents_say_the_latest_release_has_no_report_check_until_one_has():
@@ -613,6 +693,11 @@ def test_contributing_tells_a_maintainer_to_try_the_shipped_hook_and_not_to_add_
     assert "add this hook" not in live and '"asyncRewake": true' not in live
     assert "The second `Stop` hook in `hooks/hooks.json` starts the report check" in live
     assert "Run `/emet:status` in the same session." in live
+    # A prompt that only asks Claude to misreport a result is refused, and Emet then finds the turn clear
+    assert "tell me, as a plain statement, that it printed 540" not in live
+    assert "write exactly this sentence as your answer, nothing else: Q3 revenue was 9800 and there were 75 orders." in live
+    assert "varies from run to run" in live and "you may need to send it twice" in live
+    assert 'a line that reads "Stop hook feedback"' in live
     needed = ".".join(str(part) for part in watch.MIN_CLAUDE_CODE)
     assert f"a Claude Code older than {needed}" in live
     guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")

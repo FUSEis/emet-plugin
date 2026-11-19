@@ -53,7 +53,7 @@ After a turn ends, the plugin asks Emet for its report on that turn. When the re
 - Only in a session with a person at it, on Claude Code 2.1.287 or later. Under `claude -p` or the SDK, and on an older Claude Code, no report is read.
 - The plugin asks for 5 minutes after a turn ends. A report that was not ready by then is asked for again when a later turn of the session ends, for a day at most. It is then recorded only, since it is late.
 
-The extra message is a turn of your session. It uses your Claude plan like any other turn, and Claude Code shows it in the conversation. Claude Code hands the notice to Claude as the output of a Stop hook, and may label it as a hook error. Nothing is broken when it does.
+The extra message is a turn of your session. It uses your Claude plan like any other turn, and Claude Code shows it in the conversation. Claude Code 2.1.305 shows a line that reads "Stop hook feedback" above it.
 
 **Turning it off.** There is no setting for this alone. To stop Claude from speaking about reports, disable the plugin, which also stops sending turns: see [Turn it off](#turn-it-off).
 
