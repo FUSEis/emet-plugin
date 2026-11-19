@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -95,7 +96,7 @@ def stop(transcript, environ, **fields):
 
 
 def not_polled(transcript, environ, skipped_for):
-    """Makes the next Stop of the session one the poller skips for the named reason."""
+    """Makes the next Stop of the session one the poller skips for the named reason. Any other name leaves it polled."""
     if skipped_for == "not_configured":
         del environ["CLAUDE_PLUGIN_OPTION_EMET_KEY"]
     transcript.prompt("What is 2 + 2?", **({"source": "sdk"} if skipped_for == "no_person" else {}))
@@ -230,8 +231,13 @@ def test_a_turn_still_waiting_when_the_time_is_up_is_polled_after_the_next_stop(
     emet.report(T1, 200, document())
     emet.reports[T1][0:1] = [emet.reports[T1][0]] * 13
     assert stop(session, environ) == 0
-    assert stop(session, environ) == 2
+    # The Stop of a later turn: the answer the report is about is no longer the one in view
+    assert stop(session, environ) == 0
     assert outcomes(environ) == [(T1, "timed_out", False), (T1, "flagged", True)]
+    assert [(item["handed"], item["text"].startswith(report.MISSED_OPENING)) for item in watch.verdicts(root(environ), SESSION)] == [
+        (False, True)
+    ]
+    assert watch.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
 
 
 def test_the_body_of_a_202_is_never_rendered(session, environ, emet, clock, capfdbinary):
@@ -396,7 +402,8 @@ def test_no_report_is_asked_for_during_a_pause(session, environ, emet, clock):
     assert emet.reads == [] and clock.now == start
     assert outcomes(environ) == [(T1, "paused", False)]
     clock.advance(31)
-    assert stop(session, environ) == 2
+    assert stop(session, environ) == 0
+    assert outcomes(environ)[-1] == (T1, "flagged", True) and emet.polled(T1) == 1
 
 
 def test_a_pause_another_session_starts_ends_a_run_already_polling(session, environ, emet, clock, sleeper):
@@ -629,19 +636,171 @@ def test_nothing_is_recorded_for_a_turn_a_hook_started_whatever_else_would_skip_
     assert outcomes(environ) == [(T1, skipped_for, False)]
 
 
-def test_a_second_watcher_of_a_session_leaves_at_once(session, environ, emet, clock, tmp_path):
+def watcher_lock(environ, session_id=SESSION):
+    """Stands in for a watcher of the session that is already running. Close it to let that watcher leave."""
+    running = contextlib.ExitStack()
+    assert running.enter_context(storage.try_locked(root(environ) / "state" / f"{session_id}.watch.lock"))
+    return running
+
+
+def later_stop(environ, clock, transcript, prompt_id="", named="later"):
+    """Writes what the Stop of a later turn of the session writes before it tries the lock."""
+    ended = watch.Stop(SESSION, str(transcript.path), prompt_id, transcript.path.stat().st_size, clock.now, named)
+    watch.announce(root(environ), ended)
+    return ended
+
+
+def test_a_stop_writes_its_turn_and_the_size_of_the_session_file_for_the_watcher_already_running(session, environ, emet, clock):
+    finish(environ, clock)
+    assert stop(session, environ, prompt_id="prompt-1") == 0
+    saved = json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))
+    assert re.fullmatch("[0-9a-f]{32}", saved.pop("token"))
+    assert saved == {"prompt_id": "prompt-1", "size": session.path.stat().st_size, "at": storage.now(clock.now)}
+    assert stop(session, environ, prompt_id="Tell me <a secret>") == 0
+    assert json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))["prompt_id"] == ""
+
+
+def test_a_turn_that_ends_while_a_watcher_runs_is_judged_by_its_own_stop_and_wakes_claude(
+    session, environ, emet, clock, sleeper, asked, capfdbinary
+):
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    emet.report(T2, 200, document())
+
+    def next_turn_ends():
+        session.prompt("And 3 + 3?", promptId="prompt-2")
+        session.text("msg_2", "6")
+        later_stop(environ, clock, session, "prompt-2")
+
+    sleeper.at(40, next_turn_ends)
+    sleeper.at(42, lambda: deliver(environ, clock, T2))
+    assert stop(session, environ, prompt_id="prompt-1") == 2
+    assert capfdbinary.readouterr()[1].startswith(report.WAKE_OPENING.encode())
+    (check,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T2]
+    assert (check["outcome"], check["handed"], "held" in check) == ("flagged", True, False)
+    assert [at for at, trace in asked if trace == T2] == [42]
+
+
+def test_a_turn_delivered_before_the_latest_stop_is_an_earlier_turn_and_keeps_claude_asleep(
+    session, environ, emet, clock, sleeper, capfdbinary
+):
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    # The next turn left no entry in view and is not delivered yet. Only its Stop tells
+    sleeper.at(10, lambda: later_stop(environ, clock, session))
+    assert stop(session, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
+
+
+@pytest.mark.parametrize(
+    "saved",
+    [
+        "{",
+        "[]",
+        '"x"',
+        {"token": "other", "size": 0},
+        {"token": "other", "size": 0, "at": "soon"},
+        {"token": "", "size": 0, "at": "2030-01-01T00:00:00+0000"},
+        {"token": 5, "size": 0, "at": "2030-01-01T00:00:00+0000"},
+        {"token": "other", "size": -1, "at": "2030-01-01T00:00:00+0000"},
+        {"token": "other", "size": True, "at": "2030-01-01T00:00:00+0000"},
+        {"token": "other", "size": "0", "at": "2030-01-01T00:00:00+0000"},
+        {"token": "other", "size": 0, "at": "2020-01-01T00:00:00+0000"},
+    ],
+)
+def test_a_stop_file_that_is_damaged_or_older_than_the_run_is_not_believed(session, environ, emet, clock, sleeper, saved):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    text = saved if isinstance(saved, str) else json.dumps(saved)
+    sleeper.at(4, lambda: watch.stop_path(root(environ), SESSION).write_text(text, encoding="utf-8"))
+    with watcher_lock(environ) as running:
+        sleeper.at(6, running.close)
+        assert stop(session, environ) == 2
+
+
+def test_a_stop_that_finds_a_watcher_waits_without_the_lock_and_takes_over_when_it_leaves(session, environ, emet, clock, sleeper, asked):
     deliver(environ, clock)
     emet.report(T1, 200, document())
     start = clock.now
-    with storage.try_locked(root(environ) / "state" / f"{SESSION}.watch.lock") as held:
-        assert held
+    with watcher_lock(environ) as running:
+        sleeper.at(30, running.close)
+        assert stop(session, environ) == 2
+    assert asked == [(30, T1)]
+    assert clock.now - start == 30
+    assert "watch waits, the session already has a watcher" in log(environ)
+
+
+def test_a_stop_that_takes_over_late_still_ends_five_minutes_after_it_began(session, environ, emet, clock, sleeper, asked):
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    start = clock.now
+    with watcher_lock(environ) as running:
+        sleeper.at(100, running.close)
         assert stop(session, environ) == 0
-        assert emet.reads == [] and clock.now == start
+    assert clock.now - start == 300
+    assert asked[0] == (100, T1) and len(asked) > 5
+    assert outcomes(environ) == [(T1, "timed_out", False)]
+
+
+def test_a_turn_not_ready_in_its_own_time_is_kept_for_the_next_prompt_once_a_later_turn_ends(session, environ, emet, clock, sleeper):
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    with watcher_lock(environ) as running:
+        sleeper.at(100, running.close)
+        assert stop(session, environ) == 0
+    assert outcomes(environ) == [(T1, "timed_out", False)]
+    assert watch.verdicts(root(environ), SESSION) == []
+    emet.reports[T1] = []
+    emet.report(T1, 200, document())
+    emet.report(T2, 200, document(status="clear"))
+    session.prompt("And 3 + 3?")
+    session.text("msg_2", "6")
+    sleeper.at(302, lambda: deliver(environ, clock, T2))
+    sleeper.at(302, lambda: finish(environ, clock))
+    assert stop(session, environ) == 0
+    assert outcomes(environ)[1:] == [(T1, "flagged", True), (T2, "clear", True)]
+    (verdict,) = watch.verdicts(root(environ), SESSION)
+    assert (verdict["trace_uuid"], verdict["handed"]) == (T1, False)
+
+
+def test_a_waiting_stop_leaves_when_a_later_stop_of_the_session_waits(session, environ, emet, clock, sleeper):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    start = clock.now
+    with watcher_lock(environ):
+        sleeper.at(10, lambda: later_stop(environ, clock, session))
+        assert stop(session, environ) == 0
+    assert clock.now - start == 10 and emet.reads == []
+    assert "watch left, a later Stop of the session waits" in log(environ)
+
+
+def test_a_waiting_stop_leaves_within_its_own_five_minutes_when_the_watcher_never_does(session, environ, emet, clock, tmp_path):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    start = clock.now
+    with watcher_lock(environ):
+        assert stop(session, environ) == 0
+        assert emet.reads == [] and 290 <= clock.now - start < 300
         other = Transcript(tmp_path / "projects", "session-2")
         other.prompt("Another session")
+        again = clock.now
         assert stop(other, environ) == 0
-        assert clock.now - start == 60
-    assert stop(session, environ) == 2
+        assert clock.now - again == 60
+    assert outcomes(environ) == []
+
+
+@pytest.mark.parametrize("skipped_for", ["no_person", "old_claude_code", "not_configured", "hook"])
+def test_a_stop_that_is_not_polled_never_waits_for_the_watcher_or_names_itself_the_latest(transcript, environ, emet, clock, skipped_for):
+    not_polled(transcript, environ, skipped_for)
+    start = clock.now
+    with watcher_lock(environ):
+        assert stop(transcript, environ, stop_hook_active=skipped_for == "hook") == 0
+    assert clock.now == start
+    assert not watch.stop_path(root(environ), SESSION).exists()
 
 
 def test_the_poller_never_takes_the_session_lock_or_the_queue_lock(session, environ, emet, clock, monkeypatch):
@@ -649,21 +808,26 @@ def test_the_poller_never_takes_the_session_lock_or_the_queue_lock(session, envi
     real = storage.locked
 
     def named(path):
+        # Raised before the real lock: a lock that waits would hang the test in place of failing it
+        assert path.name in ("status.lock", "pause.lock"), path.name
         taken.append(path.name)
         return real(path)
 
     deliver(environ, clock)
-    deliver(environ, clock, T2)
-    monkeypatch.setattr(storage, "locked", named)
     emet.report(T1, 429, retry_after="1")
     emet.report(T1, 200, document(status="clear"))
     emet.report(T2, 200, document())
+    monkeypatch.setattr(storage, "locked", named)
     assert stop(session, environ) == 0
     clock.advance(2)
+    monkeypatch.setattr(storage, "locked", real)
+    deliver(environ, clock, T2)
+    monkeypatch.setattr(storage, "locked", named)
     session_lock = storage.try_locked(root(environ) / "state" / f"{SESSION}.lock")
     with session_lock as first, storage.try_locked(root(environ) / "queue.lock") as second:
         assert first and second
         assert stop(session, environ) == 2
+    assert "watch error" not in log(environ)
     assert {outcome for _, outcome, _ in outcomes(environ)} == {"rate_limited", "clear", "flagged"}
     assert set(taken) == {"status.lock", "pause.lock"}
 

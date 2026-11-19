@@ -69,6 +69,8 @@ STEPS_S = (5, 10, 15, 20, 30)
 BUDGET_S = 300
 # The process ends itself here, below the hook's own limit, even when a request or a lock hangs
 HARD_STOP_S = 320
+# The time the hook that runs the poller must be given, above the hard stop
+HOOK_TIMEOUT_S = 330
 # How long the poller waits for the sender with nothing to poll
 IDLE_S = 60
 # How often the pending file is read again while waiting
@@ -154,6 +156,9 @@ class Stop:
     prompt_id: str
     # The size of the session file when the run started
     size: int
+    # When the run started, and a name of its own that tells it from the other Stops of the session
+    at: float = 0.0
+    token: str = ""
 
 
 @dataclass
@@ -253,6 +258,39 @@ def newer_turn(stop: Stop) -> bool:
     # A prompt queued during the turn can be in the file before this process starts. Told apart by the turn's id
     ids = [entry.get("promptId") for _, entry in starts]
     return bool(stop.prompt_id) and stop.prompt_id in ids and ids[-1] != stop.prompt_id
+
+
+def stop_path(root: Path, session_id: str) -> Path:
+    return root / "state" / f"{session_id}.stop.json"
+
+
+def announce(root: Path, stop: Stop) -> None:
+    """Names this Stop as the session's latest, for the watcher that may already run. Ids and numbers only. Never raises."""
+    saved = {"token": stop.token, "prompt_id": stop.prompt_id, "size": stop.size, "at": storage.now(stop.at)}
+    try:
+        storage.write_json(stop_path(root, stop.session_id), saved)
+    except OSError as error:
+        storage.log(root, f"stop not written {type(error).__name__}")
+
+
+def latest(root: Path, own: Stop) -> Stop:
+    """Returns the session's latest Stop: the one in its file, or this run's own when the file is damaged or older."""
+    saved = storage.read_json(stop_path(root, own.session_id), None)
+    if not isinstance(saved, dict):
+        return own
+    at = timestamps.parse(saved.get("at"))
+    token, size, prompt_id = saved.get("token"), saved.get("size"), saved.get("prompt_id")
+    # The stamp holds whole seconds
+    if at is None or at.timestamp() < int(own.at) or not isinstance(token, str) or token in ("", own.token):
+        return own
+    if type(size) is not int or size < 0:
+        return own
+    return Stop(own.session_id, own.transcript_path, plain(prompt_id), size, at.timestamp(), token)
+
+
+def plain(prompt_id: Any) -> str:
+    """Returns the turn's id when it is a plain name, else "". It is written to a file and compared, never trusted."""
+    return prompt_id if isinstance(prompt_id, str) and pending.SESSION_ID.fullmatch(prompt_id) else ""
 
 
 def newer_trace(root: Path, endpoint: str, session_id: str, trace_uuid: str) -> bool:
@@ -459,8 +497,9 @@ def report_ids(document: Dict[str, Any]) -> Tuple[str, int]:
 def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) -> str:
     """Records a report that is ready. Returns the text to wake Claude with, or "" when Claude is not woken.
 
-    Text is returned only for a flagged report not yet recorded, under the cap, with no newer turn
-    under way, and after it was recorded as handed over.
+    stop is the session's latest Stop. Text is returned only for a flagged report not yet recorded,
+    under the cap, of the turn that Stop ended, with no newer turn under way, and after it was
+    recorded as handed over.
     """
     session_id = stop.session_id
     status = report.status(document)
@@ -479,8 +518,9 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     held = ""
     if wakes(found) >= WAKE_CAP:
         held = CAPPED
-    # A wake that lands in a running turn is folded into it and can go unseen
-    elif newer_trace(root, config.endpoint, session_id, trace.trace_uuid) or newer_turn(stop):
+    # The sender names a turn after its Stop, so a turn delivered before the latest Stop is an earlier one.
+    # And a wake that lands in a running turn is folded into it and can go unseen
+    elif trace.at < int(stop.at) or newer_trace(root, config.endpoint, session_id, trace.trace_uuid) or newer_turn(stop):
         held = NEWER_TURN
     link = (config.endpoint, session_id, trace.conversation_uuid)
     verdict = {
@@ -541,8 +581,9 @@ def skip(root: Path, config: Config, session_id: str, outcome: str) -> str:
 def follow(root: Path, config: Config, stop: Stop) -> str:
     """Polls the session's delivered turns until none is waiting or the time is up. Returns the text to wake Claude with, or ""."""
     session_id = stop.session_id
-    start = pause.clock()
-    idle_since = start
+    # The time is counted from the Stop, also for a run that waited to take over
+    start = stop.at
+    idle_since = pause.clock()
     plans: Dict[str, Plan] = {}
     # Handled in this run, whether or not the outcome could be written
     done: Set[str] = set()
@@ -579,7 +620,8 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
             answer = read_report(config, trace.trace_uuid)
             if answer.status == 200:
                 done.add(trace.trace_uuid)
-                text = settle(root, config, stop, trace, answer.document)
+                # Read again here: a later Stop of the session can have left while this one ran
+                text = settle(root, config, latest(root, stop), trace, answer.document)
                 if text:
                     return text
             elif answer.status == 404 and answer.code in FINAL_MISSES:
@@ -602,8 +644,32 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         sleep(max(until - now, SHORTEST_SLEEP_S))
 
 
+def attend(root: Path, config: Config, stop: Stop) -> str:
+    """Polls as the session's one watcher, at once or after the one already running has left. Never waits on the lock itself.
+
+    Only the latest Stop of the session waits to take over. Its own time still ends the wait.
+    """
+    waited = False
+    while True:
+        with storage.try_locked(root / "state" / f"{stop.session_id}.watch.lock") as held:
+            if held:
+                prune_verdicts(root)
+                return follow(root, config, stop)
+        if not waited:
+            storage.log(root, "watch waits, the session already has a watcher")
+            waited = True
+        if latest(root, stop).token != stop.token:
+            storage.log(root, "watch left, a later Stop of the session waits")
+            return ""
+        if pause.clock() - stop.at + TICK_S >= BUDGET_S:
+            storage.log(root, "watch left, the watcher before it ran on")
+            return ""
+        sleep(TICK_S)
+
+
 def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     """Decides whether this Stop is polled at all, and polls. Returns the text to wake Claude with, or ""."""
+    began = pause.clock()
     hook_input = json.loads(raw or b"{}")
     if not isinstance(hook_input, dict):
         return ""
@@ -629,15 +695,10 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     if headless(found):
         storage.log(root, "watch skipped, no person is at the session")
         return skip(root, config, session_id, NO_PERSON)
-    prompt_id = hook_input.get("prompt_id")
-    stop = Stop(session_id, transcript_path, prompt_id if isinstance(prompt_id, str) else "", size)
-    # Claude Code starts this process at every Stop. One per session is enough, and it never waits for the other
-    with storage.try_locked(root / "state" / f"{session_id}.watch.lock") as held:
-        if not held:
-            storage.log(root, "watch skipped, the session already has a watcher")
-            return ""
-        prune_verdicts(root)
-        return follow(root, config, stop)
+    stop = Stop(session_id, transcript_path, plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex)
+    # Written before the lock is tried: the watcher already running judges this turn by it
+    announce(root, stop)
+    return attend(root, config, stop)
 
 
 def run(raw: bytes, environ: Mapping[str, str] = os.environ) -> int:
