@@ -55,7 +55,9 @@ def named(header: Optional[str]) -> Optional[float]:
     """Returns the seconds a Retry-After header asks for, as seconds or as a date, or None when it names none."""
     value = (header or "").strip()
     if value.isascii() and value.isdigit():
-        return float(min(int(value), RETRY_AFTER_MAX_S))
+        digits = value.lstrip("0")
+        # Python refuses to read a number of thousands of digits, and five digits already pass the longest wait
+        return float(RETRY_AFTER_MAX_S if len(digits) > 4 else min(int(digits or "0"), RETRY_AFTER_MAX_S))
     try:
         at = parsedate_to_datetime(value)
     except (TypeError, ValueError, IndexError, OverflowError):

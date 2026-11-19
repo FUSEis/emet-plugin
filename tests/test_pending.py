@@ -196,6 +196,35 @@ def test_readable_lines_survive_damaged_ones(environ):
     assert all(isinstance(item, dict) for item in pending.lines(root(environ), "session-1"))
 
 
+def test_a_refused_turn_is_marked_and_never_read_as_a_report_to_fetch(environ):
+    pending.note(root(environ), "session-1", TRACE, "")
+    # Even a refused id that has the form of Emet's own
+    pending.refuse(root(environ), "session-1", "00000000-0000-4000-8000-000000000002", 400)
+    pending.refuse(root(environ), "session-1", "turn-at-12", 413)
+    assert kept(environ) == [TRACE]
+    assert pending.refused(root(environ), "session-1") == {"00000000-0000-4000-8000-000000000002", "turn-at-12"}
+    marks = [item for item in pending.lines(root(environ), "session-1") if "refused" in item]
+    assert [(item["refused"], item["status"], "trace_uuid" in item, bool(item["at"])) for item in marks] == [
+        ("00000000-0000-4000-8000-000000000002", 400, False, True),
+        ("turn-at-12", 413, False, True),
+    ]
+
+
+@pytest.mark.parametrize("line", ['{"refused": ["x"]}', '{"refused": ""}', '{"refused": null}', '{"refused": 5}', '{"trace_uuid": "x"}'])
+def test_a_damaged_refused_line_marks_nothing(environ, line):
+    pending.path(root(environ), "session-1").write_text(line + "\n", encoding="utf-8")
+    assert pending.refused(root(environ), "session-1") == set()
+    assert pending.refused(root(environ), "../session-1") == set()
+
+
+def test_a_refusal_that_cannot_be_written_still_holds_for_the_run(tmp_path):
+    sender = transport.Sender(tmp_path / "missing", None)
+    refused = {"conversation_id": "session-1", "trace_id": "turn-a", "spans": [], "end": True}
+    sender.record(refused, transport.Outcome(400, False, True, ""))
+    assert sender.refused("session-1") == {"turn-a"}
+    assert sender.is_refused(refused)
+
+
 def test_a_line_cut_short_without_a_newline_does_not_swallow_the_next_one(environ):
     path = pending.path(root(environ), "session-1")
     path.write_bytes(b'{"trace_uuid": "0f0e6c6e')

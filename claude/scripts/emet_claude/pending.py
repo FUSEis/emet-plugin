@@ -5,6 +5,8 @@ read the file while a worker is still sending. A trace line names the endpoint t
 turn. A finished line ends one run and counts the envelopes still in the retry queue: while that
 is above zero, a later run of any session can still add an id here. A skipped line marks a turn or
 a later addition that could not be built and was never sent, with the error's type as its reason.
+A refused line names a turn Emet refused for good, by the id the plugin sent it under, with the
+HTTP status. It holds no trace_uuid, so it is never read as a report to fetch.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Union
+from typing import Any, Dict, Iterator, List, Set, Union
 
 from . import storage
 
@@ -80,6 +82,16 @@ def append(root: Path, session_id: str, item: Dict[str, Union[str, int]], once: 
 def note(root: Path, session_id: str, trace_uuid: str, endpoint: str) -> None:
     """Keeps the id of a turn whose last batch Emet accepted."""
     append(root, session_id, {"trace_uuid": trace_uuid, "at": storage.now(), "endpoint": endpoint}, once=trace_uuid)
+
+
+def refuse(root: Path, session_id: str, trace_id: str, status: int) -> None:
+    """Marks a turn Emet refused for good. Written by the worker that got the answer, for the session the turn belongs to."""
+    append(root, session_id, {"refused": trace_id, "at": storage.now(), "status": status})
+
+
+def refused(root: Path, session_id: str) -> Set[str]:
+    """Returns the ids of the session's turns Emet refused for good, as the plugin sent them."""
+    return {item["refused"] for item in lines(root, session_id) if isinstance(item.get("refused"), str) and item["refused"]}
 
 
 @contextlib.contextmanager

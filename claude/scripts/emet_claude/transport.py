@@ -12,7 +12,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import VERSION, pause, pending, storage
 from .config import Config
@@ -75,10 +75,15 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
                 reply = response.read(MAX_REPLY_BYTES)
             return Outcome(response.status, True, True, "", accepted_conversation(reply), accepted_trace(reply))
     except urllib.error.HTTPError as error:
-        body = error.read(500).decode("utf-8", "replace")
+        body = b""
+        # The status is the answer; a body that cannot be read changes nothing
+        with contextlib.suppress(OSError, http.client.HTTPException):
+            body = error.read(500)
         final = error.code < 500 and error.code not in RETRYABLE
-        return Outcome(error.code, False, final, body, retry_after=pause.named(error.headers.get("Retry-After")))
-    except (urllib.error.URLError, OSError) as error:
+        detail = body.decode("utf-8", "replace")
+        return Outcome(error.code, False, final, detail, retry_after=pause.named(error.headers.get("Retry-After")))
+    # HTTPException: an answer that is not HTTP, as a broken proxy gives
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
         return Outcome(0, False, False, type(error).__name__)
 
 
@@ -185,6 +190,11 @@ def enqueue(root: Path, envelope: Dict[str, Any]) -> None:
             storage.log(root, f"queue full, dropped {oldest.name}")
 
 
+def turn_of(envelope: Dict[str, Any]) -> Tuple[str, str]:
+    """Returns the session and the trace id an envelope was built for."""
+    return str(envelope.get("conversation_id") or ""), str(envelope.get("trace_id") or "")
+
+
 def describe(outcome: Outcome) -> str:
     if outcome.delivered:
         return str(outcome.status)
@@ -209,8 +219,18 @@ class Sender:
         # Every envelope Emet accepted in this run, queued ones included
         self.accepted: List[Accepted] = []
         self.failures: List[Outcome] = []
-        # Traces Emet refused for good in this run. Nothing more is sent to them
-        self.refused: Set[str] = set()
+        # Per session, the traces Emet refused for good. Read from the session's own file, then added to by this run
+        self.refusals: Dict[str, Set[str]] = {}
+
+    def refused(self, session_id: str) -> Set[str]:
+        """Returns the session's traces Emet refused for good, to any worker. Nothing more is sent to them."""
+        if session_id not in self.refusals:
+            self.refusals[session_id] = pending.refused(self.root, session_id)
+        return self.refusals[session_id]
+
+    def is_refused(self, envelope: Dict[str, Any]) -> bool:
+        session_id, trace_id = turn_of(envelope)
+        return trace_id in self.refused(session_id)
 
     def held(self) -> bool:
         """Says whether requests wait, checking the shared pause until this run is blocked."""
@@ -234,13 +254,16 @@ class Sender:
             # Emet answered, so it can be reached
             pause.clear(self.root)
             if not outcome.delivered:
-                self.refused.add(str(envelope.get("trace_id")))
+                session_id, trace_id = turn_of(envelope)
+                self.refused(session_id).add(trace_id)
+                # Kept for the envelope's own session, which may not be the one this worker runs for
+                pending.refuse(self.root, session_id, trace_id, outcome.status)
         else:
             pause.extend(self.root, outcome.retry_after)
 
     def send(self, envelopes: List[Dict[str, Any]]) -> None:
         for envelope in envelopes:
-            if str(envelope["trace_id"]) in self.refused:
+            if self.is_refused(envelope):
                 storage.log(self.root, f"trace {envelope['trace_id']} was refused, batch not sent")
                 continue
             if self.held():
@@ -267,7 +290,11 @@ class Sender:
                 if self.held():
                     return len(files) - index
                 envelope = storage.read_json(path, None)
-                if not isinstance(envelope, dict) or str(envelope.get("trace_id")) in self.refused:
+                if not isinstance(envelope, dict):
+                    remove(path)
+                    continue
+                if self.is_refused(envelope):
+                    storage.log(self.root, f"trace {envelope.get('trace_id')} was refused, queued batch dropped")
                     remove(path)
                     continue
                 outcome = post(self.config, envelope)

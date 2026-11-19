@@ -1,3 +1,4 @@
+import email.message
 import http.client
 import io
 import json
@@ -5,6 +6,7 @@ import os
 import stat
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -221,6 +223,146 @@ def test_a_turn_is_no_longer_followed_once_an_addition_to_it_is_refused(transcri
     assert kept(environ) == [emet.trace_uuids[prompt["uuid"]]]
 
 
+def test_a_queued_turn_another_session_saw_refused_is_no_longer_followed_by_its_own(tmp_path, environ, emet, clock):
+    owner, other = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    emet.statuses = [503]
+    refused = finished_turn(owner)
+    run(owner, environ)
+    clock.advance(60)
+    # The other session's worker retries the queued turn, and is the one Emet refuses it to
+    emet.statuses = [400]
+    finished_turn(other)
+    run(other, environ)
+    root = storage.data_dir(environ)
+    assert pending.refused(root, "session-0") == {refused["uuid"]}
+    assert pending.refused(root, "session-1") == set()
+    owner.text("msg_late", "one more thing")
+    run(owner, environ)
+    assert [env["trace_id"] for env in emet.envelopes].count(refused["uuid"]) == 2
+    assert status(environ)["queued"] == 0
+    saved = json.loads((root / "state" / "session-0.json").read_text(encoding="utf-8"))
+    assert saved["last_trace"] == ""
+    assert pending.traces(root, "session-0") == []
+    # The session goes on with the next turn
+    following = finished_turn(owner, "next", "ok")
+    run(owner, environ)
+    assert emet.envelopes[-1]["trace_id"] == following["uuid"]
+
+
+def test_a_subagent_of_a_turn_another_worker_saw_refused_is_not_followed(transcript, environ, emet):
+    prompt = transcript.prompt("research in the background")
+    transcript.tool_use("msg_1", "toolu_agent", "Agent", {"prompt": "dig", "run_in_background": True})
+    agent_path = transcript.subagent("bg1", "toolu_agent")
+    transcript.write({"type": "user", "isSidechain": True, "message": {"role": "user", "content": "dig"}}, agent_path)
+    transcript.tool_result("toolu_agent", "Async agent launched")
+    transcript.text("msg_2", "Started a background agent.")
+    run(transcript, environ)
+    assert "bg1" in state(environ)["agents"]
+    pending.refuse(storage.data_dir(environ), "session-1", prompt["uuid"], 400)
+    transcript.tool_use("msg_s1", "toolu_s1", "Grep", {"pattern": "x"}, path=agent_path, isSidechain=True)
+    transcript.tool_result("toolu_s1", "found x", path=agent_path, isSidechain=True)
+    run(transcript, environ)
+    assert len(emet.requests) == 1
+    assert state(environ)["agents"] == {}
+
+
+def queued_batch(environ, session_id, trace_id):
+    transport.enqueue(storage.data_dir(environ), {"conversation_id": session_id, "trace_id": trace_id, "spans": [], "end": True})
+
+
+def test_a_queued_batch_of_a_turn_refused_in_an_earlier_run_is_dropped_unsent(environ, emet):
+    root = storage.data_dir(environ)
+    pending.refuse(root, "session-0", "turn-a", 400)
+    queued_batch(environ, "session-0", "turn-a")
+    queued_batch(environ, "session-0", "turn-b")
+    assert transport.Sender(root, commands.load(environ)).flush() == 0
+    assert [env["trace_id"] for env in emet.envelopes] == ["turn-b"]
+    assert transport.queued(root) == []
+    assert "trace turn-a was refused, queued batch dropped" in (root / "emet.log").read_text(encoding="utf-8")
+
+
+def test_a_refusal_holds_for_the_session_it_was_given_to_only(environ, emet):
+    """A forked session sends its copied turns under the ids the first session used."""
+    root = storage.data_dir(environ)
+    queued_batch(environ, "session-0", "turn-a")
+    queued_batch(environ, "session-1", "turn-a")
+    emet.statuses = [400]
+    sender = transport.Sender(root, commands.load(environ))
+    assert sender.flush() == 0
+    assert [env["conversation_id"] for env in emet.envelopes] == ["session-0", "session-1"]
+    assert pending.refused(root, "session-0") == {"turn-a"}
+    assert pending.refused(root, "session-1") == set()
+    assert sender.refused("session-1") == set()
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 413])
+def test_a_refusal_is_never_counted_as_a_turn_that_could_not_be_read(transcript, environ, emet, code):
+    emet.statuses = [code]
+    prompt = finished_turn(transcript)
+    run(transcript, environ)
+    root = storage.data_dir(environ)
+    assert "skipped_turns" not in status(environ)
+    assert status(environ)["last_error"]["detail"].startswith(str(code))
+    assert "turn skipped" not in (root / "emet.log").read_text(encoding="utf-8")
+    marks = [item for item in pending.lines(root, "session-1") if "finished" not in item]
+    assert [(item.get("refused"), item.get("status")) for item in marks] == [(prompt["uuid"], code)]
+    assert all(item["at"] for item in marks)
+
+
+def outage(kind):
+    def urlopen(request, timeout=None):
+        if kind == "timeout":
+            raise TimeoutError
+        if kind == "refused":
+            raise ConnectionRefusedError
+        if kind == "not http":
+            raise http.client.BadStatusLine("garbage")
+        body = CutOff() if kind == "body cut off" else io.BytesIO(b"")
+        raise urllib.error.HTTPError(request.full_url, 503, "Service Unavailable", email.message.Message(), body)
+
+    return urlopen
+
+
+class CutOff(io.BytesIO):
+    """The body of an answer whose connection closed early."""
+
+    def read(self, *args):
+        raise http.client.IncompleteRead(b"")
+
+
+@pytest.mark.parametrize("kind", ["timeout", "refused", "not http", "503", "body cut off"])
+def test_an_outage_is_never_counted_as_a_turn_that_could_not_be_read(transcript, environ, clock, monkeypatch, kind):
+    monkeypatch.setattr(transport.urllib.request, "urlopen", outage(kind))
+    finished_turn(transcript)
+    finished_turn(transcript, "next", "ok")
+    run(transcript, environ)
+    root = storage.data_dir(environ)
+    assert status(environ)["queued"] == 2
+    assert "skipped_turns" not in status(environ)
+    assert status(environ)["last_error"]
+    assert pause.until(root)
+    log = (root / "emet.log").read_text(encoding="utf-8")
+    assert "turn skipped" not in log and "worker error" not in log
+    assert [item for item in pending.lines(root, "session-1") if "finished" not in item] == []
+
+
+def test_an_error_while_sending_is_not_taken_for_a_turn_that_could_not_be_built(transcript, environ, emet, monkeypatch):
+    def broken(config, envelope):
+        raise RuntimeError("the secret plan")
+
+    monkeypatch.setattr(transport, "post", broken)
+    prompt = finished_turn(transcript)
+    commands.run_worker("stop", json.dumps(transcript.hook_input()).encode(), environ)
+    root = storage.data_dir(environ)
+    log = (root / "emet.log").read_text(encoding="utf-8")
+    assert "worker error RuntimeError" in log and "turn skipped" not in log
+    assert all("skipped" not in item for item in pending.lines(root, "session-1"))
+    # The turn was not passed over: the next run sends it
+    monkeypatch.undo()
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [prompt["uuid"]]
+
+
 def test_the_queue_is_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(transport, "QUEUE_MAX_FILES", 3)
     root = storage.data_dir({"CLAUDE_PLUGIN_DATA": str(tmp_path)})
@@ -318,6 +460,15 @@ def test_key_check_is_not_asked_during_a_pause(environ, emet):
     assert emet.reads == []
     assert not (root / "status.json").exists()
     assert "key check skipped, paused" in (root / "emet.log").read_text(encoding="utf-8")
+
+
+def test_key_check_asks_no_host_other_than_emet(environ, emet, monkeypatch):
+    asked = []
+    monkeypatch.setattr(transport, "check_key", lambda config: asked.append(config.endpoint) or "accepted")
+    environ["CLAUDE_PLUGIN_OPTION_ENDPOINT"] = "https://emet.example.com"
+    commands.run_worker("session-start", b"{}", environ)
+    assert asked == []
+    assert not (storage.data_dir(environ) / "status.json").exists()
 
 
 def test_status_and_log_never_hold_the_key_or_content(transcript, environ, emet):

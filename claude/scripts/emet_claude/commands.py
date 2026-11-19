@@ -165,6 +165,8 @@ def update_status(
 
 def check_key(root: Path, config: Config) -> None:
     """Asks Emet whether the key is accepted, with one read that sends no trace. Not asked during a pause."""
+    if config.problem:
+        return
     if pause.until(root):
         storage.log(root, "key check skipped, paused")
         return
@@ -281,7 +283,7 @@ def process(
             agent["offset"] = agent_end
 
         state["offset"] = offset
-        forget(state, sender.refused)
+        forget(state, sender.refused(session_id))
         storage.write_json(state_file, state)
         update_status(root, config, sender.accepted, skipped, **last_error(sender))
 
