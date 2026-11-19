@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from emet_claude import commands, config, missed, pending, report, storage, timestamps, watch
+from emet_claude.transcript import WAKE_WINDOW_S
 from helpers import WAKE_WRAPPER, Transcript
 from test_report import claim, document
 
@@ -72,7 +73,7 @@ def save(environ, at, trace=T2, session=SESSION, name=None, **changed):
     verdict.setdefault("text", report.missed_message(flagged(), verdict["endpoint"], verdict["session_id"], verdict["conversation_uuid"]))
     folder = root(environ) / "verdicts"
     folder.mkdir(exist_ok=True)
-    (folder / (name or f"{session}.{trace}.1.json")).write_text(json.dumps(verdict), encoding="utf-8")
+    (folder / (name or f"{session}.{trace}.{verdict['revision']}.json")).write_text(json.dumps(verdict), encoding="utf-8")
     return verdict
 
 
@@ -354,11 +355,59 @@ def test_the_line_for_the_user_is_fixed_words_whatever_the_report_holds(session,
     assert "Spend" not in shown["systemMessage"] and BEYOND_ASCII not in shown["systemMessage"]
 
 
+# One word no other text of the plugin holds, for each part of a report that reaches the verdict's text
+MARKS = {
+    "answer_starts": "Quillfeather",
+    "stated_in": "Zanthoxylum",
+    "claim": "Brumehollow",
+    "reason": "Vexillarium",
+    "correction": "Oxbowlantern",
+}
+# Shorter than any id, time or link a file of the plugin holds next to a word of the verdict
+RUN = 24
+
+
+def marked():
+    """A flagged report with a word of its own in the answer, the passage, the claim, the reason and the correction."""
+    answer = f"{MARKS['answer_starts']} opens the answer. {MARKS['stated_in']} rose 12% in March."
+    start = answer.index(MARKS["stated_in"])
+    disputed = claim(
+        1,
+        "disputed",
+        f"{MARKS['claim']} rose 12%.",
+        (start, len(answer)),
+        reason=f"The export of {MARKS['reason']} shows 9%.",
+        correction=f"{MARKS['correction']} rose 9%.",
+    )
+    return document([disputed], answer=answer)
+
+
 def test_the_log_the_checks_file_and_the_status_file_hold_no_text_of_the_verdict(session, environ, clock, capfdbinary):
-    held(environ, clock.now)
-    assert run(session, environ, capfdbinary)
-    for path in (path for path in root(environ).rglob("*") if path.is_file()):
-        assert "Spend" not in path.read_text(encoding="utf-8"), f"{path.name} holds text from the report after the showing"
+    text = report.missed_message(marked(), ENDPOINT, SESSION, CONVERSATION)
+    data = json.loads(text.partition(f"{report.OPEN}\n")[2].partition(f"\n{report.CLOSE}")[0])
+    assert {"answer_starts": data["answer_starts"], **data["claims"][0]}.keys() >= set(MARKS), "every part of a report is in the text"
+    for part, mark in MARKS.items():
+        assert mark in ({"answer_starts": data["answer_starts"], **data["claims"][0]})[part], part
+    # A verdict that is shown, one a prompt could not carry, and one removed because Claude was woken with it
+    verdict = held(environ, clock.now, text=text)
+    assert run(session, environ, capfdbinary) == expected(verdict)
+    held(environ, clock.now, T1, text=text)
+    assert run(session, environ, capfdbinary, "/clear", "prompt-3") == b""
+    check(environ, clock.now, T3, handed=True)
+    save(environ, clock.now, T3, handed=True, text=text)
+    session.notice(WAKE_WRAPPER + report.wake_message(marked(), ENDPOINT, SESSION, CONVERSATION))
+    clock.advance(60)
+    assert run(session, environ, capfdbinary, prompt_id="prompt-4") == expected({"text": text})
+    assert files(environ) == [], "all three files are gone, so every file left is one that must hold no text"
+    kept = [path for path in root(environ).rglob("*") if path.is_file()]
+    assert {"emet.log", "status.json", f"{SESSION}.checks.jsonl"} <= {path.name for path in kept}
+    runs = {text[start : start + RUN] for start in range(len(text) - RUN + 1)}
+    for path in kept:
+        held_text = path.read_text(encoding="utf-8")
+        for part, mark in MARKS.items():
+            assert mark not in held_text, f"{path.name} holds the {part} of the report"
+        leaked = [found for found in runs if found in held_text]
+        assert leaked == [], f"{path.name} holds {RUN} characters in a row of the verdict's text: {leaked[:1]}"
 
 
 def test_a_verdict_the_poller_did_not_record_is_left_for_the_poller(session, environ, clock, capfdbinary):
@@ -476,10 +525,10 @@ def test_a_compaction_before_the_verdict_does_not_hold_it_back(session, environ,
     assert run(session, environ, capfdbinary) == expected(verdict)
 
 
-def handed(environ, clock):
+def handed(environ, clock, trace=T2):
     """A flagged report the poller handed to Claude Code now: its line, and its file as the poller leaves it."""
-    check(environ, clock.now, handed=True)
-    return save(environ, clock.now, handed=True)
+    check(environ, clock.now, trace, handed=True)
+    return save(environ, clock.now, trace, handed=True)
 
 
 def wake_text(verdict):
@@ -614,7 +663,7 @@ def test_nothing_is_shown_with_a_prompt_that_names_no_id(session, environ, clock
     assert "verdict not shown, the prompt names no id" in log(environ)
 
 
-def test_the_hook_takes_no_lock_with_a_wait_and_only_tries_the_status_lock(session, environ, emet, clock, capfdbinary, monkeypatch):
+def test_the_hook_takes_no_lock_with_a_wait_and_tries_only_the_three_it_needs(session, environ, emet, clock, capfdbinary, monkeypatch):
     tried = []
     real = storage.try_locked
 
@@ -626,8 +675,116 @@ def test_the_hook_takes_no_lock_with_a_wait_and_only_tries_the_status_lock(sessi
     verdict = held(environ, clock.now)
     # The autouse fixture fails this test if any lock is taken with a wait
     assert run(session, environ, capfdbinary) == expected(verdict)
-    assert tried == ["status.lock"], "never the watcher lock, the session lock or the queue lock, with or without a wait"
+    assert tried == [f"{SESSION}.prompt.lock", f"{SESSION}.watch.lock", "status.lock"], (
+        "never the session lock, the queue lock or the pending lock, and the watcher lock is only tried"
+    )
+    with real(root(environ) / "state" / f"{SESSION}.watch.lock") as free:
+        assert free, "and is let go at once, so the next Stop finds no watcher"
     assert emet.requests == [] and emet.reads == [], "and no request"
+
+
+def test_two_prompts_of_a_session_that_overlap_cannot_both_take_the_verdict(session, environ, clock, capfdbinary):
+    verdict = held(environ, clock.now)
+    with storage.try_locked(root(environ) / "state" / f"{SESSION}.prompt.lock") as alone:
+        assert alone
+        # The other prompt is between choosing the verdict and recording it
+        assert run(session, environ, capfdbinary) == b"", "a prompt that finds another one at work shows nothing"
+    assert "verdict not shown, another prompt of the session is being checked" in log(environ)
+    assert files(environ) == [f"{SESSION}.{T2}.1.json"] and lines(environ) == [(T2, "flagged")]
+    assert run(session, environ, capfdbinary, prompt_id="prompt-3") == expected(verdict), "the verdict waits for the next prompt"
+
+
+def test_a_handed_verdict_is_not_judged_while_a_watcher_of_the_session_runs(session, environ, clock, capfdbinary):
+    clock.advance(20)
+    verdict = handed(environ, clock)
+    # The poller recorded the hand-over and was held up before it wrote its wake, for far longer than the grace
+    clock.advance(3600)
+    with storage.try_locked(root(environ) / "state" / f"{SESSION}.watch.lock") as watching:
+        assert watching
+        assert run(session, environ, capfdbinary) == b"", "its wake can still come, so showing the verdict could tell Claude twice"
+        assert files(environ) == [f"{SESSION}.{T2}.1.json"] and lines(environ) == [(T2, "flagged")]
+    assert run(session, environ, capfdbinary, prompt_id="prompt-3") == expected(verdict), "with no watcher left, the wake was lost"
+
+
+def test_a_verdict_not_handed_over_is_shown_whether_or_not_a_watcher_runs(session, environ, clock, capfdbinary):
+    verdict = held(environ, clock.now)
+    with storage.try_locked(root(environ) / "state" / f"{SESSION}.watch.lock") as watching:
+        assert watching
+        assert run(session, environ, capfdbinary) == expected(verdict), "a watcher of a later turn must not hold a missed verdict back"
+
+
+def test_a_later_revision_of_a_report_already_shown_is_shown_as_a_report_of_its_own(session, environ, clock, capfdbinary):
+    first = held(environ, clock.now)
+    assert run(session, environ, capfdbinary) == expected(first)
+    clock.advance(60)
+    # Emet checked the turn again and the poller recorded and saved the new revision
+    check(environ, clock.now, handed=False, held=watch.LATE, revision=2)
+    second = save(environ, clock.now, revision=2)
+    assert files(environ) == [f"{SESSION}.{T2}.2.json"]
+    assert run(session, environ, capfdbinary, prompt_id="prompt-3") == expected(second), "the user never got this report"
+    assert run(session, environ, capfdbinary, prompt_id="prompt-4") == b""
+    shown = [(item["revision"], item["prompt_id"]) for item in watch.checks(root(environ), SESSION) if item["outcome"] == "shown"]
+    assert shown == [(1, "prompt-2"), (2, "prompt-3")]
+
+
+def quoted_in_a_prompt(transcript, text):
+    transcript.prompt(f"What does this mean? {text}", promptId="prompt-2")
+
+
+def quoted_in_a_tool_result(transcript, text):
+    transcript.tool_use("msg_2", "toolu_1", "Bash", {"command": "cat emet.log"})
+    transcript.tool_result("toolu_1", text)
+
+
+def quoted_in_an_answer(transcript, text):
+    transcript.text("msg_2", text)
+
+
+def a_notice_a_person_is_named_for(transcript, text):
+    transcript.notice(text, promptSource="typed")
+
+
+def a_prompt_a_person_queued(transcript, text):
+    transcript.write({"type": "attachment", "attachment": {"type": "queued_command", "prompt": f"See: {report.WAKE_OPENING}"}})
+
+
+def another_kind_of_attachment(transcript, text):
+    transcript.write({"type": "attachment", "attachment": {"type": "hook_additional_context", "content": [text]}})
+
+
+NOT_WAKES = [quoted_in_a_prompt, quoted_in_a_tool_result, quoted_in_an_answer, a_notice_a_person_is_named_for]
+NOT_WAKES += [a_prompt_a_person_queued, another_kind_of_attachment]
+
+
+@pytest.mark.parametrize("write", NOT_WAKES)
+def test_the_sentence_of_a_wake_anywhere_but_in_a_wake_does_not_stand_in_for_one(session, environ, clock, capfdbinary, write):
+    clock.advance(20)
+    verdict = handed(environ, clock)
+    clock.advance(5)
+    write(session, WAKE_WRAPPER + wake_text(verdict))
+    clock.advance(60)
+    assert run(session, environ, capfdbinary) == expected(verdict), "only an entry that is a wake proves Claude was woken"
+
+
+def test_a_wake_long_after_the_hand_over_is_not_that_verdicts_wake(session, environ, clock, capfdbinary):
+    clock.advance(20)
+    verdict = handed(environ, clock)
+    clock.advance(WAKE_WINDOW_S + 1)
+    session.notice(WAKE_WRAPPER + wake_text(verdict))
+    clock.advance(60)
+    assert run(session, environ, capfdbinary) == expected(verdict), (
+        "a wake starts its turn at once, so a much later one is another report's"
+    )
+
+
+def test_a_folded_wake_written_as_plain_text_is_recognised_too(session, environ, clock, capfdbinary):
+    clock.advance(20)
+    verdict = handed(environ, clock)
+    clock.advance(1)
+    session.write({"type": "attachment", "attachment": {"type": "queued_command", "prompt": WAKE_WRAPPER + wake_text(verdict)}})
+    clock.advance(60)
+    assert run(session, environ, capfdbinary) == b""
+    assert files(environ) == []
 
 
 def test_the_hook_needs_no_key_and_asks_emet_nothing(session, environ, emet, clock, capfdbinary, monkeypatch):

@@ -1,13 +1,14 @@
 """Gives Claude a flagged verdict whose wake was held back or lost, with the next prompt the user sends.
 
 Runs in the foreground at every prompt (UserPromptSubmit), so the session waits for it. It reads
-the plugin's own files and the end of the session file, makes no request and waits for no lock.
+the plugin's own files and the end of the session file, makes no request and waits for no lock:
+the locks it needs are tried, and one that is not free means nothing is shown at this prompt.
 It always exits 0. It prints nothing, or one JSON object that adds context for Claude and one line
 for the user. It never sets a field that can block or change the prompt.
 
 The checks file decides, and the verdict file only supplies the text. A verdict is shown when
-its `flagged` line says Claude was not woken ("handed" false), or says it was and the session file
-holds no trace of that wake. It is shown once, in the session that produced it, one per prompt,
+its `flagged` line says Claude was not woken ("handed" false), or says it was, no watcher of the
+session is still running, and the session file holds no wake since. It is shown once, in the session that produced it, one per prompt,
 the newest first, and at most SHOW_CAP times in a session. The showing is recorded as `shown`
 before anything is printed, and the file is removed then, so a crash can lose a showing and never
 repeat one.
@@ -33,6 +34,9 @@ HANDED_GRACE_S = 10
 NOT_A_PROMPT = ("/", "!")
 # Shown to the user by Claude Code (systemMessage). Fixed words, never text from a report
 USER_LINE = "Emet disputed a claim in an earlier answer of this session. Claude was given Emet's report with this prompt."
+
+# How a wake begins, as report.render writes it, with its line break as a space
+WAKE_START = f"{report.WAKE_OPENING} {report.WAKE_NOTICE}"
 
 Entries = List[Tuple[int, Dict[str, Any]]]
 
@@ -65,11 +69,21 @@ def strings(value: Any) -> Iterator[str]:
             waiting.extend(item)
 
 
+def folded(entry: Dict[str, Any]) -> bool:
+    """Says whether the entry is a wake that landed in a running turn. Claude Code writes that as a queued_command attachment."""
+    held = entry.get("attachment")
+    if entry.get("type") != "attachment" or not isinstance(held, dict) or held.get("type") != "queued_command":
+        return False
+    # Claude Code can wrap the lines again
+    return any(WAKE_START in " ".join(text.split()) for text in strings(held.get("prompt")))
+
+
 def woken(entries: Entries, handed_at: float) -> Optional[bool]:
     """Says whether the session file holds the wake that was handed over at that time. None when it cannot tell.
 
-    True when an entry written since then holds the wake's opening sentence, as a turn of its own or folded into
-    a running one. False only when the part of the file that was read begins before the hand-over and holds none.
+    True when an entry written since then is the turn that wake started, by the test the sender marks such a turn with,
+    or the wake folded into a running turn. The sentence anywhere else, as in a prompt or a tool result, is no wake.
+    False only when the part of the file that was read begins before the hand-over and holds none.
     """
     if pause.clock() - handed_at < HANDED_GRACE_S:
         return None
@@ -80,8 +94,7 @@ def woken(entries: Entries, handed_at: float) -> Optional[bool]:
             continue
         if at.timestamp() < handed_at:
             reaches_back = True
-        # Claude Code can wrap the lines again
-        elif any(report.WAKE_OPENING in " ".join(text.split()) for text in strings(entry)):
+        elif transcript.started_by_wake(entry, [handed_at]) or folded(entry):
             return True
     return False if reaches_back else None
 
@@ -100,14 +113,14 @@ def saved_at(verdict: Dict[str, Any]) -> float:
     return at.timestamp() if at else 0.0
 
 
+def report_key(item: Mapping[str, Any]) -> Tuple[Any, Any, Any]:
+    """Names one revision of one turn's report, as a verdict and a line of the checks file both hold it."""
+    return item.get("trace_uuid"), item.get("report_uuid"), item.get("revision")
+
+
 def recorded(found: List[Dict[str, Any]], verdict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Returns the `flagged` line of the report the verdict was saved for, or None when the poller recorded none."""
-    key = (verdict["trace_uuid"], verdict["report_uuid"], verdict["revision"])
-    lines = [
-        item
-        for item in found
-        if item.get("outcome") == watch.FLAGGED and (item.get("trace_uuid"), item.get("report_uuid"), item.get("revision")) == key
-    ]
+    lines = [item for item in found if item.get("outcome") == watch.FLAGGED and report_key(item) == report_key(verdict)]
     return lines[-1] if lines else None
 
 
@@ -123,39 +136,52 @@ def remove(root: Path, verdict: Dict[str, Any], why: str = "") -> None:
         storage.log(root, f"verdict {verdict['trace_uuid']} removed, {why}")
 
 
-def missed(line: Dict[str, Any], entries: Entries) -> Optional[bool]:
+def watched(root: Path, session_id: str) -> bool:
+    """Says whether a watcher of the session is running. Its lock is tried without a wait and let go at once."""
+    with storage.try_locked(root / "state" / f"{session_id}.watch.lock") as free:
+        return not free
+
+
+def missed(line: Dict[str, Any], entries: Entries, watching: bool) -> Optional[bool]:
     """Says whether Claude was never given the verdict of this `flagged` line. None when that cannot be told, and the file waits."""
     if line.get("handed") is False:
         return True
     at = timestamps.parse(line.get("at"))
     if line.get("handed") is not True or at is None:
         return None
+    # The watcher that recorded the hand-over may not have written its wake yet, however long ago that was
+    if watching:
+        return None
     found = woken(entries, at.timestamp())
     return None if found is None else not found
 
 
-def due(root: Path, session_id: str, saved: List[Dict[str, Any]], entries: Entries) -> List[Dict[str, Any]]:
-    """Returns the session's verdicts that can be shown now, newest first, and removes the files that never will be."""
+def due(root: Path, session_id: str, saved: List[Dict[str, Any]], entries: Entries, watching: bool) -> List[Dict[str, Any]]:
+    """Returns the session's verdicts that can be shown now, newest first, and removes the files that never will be.
+
+    watching says whether a watcher of the session was running before entries were read.
+    """
     found = watch.checks(root, session_id)
-    told = {item.get("trace_uuid") for item in found if item.get("outcome") == watch.SHOWN}
+    shown = [report_key(item) for item in found if item.get("outcome") == watch.SHOWN]
     waiting = []
     for verdict in saved:
         line = recorded(found, verdict)
-        if verdict["trace_uuid"] in told:
+        # By the report, not the turn: a later revision of a report already shown is a new report
+        if report_key(verdict) in shown:
             # Left by a showing that could not remove it
             remove(root, verdict)
             continue
         if line is None:
             # Not recorded: the poller settles this report again, and may still wake Claude with it
             continue
-        never_given = missed(line, entries)
+        never_given = missed(line, entries, watching)
         if never_given is False:
             remove(root, verdict, "Claude was woken with it")
         elif compacted(entries, saved_at(verdict)):
             remove(root, verdict, "the conversation was compacted since")
         elif never_given:
             waiting.append(verdict)
-    if waiting and len([item for item in found if item.get("outcome") == watch.SHOWN]) >= SHOW_CAP:
+    if waiting and len(shown) >= SHOW_CAP:
         for verdict in waiting:
             remove(root, verdict, f"the session already had {SHOW_CAP} showings")
         return []
@@ -170,8 +196,7 @@ def choose(raw: bytes, environ: Mapping[str, str]) -> str:
     session_id = str(hook_input.get("session_id") or "")
     root = storage.data_dir(environ)
     # Nearly every prompt ends here, after one look at a folder. An id that is no plain name has no verdicts
-    saved = watch.verdicts(root, session_id)
-    if not saved:
+    if not watch.verdicts(root, session_id):
         return ""
     if not carries(hook_input):
         storage.log(root, "verdict not shown, the prompt is a command or a notice")
@@ -181,11 +206,24 @@ def choose(raw: bytes, environ: Mapping[str, str]) -> str:
     if not prompt_id:
         storage.log(root, "verdict not shown, the prompt names no id")
         return ""
+    # One prompt of a session at a time, so two that overlap cannot both take the same verdict. Never waited for
+    with storage.try_locked(root / "state" / f"{session_id}.prompt.lock") as alone:
+        if not alone:
+            storage.log(root, "verdict not shown, another prompt of the session is being checked")
+            return ""
+        return taken(root, hook_input, environ, session_id, prompt_id)
+
+
+def taken(root: Path, hook_input: Mapping[str, Any], environ: Mapping[str, str], session_id: str, prompt_id: str) -> str:
+    """Records the verdict that comes with this prompt, removes its file and returns its text, or "". Runs under the prompt lock."""
+    # Asked before the session file is read: a watcher that ends after this look can have written its wake after that read
+    watching = watched(root, session_id)
     entries, _ = watch.session_entries(str(hook_input.get("transcript_path") or ""))
     if watch.headless(entries, environ):
         storage.log(root, "verdict not shown, no person is at the session")
         return ""
-    waiting = due(root, session_id, saved, entries)
+    # Read again under the lock: the prompt before this one may have just taken one
+    waiting = due(root, session_id, watch.verdicts(root, session_id), entries, watching)
     if not waiting:
         return ""
     verdict = waiting[0]
