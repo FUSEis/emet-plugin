@@ -1032,3 +1032,100 @@ def test_a_damaged_recent_list_is_replaced(transcript, environ, emet, damaged):
     run(transcript, environ)
     (recent,) = status(environ)["recent"]
     assert recent["session_id"] == transcript.session_id
+
+
+def background_subagent(transcript, environ):
+    """Sends a turn that launched a background subagent, and returns the subagent's file."""
+    transcript.prompt("research in the background")
+    transcript.tool_use("msg_1", "toolu_agent", "Agent", {"prompt": "dig", "run_in_background": True})
+    agent_path = transcript.subagent("bg1", "toolu_agent")
+    transcript.write({"type": "user", "isSidechain": True, "message": {"role": "user", "content": "dig"}}, agent_path)
+    transcript.tool_result("toolu_agent", "Async agent launched")
+    transcript.text("msg_2", "Started a background agent.")
+    run(transcript, environ)
+    return agent_path
+
+
+def private_entries(transcript, path):
+    """Writes what a subagent would add later, with words that must never be sent."""
+    transcript.tool_use("msg_p1", "toolu_p1", "Grep", {"pattern": "the private pattern"}, path=path, isSidechain=True)
+    transcript.tool_result("toolu_p1", "the private finding", path=path, isSidechain=True)
+
+
+def rewrite_state(environ, change):
+    path = Path(environ["CLAUDE_PLUGIN_DATA"]) / "state" / "session-1.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    change(saved)
+    path.write_text(json.dumps(saved), encoding="utf-8")
+
+
+def test_a_subagent_path_in_the_state_file_that_leaves_the_sessions_folder_is_not_read(transcript, environ, emet, tmp_path):
+    background_subagent(transcript, environ)
+    sent = len(emet.requests)
+    outside = tmp_path / "elsewhere" / "agent-bg1.jsonl"
+    outside.parent.mkdir()
+    outside.write_text("", encoding="utf-8")
+    private_entries(transcript, outside)
+    rewrite_state(environ, lambda saved: saved["agents"]["bg1"].update(path=str(outside), offset=0))
+    run(transcript, environ)
+    assert len(emet.requests) == sent
+    assert "private" not in json.dumps(emet.envelopes)
+    assert state(environ)["agents"] == {}
+    log = (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+    assert "subagent skipped, its file is outside the session's folder or is a link" in log
+    assert "elsewhere" not in log and "private" not in log
+    # Logged once: the subagent is no longer followed
+    run(transcript, environ)
+    assert (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8").count("subagent skipped") == 1
+
+
+@pytest.mark.parametrize("where", ["tool-results/agent-bg1.jsonl", "subagents/deeper/agent-bg1.jsonl", "subagents/../../other.jsonl"])
+def test_a_subagent_path_beside_the_subagents_folder_is_not_read(transcript, environ, emet, where):
+    background_subagent(transcript, environ)
+    sent = len(emet.requests)
+    other = transcript.folder / where
+    other.resolve().parent.mkdir(parents=True, exist_ok=True)
+    other.resolve().write_text("", encoding="utf-8")
+    private_entries(transcript, other.resolve())
+    rewrite_state(environ, lambda saved: saved["agents"]["bg1"].update(path=str(other), offset=0))
+    run(transcript, environ)
+    assert len(emet.requests) == sent
+    assert state(environ)["agents"] == {}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("inside", [True, False])
+def test_a_subagent_file_that_became_a_link_is_not_read(transcript, environ, emet, tmp_path, inside):
+    agent_path = background_subagent(transcript, environ)
+    sent = len(emet.requests)
+    # A link is refused wherever it points, also to a file of the folder itself
+    target = agent_path.with_name("agent-other.jsonl") if inside else tmp_path / "outside.jsonl"
+    target.write_text("", encoding="utf-8")
+    private_entries(transcript, target)
+    agent_path.unlink()
+    agent_path.symlink_to(target)
+    rewrite_state(environ, lambda saved: saved["agents"]["bg1"].update(offset=0))
+    run(transcript, environ)
+    assert len(emet.requests) == sent
+    assert "private" not in json.dumps(emet.envelopes)
+    assert state(environ)["agents"] == {}
+    assert "subagent skipped" in (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("entry", ["not a record", 7, None, {}, {"path": 7}, {"path": "\x00"}])
+def test_a_damaged_subagent_entry_in_the_state_file_does_not_stop_the_run(transcript, environ, emet, entry):
+    background_subagent(transcript, environ)
+    rewrite_state(environ, lambda saved: saved["agents"].update(bg1=entry))
+    prompt = finished_turn(transcript, "next", "ok")
+    run(transcript, environ)
+    assert emet.envelopes[-1]["trace_id"] == prompt["uuid"]
+    assert "worker error" not in (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+    assert state(environ)["offset"] == transcript.path.stat().st_size
+
+
+def test_a_subagent_file_removed_from_its_folder_is_still_followed(transcript, environ, emet):
+    agent_path = background_subagent(transcript, environ)
+    agent_path.unlink()
+    run(transcript, environ)
+    assert "bg1" in state(environ)["agents"]
+    assert "subagent skipped" not in (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")

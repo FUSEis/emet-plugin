@@ -184,13 +184,24 @@ def persisted_output(transcript: Path, part: Dict[str, Any], result: Any) -> Opt
     return None
 
 
+def own_subagent_file(transcript: Path, path: Path) -> bool:
+    """Says whether path is a file of this session's own subagents folder and not a symbolic link.
+
+    Asked again before every read: a path kept in the state file is only as trustworthy as that file.
+    """
+    try:
+        return not path.is_symlink() and path.resolve().parent == (session_folder(transcript) / "subagents").resolve()
+    # RuntimeError: a loop of links, before Python 3.13. ValueError: a path no file can have
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def subagents(transcript: Path) -> Dict[str, Tuple[Path, Dict[str, Any]]]:
     """Maps the tool_use id that launched each subagent to its transcript and metadata."""
     found: Dict[str, Tuple[Path, Dict[str, Any]]] = {}
     folder = session_folder(transcript) / "subagents"
     if not folder.is_dir():
         return found
-    real_folder = folder.resolve()
     for meta_path in folder.glob("agent-*.meta.json"):
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -199,7 +210,7 @@ def subagents(transcript: Path) -> Dict[str, Tuple[Path, Dict[str, Any]]]:
         tool_use_id = meta.get("toolUseId") if isinstance(meta, dict) else None
         agent_path = meta_path.with_name(meta_path.name[: -len(".meta.json")] + ".jsonl")
         # A link pointing out of the folder could make the plugin send some other file
-        if agent_path.is_symlink() or agent_path.resolve().parent != real_folder:
+        if not own_subagent_file(transcript, agent_path):
             continue
         if isinstance(tool_use_id, str) and agent_path.is_file():
             found[tool_use_id] = (agent_path, meta)

@@ -272,8 +272,15 @@ def process(
 
         for agent_id in known:
             agent = state["agents"].get(agent_id)
-            agent_path = Path(agent["path"]) if agent else None
-            if agent_path is None or not agent_path.is_file():
+            if not isinstance(agent, dict):
+                continue
+            agent_path = Path(str(agent.get("path") or ""))
+            # The state file is not proof: a path it names is sent only from the session's own subagents folder
+            if not transcript.own_subagent_file(path, agent_path):
+                del state["agents"][agent_id]
+                storage.log(root, "subagent skipped, its file is outside the session's folder or is a link")
+                continue
+            if not agent_path.is_file():
                 continue
             items, agent_end = transcript.read_entries(agent_path, int(agent.get("offset") or 0), sidechain=True)
             if items:

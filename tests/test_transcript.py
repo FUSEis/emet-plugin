@@ -1,11 +1,12 @@
 import json
 import os
+from pathlib import Path
 
 import pytest
 
 from emet_claude import report, timestamps
 from emet_claude import transcript as tr
-from helpers import WAKE_WRAPPER
+from helpers import WAKE_WRAPPER, Transcript
 from test_report import document
 
 WAKE = WAKE_WRAPPER + report.wake_message(document(), "https://app.emet.so", "session-1")
@@ -222,3 +223,25 @@ def test_a_notice_turn_with_the_sentence_is_ours_only_shortly_after_the_poller_h
 def test_a_notice_turn_with_no_readable_time_is_never_taken_for_a_wake(transcript, stamp):
     entry = transcript.notice(WAKE, timestamp=stamp)
     assert not tr.started_by_wake(entry, [timestamps.parse("2026-10-20T10:00:00.000Z").timestamp()])
+
+
+def test_only_a_file_of_the_sessions_own_subagents_folder_is_its_subagent_file(transcript, tmp_path):
+    inside = transcript.subagent("a1", "toolu_agent")
+    assert tr.own_subagent_file(transcript.path, inside)
+    assert tr.own_subagent_file(transcript.path, inside.parent / ".." / "subagents" / inside.name)
+    assert tr.own_subagent_file(transcript.path, inside.with_name("agent-not-written-yet.jsonl"))
+    saved = transcript.saved_output("out.txt", "x")
+    other = Transcript(transcript.path.parent, "session-2").subagent("a1", "toolu_agent")
+    for path in (saved, other, transcript.path, tmp_path / "agent-a1.jsonl", inside.parent, Path(""), Path("a\x00b")):
+        assert not tr.own_subagent_file(transcript.path, path), path
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_a_link_is_never_a_subagent_file_even_inside_the_folder(transcript):
+    inside = transcript.subagent("a1", "toolu_agent")
+    link = inside.with_name("agent-a2.jsonl")
+    link.symlink_to(inside)
+    loop = inside.with_name("agent-a3.jsonl")
+    loop.symlink_to(loop)
+    assert not tr.own_subagent_file(transcript.path, link)
+    assert not tr.own_subagent_file(transcript.path, loop)
