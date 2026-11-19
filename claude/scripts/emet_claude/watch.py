@@ -285,9 +285,17 @@ def newer_turn(stop: Stop) -> bool:
     ]
     if any(offset >= stop.size for offset, _ in starts):
         return True
+    if not starts:
+        return False
     # A prompt queued during the turn can be in the file before this process starts. Told apart by the turn's id
     ids = [entry.get("promptId") for _, entry in starts]
-    return bool(stop.prompt_id) and stop.prompt_id in ids and ids[-1] != stop.prompt_id
+    if stop.prompt_id and stop.prompt_id in ids:
+        return ids[-1] != stop.prompt_id
+    # Without the id: the turn that ended was answered before this run started, a queued one is answered after it or not yet
+    last = starts[-1][0]
+    answers = [entry for offset, entry in found if offset > last and entry.get("type") == "assistant" and not entry.get("isSidechain")]
+    at = timestamps.parse(answers[0].get("timestamp")) if answers else None
+    return bool(stop.at) and (not answers or (at is not None and at.timestamp() > stop.at))
 
 
 def stop_path(root: Path, session_id: str) -> Path:
@@ -296,6 +304,10 @@ def stop_path(root: Path, session_id: str) -> Path:
 
 def announce(root: Path, stop: Stop) -> None:
     """Names this Stop as the session's latest, for the watcher that may already run. Ids and numbers only. Never raises."""
+    # A later Stop can have written first. The session file only grows, so the larger size is the later turn
+    if latest(root, stop).size > stop.size:
+        storage.log(root, "stop not written, a later Stop of the session is already named")
+        return
     saved = {"token": stop.token, "prompt_id": stop.prompt_id, "size": stop.size, "at": storage.now(stop.at)}
     if stop.ended:
         saved["ended"] = storage.now(stop.ended)
@@ -315,7 +327,7 @@ def announce(root: Path, stop: Stop) -> None:
 
 
 def latest(root: Path, own: Stop) -> Stop:
-    """Returns the session's latest Stop: the one in its file, or this run's own when the file is damaged or older."""
+    """Returns the session's latest Stop: the one in its file, or this run's own when the file is damaged or of an earlier Stop."""
     saved = storage.read_json(stop_path(root, own.session_id), None)
     if not isinstance(saved, dict):
         return own
@@ -324,7 +336,8 @@ def latest(root: Path, own: Stop) -> Stop:
     # The stamp holds whole seconds
     if at is None or at.timestamp() < int(own.at) or not isinstance(token, str) or token in ("", own.token):
         return own
-    if type(size) is not int or size < 0:
+    # Times hold whole seconds. The size tells an earlier Stop of the same second from a later one
+    if type(size) is not int or size < own.size:
         return own
     ended = timestamps.parse(saved.get("ended"))
     return Stop(own.session_id, own.transcript_path, plain(prompt_id), size, at.timestamp(), token, ended.timestamp() if ended else 0.0)
@@ -404,8 +417,9 @@ def sender_done(lines: List[Dict[str, Any]], start: float) -> bool:
     """
     for item in lines:
         at = timestamps.parse(item.get("finished"))
-        # The stamp holds whole seconds
-        if at is not None and at.timestamp() >= int(start) and type(item.get("queued")) is int and item["queued"] == 0:
+        # The stamp holds whole seconds, and the sender of this Stop waits a second before it sends.
+        # So a stamp of the second the poller started in is an earlier run's
+        if at is not None and at.timestamp() > int(start) and type(item.get("queued")) is int and item["queued"] == 0:
             return True
     return False
 
@@ -430,13 +444,21 @@ def checks(root: Path, session_id: str) -> List[Dict[str, Any]]:
 
 
 def settled(found: List[Dict[str, Any]]) -> Set[str]:
-    """Returns the traces that need no more requests."""
-    return {item["trace_uuid"] for item in found if item.get("final") is True and isinstance(item.get("trace_uuid"), str)}
+    """Returns the traces that need no more requests. Only a line with an outcome that is final counts, whatever else it says."""
+    return {
+        item["trace_uuid"]
+        for item in found
+        if item.get("final") is True and isinstance(item.get("trace_uuid"), str) and final_outcome(item.get("outcome"))
+    }
+
+
+def final_outcome(outcome: Any) -> bool:
+    return isinstance(outcome, str) and OUTCOMES.get(outcome) is True
 
 
 def wakes(found: List[Dict[str, Any]]) -> int:
     """Counts the reports handed to Claude in this session."""
-    return sum(1 for item in found if item.get("handed") is True)
+    return sum(1 for item in found if item.get("handed") is True and item.get("outcome") == FLAGGED)
 
 
 def known(found: List[Dict[str, Any]], trace_uuid: str, report_uuid: str, revision: int) -> bool:
@@ -708,7 +730,7 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
                 break
             asked.add(trace.trace_uuid)
             answer = read_report(config, trace.trace_uuid)
-            if answer.status in (200, 202):
+            if answer.status in (200, 202, 404):
                 # Emet serves the reads again, so the next limit starts from the shortest pause
                 pause.clear(root, pause.READS)
             if answer.status == 200:

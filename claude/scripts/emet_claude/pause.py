@@ -75,10 +75,15 @@ def extend(root: Path, retry_after: Optional[float] = None, name: str = SENDS) -
     """Starts the pause after a failed request, twice as long as the last one unless Emet named the wait. Never raises."""
     try:
         with storage.locked(root / "pause.lock"):
-            # Another worker already recorded this failure
-            if until(root, name):
-                return
+            current = timestamps.parse(until(root, name))
             last = read(root, name).get("delay")
+            if current is not None:
+                # Another worker already recorded this failure. Only a longer wait Emet names for the reads moves the end
+                end = clock() + min(retry_after or 0.0, RETRY_AFTER_MAX_S)
+                if name != SENDS and int(end) > current.timestamp():
+                    storage.write_json(path(root, name), {"until": storage.now(end), "delay": last})
+                    storage.log(root, f"report reads paused {int(end - clock())}s")
+                return
             doubled = last * 2 if isinstance(last, (int, float)) and not isinstance(last, bool) and last > 0 else FIRST_S
             delay = min(max(doubled, FIRST_S), LONGEST_S)
             wait = min(delay * spread(), LONGEST_S) if retry_after is None else min(retry_after, RETRY_AFTER_MAX_S)

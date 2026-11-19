@@ -100,7 +100,8 @@ def deliver(environ, clock, trace_uuid=T1, ago=0.0, **fields):
     pending.append(root(environ), SESSION, line)
 
 
-def finish(environ, clock, queued=0, ago=0.0):
+def finish(environ, clock, queued=0, ago=-1.0):
+    """Writes the line that ends a run of the sender, by default one second from now, as the run of a Stop that fires now does."""
     pending.append(root(environ), SESSION, {"finished": storage.now(clock.now - ago), "queued": queued})
 
 
@@ -331,7 +332,7 @@ def test_the_poller_leaves_at_once_when_the_sender_finished_with_an_empty_queue(
     assert clock.now == start
 
 
-@pytest.mark.parametrize(("queued", "ago"), [(1, 0), (0, 5), (True, 0), (False, 0), ("0", 0), (None, 0)])
+@pytest.mark.parametrize(("queued", "ago"), [(1, -1), (0, 5), (0, 0), (True, -1), (False, -1), ("0", -1), (None, -1)])
 def test_the_poller_keeps_waiting_while_the_queue_holds_envelopes_or_the_stamp_is_old(session, environ, emet, clock, queued, ago):
     finish(environ, clock, queued=queued, ago=ago)
     start = clock.now
@@ -455,12 +456,12 @@ def test_no_report_is_asked_for_while_the_reads_are_paused_by_any_session(sessio
     assert status(environ)["reads_paused_until"] == ""
 
 
-def test_a_read_that_emet_answers_ends_the_pause_of_the_reads_so_the_next_one_starts_short(session, environ, emet, clock):
+@pytest.mark.parametrize("answer", [(202,), (404, "gone_fishing")])
+def test_a_read_that_emet_answers_ends_the_pause_of_the_reads_so_the_next_one_starts_short(session, environ, emet, clock, answer):
     deliver(environ, clock)
     emet.report(T1, 429)
-    emet.report(T1, 202)
+    emet.report(T1, *answer)
     emet.report(T1, 429)
-    emet.report(T1, 404, "gone_fishing")
     assert stop(session, environ) == 0
     first = pause.until(root(environ), pause.READS)
     assert first == storage.now(clock.now + 30)
@@ -656,6 +657,7 @@ def test_older_turns_are_polled_as_newer_ones_get_their_outcome(session, environ
 )
 def test_nothing_happens_on_a_claude_code_older_than_2_1_287(transcript, environ, emet, clock, version, polled):
     transcript.prompt("What is 2 + 2?", version=version)
+    transcript.text("msg_1", "4", version=version)
     deliver(environ, clock)
     emet.report(T1, 200, document())
     start = clock.now
@@ -985,6 +987,44 @@ def test_a_turn_not_ready_in_its_own_time_is_kept_for_the_next_prompt_once_a_lat
     assert (verdict["trace_uuid"], verdict["handed"]) == (T1, False)
 
 
+def test_a_stop_that_writes_after_a_later_stop_of_the_session_leaves_that_one_named(session, environ, emet, clock):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    size = session.path.stat().st_size
+    later = watch.Stop(SESSION, str(session.path), "prompt-2", size + 400, clock.now, "later", clock.now)
+    watch.announce(root(environ), later)
+    start = clock.now
+    with watcher_lock(environ):
+        assert stop(session, environ, prompt_id="prompt-1") == 0
+    assert clock.now == start and emet.reads == []
+    saved = json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))
+    assert (saved["token"], saved["prompt_id"], saved["size"]) == ("later", "prompt-2", size + 400)
+    assert "stop not written, a later Stop of the session is already named" in log(environ)
+
+
+def test_a_stop_of_the_same_second_with_a_shorter_session_file_is_an_earlier_one(session, environ, emet, clock, sleeper):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    earlier = watch.Stop(SESSION, str(session.path), "", session.path.stat().st_size - 1, clock.now, "earlier", clock.now + 60)
+    with watcher_lock(environ) as running:
+        sleeper.at(
+            1,
+            lambda: storage.write_json(
+                watch.stop_path(root(environ), SESSION),
+                {
+                    "token": earlier.token,
+                    "prompt_id": "",
+                    "size": earlier.size,
+                    "at": storage.now(clock.now),
+                    "ended": storage.now(earlier.ended),
+                },
+            ),
+        )
+        sleeper.at(6, running.close)
+        # Neither left for it, nor judged by it
+        assert stop(session, environ) == 2
+
+
 def test_a_waiting_stop_leaves_when_a_later_stop_of_the_session_waits(session, environ, emet, clock, sleeper):
     deliver(environ, clock)
     emet.report(T1, 200, document())
@@ -1041,13 +1081,23 @@ def test_the_poller_never_takes_the_session_lock_or_the_queue_lock(session, envi
     monkeypatch.setattr(storage, "locked", real)
     deliver(environ, clock, T2)
     monkeypatch.setattr(storage, "locked", named)
-    session_lock = storage.try_locked(root(environ) / "state" / f"{SESSION}.lock")
-    with session_lock as first, storage.try_locked(root(environ) / "queue.lock") as second:
+    tried = []
+    real_try = storage.try_locked
+
+    def named_try(path):
+        # A lock taken without a wait is a lock taken all the same
+        assert path.name in ("status.lock", f"{SESSION}.watch.lock"), path.name
+        tried.append(path.name)
+        return real_try(path)
+
+    monkeypatch.setattr(storage, "try_locked", named_try)
+    with real_try(root(environ) / "state" / f"{SESSION}.lock") as first, real_try(root(environ) / "queue.lock") as second:
         assert first and second
         assert stop(session, environ) == 2
     assert "watch error" not in log(environ)
     assert {outcome for _, outcome, _ in outcomes(environ)} == {"rate_limited", "clear", "flagged"}
     assert set(taken) == {"status.lock", "pause.lock"}
+    assert tried == [f"{SESSION}.watch.lock"]
 
 
 def test_the_lock_is_taken_without_waiting_and_freed_after(tmp_path):
@@ -1138,6 +1188,37 @@ def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id
     emet.report(T1, 200, document())
     assert stop(transcript, environ, prompt_id="prompt-1") == 0
     assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+@pytest.mark.parametrize("prompt_id", ["", None, "prompt-9"])
+@pytest.mark.parametrize("answered", [None, 3])
+def test_without_the_turns_id_a_queued_prompt_is_told_apart_by_when_it_was_answered(
+    transcript, environ, emet, clock, sleeper, prompt_id, answered
+):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    transcript.prompt("And 3 + 3?", source="queued", promptId="prompt-2")
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    if answered:
+        stamp = timestamps.text(datetime.fromtimestamp(clock.now + answered, timezone.utc))
+        sleeper.at(answered, lambda: transcript.tool_result("t", "x", isSidechain=True))
+        sleeper.at(answered, lambda: transcript.text("msg_2", "6", timestamp=stamp))
+    assert stop(transcript, environ, prompt_id=prompt_id) == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+def test_an_answer_written_before_the_poller_started_is_the_turn_that_ended_even_when_it_reached_the_file_late(
+    transcript, environ, emet, clock, sleeper
+):
+    transcript.prompt("What is 2 + 2?")
+    stamp = timestamps.text(datetime.fromtimestamp(clock.now - 1, timezone.utc))
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    # Claude Code writes the session file a moment after the Stop
+    sleeper.at(2, lambda: transcript.text("msg_1", "4", timestamp=stamp))
+    assert stop(transcript, environ) == 2
 
 
 @pytest.mark.parametrize("prompt_id", ["prompt-2", "prompt-9", "", None, 5])
@@ -1267,6 +1348,7 @@ def test_a_turn_recorded_as_not_polled_is_polled_after_a_later_stop(transcript, 
     emet.report(T1, 200, document())
     assert stop(transcript, environ) == 0
     transcript.prompt("A person is back", entrypoint="cli")
+    transcript.text("msg_2", "Hello", entrypoint="cli")
     assert stop(transcript, environ) == 2
     assert outcomes(environ) == [(T1, "no_person", False), (T1, "flagged", True)]
 
@@ -1361,6 +1443,7 @@ def test_wakes_are_capped_per_session(session, environ, emet, clock, tmp_path):
     assert "not handed to Claude, wake_cap" in log(environ)
     other = Transcript(tmp_path / "projects", "session-2")
     other.prompt("Another session")
+    other.text("msg_1", "Hello")
     pending.append(root(environ), "session-2", {"trace_uuid": T1, "at": storage.now(clock.now), "endpoint": emet.url})
     emet.report(T1, 200, document())
     assert stop(other, environ) == 2
@@ -1613,6 +1696,9 @@ def test_every_outcome_is_listed_in_the_status_file_newest_first_and_once_per_tr
     assert len(listed) == 5 and len({item["trace_uuid"] for item in listed}) == 5
     assert all(item["outcome"] == "not_assessed" and item["session_id"] == SESSION for item in listed)
     assert listed[0] == {"session_id": SESSION, **watch.checks(root(environ), SESSION)[-1]}
+    newest_first = [item["trace_uuid"] for item in reversed(watch.checks(root(environ), SESSION))]
+    assert [item["trace_uuid"] for item in listed] == newest_first[:5]
+    assert len(set(newest_first[:5])) == 5
     commands.update_status(root(environ), config.load(environ))
     assert status(environ)["checks"] == listed
 
@@ -1672,6 +1758,33 @@ def test_a_damaged_line_of_the_outcome_file_never_stops_a_run(transcript, enviro
     assert stop(transcript, environ) == 0
     assert "watch error" not in log(environ)
     assert watch.checks(root(environ), SESSION)[-1]["outcome"] == skipped_for
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        {"final": True},
+        {"final": True, "outcome": "made_up"},
+        {"final": True, "outcome": "timed_out"},
+        {"final": True, "outcome": ["clear"]},
+        {"final": "yes", "outcome": "clear"},
+    ],
+)
+def test_a_line_of_the_outcome_file_ends_the_polling_only_with_an_outcome_that_is_final(session, environ, emet, clock, line):
+    watch.checks_path(root(environ), SESSION).write_text(json.dumps({"trace_uuid": T1, **line}) + "\n", encoding="utf-8")
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(session, environ) == 2
+    assert emet.polled(T1) == 1
+
+
+@pytest.mark.parametrize("line", [{}, {"outcome": "clear"}, {"outcome": "made_up"}, {"outcome": None}])
+def test_only_a_flagged_line_that_was_handed_over_counts_as_a_wake(session, environ, emet, clock, line):
+    lines = [json.dumps({"trace_uuid": str(uuid.UUID(int=number)), "handed": True, "final": True, **line}) for number in range(1, 9)]
+    watch.checks_path(root(environ), SESSION).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(session, environ) == 2
 
 
 def test_an_outcome_file_that_is_not_text_reads_as_empty(environ):

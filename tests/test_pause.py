@@ -336,3 +336,20 @@ def test_a_pause_is_forgotten_under_the_lock_that_starts_one(environ, clock, mon
     assert taken == ["pause.lock"]
     pause.clear(root(environ))
     assert taken == ["pause.lock"]
+
+
+def test_a_longer_wait_emet_names_for_the_reads_moves_the_end_of_their_pause(environ, clock):
+    pause.extend(root(environ), None, pause.READS)
+    until = pause.until(root(environ), pause.READS)
+    assert until == storage.now(clock.now + 30)
+    clock.advance(10)
+    pause.extend(root(environ), 5.0, pause.READS)
+    pause.extend(root(environ), 20.0, pause.READS)
+    pause.extend(root(environ), None, pause.READS)
+    assert pause.until(root(environ), pause.READS) == until
+    pause.extend(root(environ), 120.0, pause.READS)
+    assert pause.until(root(environ), pause.READS) == storage.now(clock.now + 120)
+    assert pause.read(root(environ), pause.READS)["delay"] == 30
+    pause.extend(root(environ), 90_000.0, pause.READS)
+    assert pause.until(root(environ), pause.READS) == storage.now(clock.now + 3600)
+    assert pause.until(root(environ)) == ""
