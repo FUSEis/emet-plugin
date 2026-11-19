@@ -55,6 +55,12 @@ def sleeper(monkeypatch, clock):
 
 
 @pytest.fixture(autouse=True)
+def session_file_on_the_clock(monkeypatch, clock):
+    """Entries are stamped by the tests' clock, as Claude Code stamps them by the real one. A report is late by these times."""
+    monkeypatch.setattr(Transcript, "tick", lambda self: stamp(clock))
+
+
+@pytest.fixture(autouse=True)
 def no_wait_for_the_watcher_lock(monkeypatch):
     """A watcher lock taken with a wait fails the test. Without this it would hang the suite."""
     real = storage.locked
@@ -216,8 +222,9 @@ def test_the_table_of_outcomes_names_every_outcome_and_whether_it_is_final():
     rows = re.findall(r"^\| `([a-z_]+)` \| (yes|no) \| \S.* \|$", watch.__doc__, re.M)
     assert [name for name, _ in rows] == list(watch.OUTCOMES)
     assert {name: final == "yes" for name, final in rows} == watch.OUTCOMES
-    assert all(f"`{held}`" in watch.__doc__ for held in (watch.CAPPED, watch.NEWER_TURN))
+    assert all(f"`{held}`" in watch.__doc__ for held in (watch.CAPPED, watch.NEWER_TURN, watch.LATE))
     assert f"already had {watch.WAKE_CAP} wakes" in watch.__doc__ and f"the {watch.BUDGET_S} seconds" in watch.__doc__
+    assert f"more than {watch.LATE_S} seconds after its turn ended" in watch.__doc__
 
 
 def test_only_a_listed_outcome_can_be_recorded(environ):
@@ -624,6 +631,9 @@ def test_the_turn_after_a_wake_is_never_polled_and_is_recorded_as_its_own_outcom
     (check,) = watch.checks(root(environ), SESSION)
     assert check == {"trace_uuid": T1, "outcome": "wake_turn", "final": True, "at": storage.now(clock.now)}
     assert status(environ)["checks"] == [{"session_id": SESSION, **check}]
+    # No report was read, and the log must not read as if one was
+    assert f"turn {T1} was started by a wake, not polled" in log(environ)
+    assert "report " not in log(environ) and "->" not in log(environ)
     # However often Stop fires
     assert stop(session, environ) == 0
     assert outcomes(environ) == [(T1, "wake_turn", True)] and emet.reads == []
@@ -899,11 +909,13 @@ def later_stop(environ, clock, transcript, prompt_id="", named="later"):
 
 
 def test_a_stop_writes_its_turn_and_the_size_of_the_session_file_for_the_watcher_already_running(session, environ, emet, clock):
+    last_entry = clock.now
+    # The Stop fires a moment after the turn wrote its last entry
+    clock.advance(3)
     finish(environ, clock)
     assert stop(session, environ, prompt_id="prompt-1") == 0
     saved = json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))
     assert re.fullmatch("[0-9a-f]{32}", saved.pop("token"))
-    last_entry = datetime(2026, 10, 20, 10, 0, 2, tzinfo=timezone.utc).timestamp()
     assert saved == {
         "prompt_id": "prompt-1",
         "size": session.path.stat().st_size,
@@ -1555,6 +1567,91 @@ def test_a_flagged_report_that_was_held_back_uses_up_no_wake(session, environ, e
     codes = []
     for number in range(4, 4 + watch.WAKE_CAP + 1):
         trace = str(uuid.UUID(int=number))
+        next_turn(session, clock)
+        deliver(environ, clock, trace)
+        emet.report(trace, 200, document())
+        codes.append(stop(session, environ))
+    assert codes == [2] * watch.WAKE_CAP + [0]
+    assert watch.checks(root(environ), SESSION)[-1]["held"] == "wake_cap"
+
+
+def test_a_report_ready_more_than_a_minute_after_its_turn_ended_is_kept_for_the_next_prompt_and_wakes_no_one(
+    session, environ, emet, clock, asked, capfdbinary
+):
+    deliver(environ, clock)
+    for _ in range(5):
+        emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    finish(environ, clock)
+    assert stop(session, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert [at for at, _ in asked] == [8, 13, 23, 38, 58, 88]
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["outcome"], check["final"], check["handed"], check["held"]) == ("flagged", True, False, "late")
+    (verdict,) = watch.verdicts(root(environ), SESSION)
+    assert verdict["handed"] is False and verdict["text"] == report.missed_message(document(), emet.url, SESSION)
+    assert f"report {T1} not handed to Claude, late" in log(environ)
+    assert watch.LATE_S == 60
+
+
+@pytest.mark.parametrize(("after", "code"), [(60, 2), (62, 0)])
+def test_a_report_ready_a_minute_after_its_turn_ended_still_wakes_claude_and_a_later_one_does_not(
+    session, environ, emet, clock, sleeper, asked, after, code
+):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    with watcher_lock(environ) as running:
+        sleeper.at(after, running.close)
+        assert stop(session, environ) == code
+    assert asked == [(after, T1)]
+    assert watch.checks(root(environ), SESSION)[0].get("held") == (None if code else "late")
+
+
+def test_the_minute_is_counted_from_the_last_entry_of_the_turn_and_not_from_its_stop(session, environ, emet, clock, asked):
+    # The hook started half a minute after the turn wrote its last entry
+    clock.advance(30)
+    deliver(environ, clock)
+    for _ in range(3):
+        emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    finish(environ, clock)
+    assert stop(session, environ) == 0
+    # Ready 38 seconds after the Stop, 68 after the last entry
+    assert [at for at, _ in asked] == [38, 43, 53, 68]
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "late"
+
+
+@pytest.mark.parametrize(("after", "code"), [(60, 2), (62, 0)])
+def test_the_minute_is_counted_from_the_stop_when_the_session_file_names_no_time(
+    transcript, environ, emet, clock, sleeper, asked, after, code
+):
+    transcript.prompt("What is 2 + 2?", timestamp=None)
+    transcript.text("msg_1", "4", timestamp=None)
+    # Long after whatever the turn wrote
+    clock.advance(600)
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    with watcher_lock(environ) as running:
+        sleeper.at(600 + after, running.close)
+        assert stop(transcript, environ) == code
+    assert asked == [(600 + after, T1)]
+    assert watch.checks(root(environ), SESSION)[0].get("held") == (None if code else "late")
+
+
+def test_a_report_held_back_as_late_uses_up_no_wake(session, environ, emet, clock):
+    for number in range(1, 3):
+        trace = str(uuid.UUID(int=number))
+        next_turn(session, clock)
+        deliver(environ, clock, trace)
+        emet.report(trace, 200, document())
+        clock.advance(watch.LATE_S + 1)
+        assert stop(session, environ) == 0
+    found = watch.checks(root(environ), SESSION)
+    assert [item["held"] for item in found] == ["late"] * 2 and watch.wakes(found) == 0
+    codes = []
+    for number in range(3, 3 + watch.WAKE_CAP + 1):
+        trace = str(uuid.UUID(int=number))
+        next_turn(session, clock)
         deliver(environ, clock, trace)
         emet.report(trace, 200, document())
         codes.append(stop(session, environ))
@@ -1600,12 +1697,12 @@ def test_wakes_are_capped_per_session(session, environ, emet, clock, tmp_path):
         deliver(environ, clock, trace)
         emet.report(trace, 200, document())
         codes.append(stop(session, environ))
-    assert watch.WAKE_CAP == 5
-    assert codes == [2, 2, 2, 2, 2, 0]
+    assert watch.WAKE_CAP == 3
+    assert codes == [2, 2, 2, 0]
     last = watch.checks(root(environ), SESSION)[-1]
     assert (last["outcome"], last["final"], last["handed"], last["held"]) == ("flagged", True, False, "wake_cap")
     saved = watch.verdicts(root(environ), SESSION)
-    assert [item["handed"] for item in saved] == [True] * 5 + [False]
+    assert [item["handed"] for item in saved] == [True] * 3 + [False]
     assert "not handed to Claude, wake_cap" in log(environ)
     other = Transcript(tmp_path / "projects", "session-2")
     other.prompt("Another session")
@@ -1658,7 +1755,7 @@ def test_a_verdict_that_cannot_be_saved_still_wakes_claude(session, environ, eme
 def test_the_same_revision_of_a_report_is_shown_once_and_a_new_one_again(environ, emet, clock):
     settings = config.load(environ)
     trace = watch.Trace(T1, clock.now, "")
-    ended = watch.Stop(SESSION, "", "", 0)
+    ended = watch.Stop(SESSION, "", "", 0, clock.now)
     first = watch.settle(root(environ), settings, ended, trace, document())
     again = watch.settle(root(environ), settings, ended, trace, document())
     rechecked = document()

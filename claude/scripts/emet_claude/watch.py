@@ -35,7 +35,8 @@ polling of its turn. A turn without one is polled again after a later Stop.
 | `no_person` | no | The Stop was not polled: no person is at the session (`claude -p`, the SDK). |
 
 A `flagged` line that was not handed over names the reason under "held": `wake_cap` (the session
-already had 5 wakes) or `newer_turn` (a later turn had started or been delivered).
+already had 3 wakes), `newer_turn` (a later turn had started or been delivered) or `late` (the
+report was ready more than 60 seconds after its turn ended).
 """
 
 from __future__ import annotations
@@ -96,10 +97,13 @@ REPORT_MAX_BYTES = 2 * 1024 * 1024
 # The largest share added to a wait by chance
 EXTRA = 0.1
 # Wakes per session; later flagged reports are saved and recorded only
-WAKE_CAP = 5
+WAKE_CAP = 3
+# Seconds after its turn ended that a report can still wake Claude. A starting value to tune on production timings
+LATE_S = 60
 # Why a flagged report was not handed to Claude
 CAPPED = "wake_cap"
 NEWER_TURN = "newer_turn"
+LATE = "late"
 # Turns polled at once, newest first, so a long backlog cannot become a burst of requests
 MAX_WATCHED = 5
 # A turn delivered longer ago than this is no longer polled
@@ -490,6 +494,8 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
     Only an outcome of OUTCOMES can be recorded. Without wait the status file is left alone when another process is writing it.
     """
     item = {"trace_uuid": trace_uuid, "outcome": outcome, "final": OUTCOMES[outcome], "at": storage.now(pause.clock()), **(ids or {})}
+    # No report is read for a wake turn, and the line must not look as if one was
+    said = f"turn {trace_uuid} was started by a wake, not polled" if outcome == WAKE_TURN else f"report {trace_uuid} -> {outcome}"
     target = checks_path(root, session_id)
     try:
         written = target.read_bytes() if target.exists() else b""
@@ -499,9 +505,9 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
         with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as handle:
             handle.write(start + json.dumps(item) + "\n")
     except OSError as error:
-        storage.log(root, f"report {trace_uuid} -> {outcome}, not recorded {type(error).__name__}")
+        storage.log(root, f"{said}, not recorded {type(error).__name__}")
         return False
-    storage.log(root, f"report {trace_uuid} -> {outcome}")
+    storage.log(root, said)
     show(root, {"session_id": session_id, **item}, wait)
     return True
 
@@ -617,8 +623,8 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     """Records a report that is ready. Returns the text to wake Claude with, or "" when Claude is not woken.
 
     stop is the session's latest Stop. Text is returned only for a flagged report not yet recorded,
-    under the cap, of the turn that Stop ended, with no newer turn under way, and after it was
-    recorded as handed over.
+    under the cap, of the turn that Stop ended, with no newer turn under way, ready within LATE_S
+    of the end of that turn, and after it was recorded as handed over.
     """
     session_id = stop.session_id
     status = report.status(document)
@@ -641,6 +647,9 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     # And a wake that lands in a running turn is folded into it and can go unseen
     elif trace.at < int(stop.ended) or newer_trace(root, config.endpoint, session_id, trace.trace_uuid) or newer_turn(stop):
         held = NEWER_TURN
+    # The user has moved on by then. Counted from the last entry of the turn, or from its Stop when none could be read
+    elif pause.clock() - (stop.ended or stop.at) > LATE_S:
+        held = LATE
     link = (config.endpoint, session_id, trace.conversation_uuid)
     verdict = {
         "session_id": session_id,
