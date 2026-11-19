@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import urllib.error
 from pathlib import Path
 
@@ -1183,7 +1184,14 @@ def test_a_pipe_in_place_of_a_subagent_file_is_refused_without_waiting(transcrip
     agent_path = background_subagent(transcript, environ)
     agent_path.unlink()
     os.mkfifo(agent_path)
-    assert commands.transcript.open_subagent_file(transcript.path, agent_path) is None
+    opened = []
+    # On another thread, so an open that waits for a writer fails the test and does not hang it
+    waiter = threading.Thread(
+        target=lambda: opened.append(commands.transcript.open_subagent_file(transcript.path, agent_path)), daemon=True
+    )
+    waiter.start()
+    waiter.join(5)
+    assert opened == [None]
 
 
 def test_a_subagent_file_with_a_second_name_is_not_read(transcript, environ, emet, tmp_path):
@@ -1233,3 +1241,48 @@ def test_a_subagent_entry_with_a_damaged_field_is_passed_over_and_the_run_goes_o
     assert emet.envelopes[-1]["trace_id"] == prompt["uuid"]
     assert "toolu_s1" not in json.dumps(emet.envelopes)
     assert state(environ)["offset"] == transcript.path.stat().st_size
+
+
+def test_a_file_outside_the_subagents_folder_is_refused_once_it_is_open(transcript, tmp_path):
+    transcript.subagent("s1", "toolu_agent")
+    outside = tmp_path / "agent-s1.jsonl"
+    outside.write_text("", encoding="utf-8")
+    assert commands.transcript.open_subagent_file(transcript.path, outside) is None
+    assert commands.transcript.read_subagent(transcript.path, outside, 0) is None
+
+
+def test_a_subagent_file_with_a_second_name_is_not_sent_with_its_turn(transcript, environ, emet, tmp_path):
+    transcript.prompt("research it")
+    transcript.tool_use("msg_1", "toolu_agent", "Agent", {"prompt": "dig"})
+    agent_path = transcript.subagent("s1", "toolu_agent")
+    other = tmp_path / "other.jsonl"
+    other.write_text("", encoding="utf-8")
+    transcript.text("msg_s1", "the private finding", path=other, isSidechain=True)
+    agent_path.unlink()
+    try:
+        os.link(other, agent_path)
+    except (OSError, NotImplementedError):
+        pytest.skip("no hard links here")
+    transcript.tool_result("toolu_agent", "done")
+    transcript.text("msg_2", "Here it is.")
+    run(transcript, environ)
+    assert {span["span_id"] for span in emet.spans()} == {"turn", "model.msg_1", "tool.toolu_agent", "model.msg_2"}
+    assert "private" not in json.dumps(emet.envelopes)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="the platform has no O_NOFOLLOW")
+def test_a_subagent_file_and_a_private_file_are_opened_for_reading_with_the_flag_that_refuses_a_link(transcript, tmp_path, monkeypatch):
+    agent_path = transcript.subagent("s1", "toolu_agent")
+    storage.write_json(tmp_path / "state.json", {})
+    opened = []
+    real_open = os.open
+
+    def spy(path, flags, *rest):
+        opened.append((os.path.basename(str(path)), flags))
+        return real_open(path, flags, *rest)
+
+    monkeypatch.setattr(os, "open", spy)
+    assert commands.transcript.read_subagent(transcript.path, agent_path, 0) == ([], 0)
+    assert storage.read_json(tmp_path / "state.json", None) == {}
+    assert [name for name, _ in opened] == [agent_path.name, "state.json"]
+    assert all(flags & os.O_NOFOLLOW and flags & os.O_NONBLOCK for _, flags in opened)
