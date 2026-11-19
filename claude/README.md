@@ -57,12 +57,30 @@ For each finished turn, one trace:
 
 ## Where data goes and what stays local
 
-The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses any other destination, whatever the environment says. It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`), readable only by you:
+The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses any other destination, whatever the environment says. The one exception is an Emet on the same machine, for plugin development.
 
-- `state/`: how far each session's transcript has been read.
-- `queue/`: turns that could not be delivered yet, retried oldest first on the next turn. At most 500 turns or 256 MB; the oldest are dropped beyond that.
-- `pause.json`: the time before which the plugin asks Emet nothing, written after Emet could not be reached.
-- `status.json` and `emet.log`: what `/emet:status` reports. They hold ids, counts, HTTP statuses, report links and the email sent, never content or the key.
+It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`). On macOS and Linux the plugin sets the folder so that only your user can open it. On Windows the plugin sets no access rules: the folder has those of the folder it sits in, which is your user profile unless Claude Code's data was moved.
+
+One kind of file in it can hold text from your session:
+
+| File | What it holds | Kept until |
+| --- | --- | --- |
+| `queue/*.json` | Turns that could not be delivered yet, whole, as your capture mode sends them: prompts, answers and tool results in `sanitized` and `full`, none of them in `metadata`. | Emet accepts or refuses the turn. It is retried on the next turn, oldest first. At most 500 files or 256 MB; the oldest are dropped beyond that. There is no time limit. |
+
+The other files hold ids, times, counts and HTTP statuses. They hold no text from a turn:
+
+| File | What it holds | Kept until |
+| --- | --- | --- |
+| `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, and for each subagent still followed the path of its transcript, its ids and a position. | The plugin is uninstalled. |
+| `state/<session>.pending.jsonl` | One line for each turn Emet accepted: Emet's ids of the trace and of its conversation, the time, the address that accepted it, Claude Code's id of the turn and the time the turn ended. Also a line for a turn Emet refused (its id and the HTTP status), for a turn that could not be read (the name of the error's type), and for the end of each run (the time and the number of turns queued). | The plugin is uninstalled. |
+| `pause.json` | The time before which the plugin asks Emet nothing, and the length of the last wait, written after Emet could not be reached. | Emet answers again after the pause has run out. |
+| `status.json` | What `/emet:status` reports: the plugin version, Team ID, capture mode, the email sent, the public start of the key, the result of the key check, counts, the pause time, and for the last five sessions the repository folder name, the time and the report link. | Rewritten at every run. |
+| `emet.log`, `emet.log.1` | One line for each thing the plugin did: the time, ids, counts, HTTP statuses, Emet's short error codes and the names of error types. | The log starts again at 1 MB, and one earlier file is kept. |
+| `*.lock` | Nothing. They stop two processes from writing one file at once. | The plugin is uninstalled. |
+
+If the plugin is stopped in the middle of writing a file, a hidden copy named `.<name>.<number>.tmp` can stay behind next to it. One left in `queue/` holds that turn's text. It is never sent, the queue's limits do not count it, and it stays until you delete it or uninstall the plugin. Deleting such a file is safe while no Claude Code session is running.
+
+The log and `status.json` never hold the key, a prompt, an answer or a tool result. Of an error Emet answers with, they keep the HTTP status and a short code of lowercase letters and underscores, never the message.
 
 Emet's handling of the data it receives is covered by the [Emet privacy policy](https://emet.so/privacy).
 

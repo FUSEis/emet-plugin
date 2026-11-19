@@ -53,7 +53,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 ### What a key in managed settings means
 
 - The managed settings file is readable by the developer on their own machine, and `env` values reach every command Claude Code runs. The key is not kept in the system keychain on this route.
-- The Emet key can only send traces to your organization; it cannot read reports or anything else. Anyone holding it could send turns that would appear as your team's (or any team's, if the key is not pinned), under any member's name (see section 4). In every capture mode the plugin replaces Emet keys with `[REDACTED:emet_key]` wherever they appear in what is sent, such as a command that prints the environment.
+- The Emet key does two things. It sends traces to your organization, and it reads Emet's report of a trace that was sent with a key of the same Application, by the id Emet returned for that trace. A key pinned to a team reads only that team's reports. It cannot sign in to Emet or reach anything else. Anyone holding it could send turns that would appear as your team's (or any team's, if the key is not pinned), under any member's name (see section 4). With the id of a trace, they could also read its report, which quotes the answer Emet checked. In every capture mode the plugin replaces Emet keys with `[REDACTED:emet_key]` wherever they appear in what is sent, such as a command that prints the environment.
 
 To rotate the key:
 
@@ -104,5 +104,5 @@ Images and binary content are never sent in any mode.
 - The hook is one Python package in [`claude/scripts/`](../claude/scripts/), standard library only, a few hundred lines. It runs with the developer's permissions, like any hook.
 - It sends only to Emet (`https://app.emet.so`), over HTTPS, and refuses any other destination. The one exception is an Emet on the same machine, for plugin development.
 - It reads the session transcript, saved tool outputs and subagent transcripts in Claude Code's own project folder, and nothing outside it. It also parses Claude Code's account file (`~/.claude.json`) and keeps only `oauthAccount.emailAddress`. It runs no other program.
-- It writes only to its own data folder, with owner-only permissions. The status file and log never hold content or the key.
+- It writes only to its own data folder, with owner-only permissions on macOS and Linux. On Windows it has the access rules of the folder it sits in, normally the user profile. The status file and log never hold content or the key.
 - [claude/README.md](../claude/README.md#what-is-sent) lists every field it sends in each mode.

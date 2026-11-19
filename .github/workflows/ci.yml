@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    # labeled and unlabeled: the changelog job reads the labels
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -60,13 +62,31 @@ jobs:
           npx --yes @anthropic-ai/claude-code@2.1.305 plugin validate --strict ./claude
           npx --yes @anthropic-ai/claude-code@2.1.305 plugin validate --strict .
 
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge commit and its parents: the first parent is the base branch
+          fetch-depth: 2
+          persist-credentials: false
+      - name: A change to what the plugin ships has a changelog entry
+        if: github.event_name == 'pull_request'
+        env:
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+          git show HEAD^1:CHANGELOG.md > "$RUNNER_TEMP/base-changelog"
+          python3 .github/scripts/changelog_check.py "$RUNNER_TEMP/base-changelog" < "$RUNNER_TEMP/changed"
+
   # The one check branch protection requires, so the matrix can change without touching the rules
   ci:
     if: always()
-    needs: [lint, test, validate]
+    needs: [lint, test, validate, changelog]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: All checks passed
         run: |
-          [ "${{ needs.lint.result }}" = "success" ] && [ "${{ needs.test.result }}" = "success" ] && [ "${{ needs.validate.result }}" = "success" ]
+          [ "${{ needs.lint.result }}" = "success" ] && [ "${{ needs.test.result }}" = "success" ] && [ "${{ needs.validate.result }}" = "success" ] && [ "${{ needs.changelog.result }}" = "success" ]
