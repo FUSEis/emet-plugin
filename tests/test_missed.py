@@ -749,7 +749,7 @@ def a_prompt_a_person_queued(transcript, text):
 
 
 def another_kind_of_attachment(transcript, text):
-    transcript.write({"type": "attachment", "attachment": {"type": "hook_additional_context", "content": [text]}})
+    transcript.write({"type": "attachment", "attachment": {"type": "hook_additional_context", "prompt": text}})
 
 
 NOT_WAKES = [quoted_in_a_prompt, quoted_in_a_tool_result, quoted_in_an_answer, a_notice_a_person_is_named_for]
