@@ -17,11 +17,16 @@ LOG_MAX_BYTES = 1_000_000
 LOG_LINE_MAX = 300
 # Makes an open fail on a symbolic link. Windows has no such flag
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+# For reading: no link is followed, a pipe put in the file's place cannot make the open wait, and Windows changes no byte
+READ_FLAGS = os.O_RDONLY | NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
 
 
 def data_dir(environ: Mapping[str, str] = os.environ) -> Path:
     root = Path(environ.get("CLAUDE_PLUGIN_DATA") or Path.home() / ".emet" / "claude-code")
     for path in (root, root / "state", root / "queue"):
+        # A link in place of a folder the plugin makes is removed, never written through. The root can be a link by choice
+        if path != root and path.is_symlink():
+            path.unlink()
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         # mkdir leaves the mode of a folder that already existed alone
         if sys.platform != "win32" and path.stat().st_mode & 0o077:
@@ -54,8 +59,10 @@ def write_private(path: Path, text: str) -> None:
 
 
 def read_json(path: Path, default: Any) -> Any:
+    """Returns what the file holds, or default when it cannot be read. A symbolic link is not read where the platform can refuse one."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        with os.fdopen(os.open(str(path), READ_FLAGS), "r", encoding="utf-8") as handle:
+            return json.loads(handle.read())
     except (OSError, ValueError):
         return default
 

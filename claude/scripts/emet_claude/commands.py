@@ -275,14 +275,22 @@ def process(
             if not isinstance(agent, dict):
                 continue
             agent_path = Path(str(agent.get("path") or ""))
+            start = agent.get("offset", 0)
+            # A damaged entry is passed over, as one that is no record is
+            if not (isinstance(start, int) and start >= 0 and isinstance(agent.get("trace_id"), str)):
+                continue
+            if not isinstance(agent.get("parent_span_id"), str):
+                continue
             # The state file is not proof: a path it names is sent only from the session's own subagents folder
-            if not transcript.own_subagent_file(path, agent_path):
+            own = transcript.own_subagent_file(path, agent_path)
+            if own and not agent_path.is_file():
+                continue
+            read = transcript.read_subagent(path, agent_path, start) if own else None
+            if read is None:
                 del state["agents"][agent_id]
                 storage.log(root, "subagent skipped, its file is outside the session's folder or is a link")
                 continue
-            if not agent_path.is_file():
-                continue
-            items, agent_end = transcript.read_entries(agent_path, int(agent.get("offset") or 0), sidechain=True)
+            items, agent_end = read
             if items:
                 late = attempt(
                     partial(envelope.for_tail, config, builder, session_id, agent["trace_id"], items, agent["parent_span_id"], cwd)

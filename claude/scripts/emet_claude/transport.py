@@ -316,6 +316,11 @@ class Sender:
                 # Read under the lock, so of the workers waiting on a pause only the first tries
                 if self.held():
                     return len(files) - index
+                if path.is_symlink():
+                    # Only the link is removed. What it points to is never read or sent
+                    storage.log(self.root, "queued batch dropped, it is a link")
+                    remove(path)
+                    continue
                 envelope = storage.read_json(path, None)
                 if not isinstance(envelope, dict):
                     remove(path)

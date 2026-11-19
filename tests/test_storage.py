@@ -32,7 +32,7 @@ def test_letters_of_any_script_are_logged_as_written(tmp_path):
 def test_a_log_line_is_cut_at_its_longest(tmp_path):
     storage.log(tmp_path, "retry " + "a" * 5000)
     (line,) = log_lines(tmp_path)
-    assert line.endswith(" retry " + "a" * (storage.LOG_LINE_MAX - len("retry ")))
+    assert line.split(" ", 1)[1] == "retry " + "a" * (storage.LOG_LINE_MAX - len("retry "))
 
 
 def test_a_queued_trace_id_with_a_line_break_forges_no_log_line(environ, emet):
@@ -167,3 +167,69 @@ def test_every_open_for_writing_refuses_a_link_and_the_temporary_file_is_always_
     assert [name for name, _ in opened] == [f".status.json.{os.getpid()}.tmp", "emet.log"]
     assert all(flags & os.O_NOFOLLOW for _, flags in opened)
     assert opened[0][1] & os.O_EXCL and not opened[0][1] & os.O_TRUNC
+
+
+@links
+@pytest.mark.parametrize("name", ["state", "queue"])
+def test_a_link_in_place_of_a_folder_the_plugin_makes_is_removed_and_nothing_is_written_through_it(environ, tmp_path, name):
+    root = storage.data_dir(environ)
+    (root / name).rmdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "kept.json").write_text("{}", encoding="utf-8")
+    (root / name).symlink_to(elsewhere, target_is_directory=True)
+    assert storage.data_dir(environ) == root
+    assert (root / name).is_dir() and not (root / name).is_symlink()
+    storage.write_json(root / name / "session-1.json", {"offset": 7})
+    assert [path.name for path in elsewhere.iterdir()] == ["kept.json"]
+
+
+@links
+def test_a_data_folder_that_is_a_link_by_choice_is_still_used(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "data").symlink_to(real, target_is_directory=True)
+    root = storage.data_dir({"CLAUDE_PLUGIN_DATA": str(tmp_path / "data")})
+    assert (tmp_path / "data").is_symlink() and (real / "state").is_dir() and root == tmp_path / "data"
+
+
+@links
+def test_a_private_file_that_is_a_link_is_not_read(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"agents": {"x": {"path": "/etc/hosts"}}}', encoding="utf-8")
+    (tmp_path / "session-1.json").symlink_to(outside)
+    assert storage.read_json(tmp_path / "session-1.json", {}) == {}
+    assert storage.read_json(outside, {}) == {"agents": {"x": {"path": "/etc/hosts"}}}
+
+
+def test_a_private_file_is_read_as_written_where_no_flag_refuses_a_link(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "READ_FLAGS", os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    storage.write_json(tmp_path / "status.json", {"note": "r\u00e9sum\u00e9 \r\n \x1a end"})
+    assert storage.read_json(tmp_path / "status.json", None) == {"note": "r\u00e9sum\u00e9 \r\n \x1a end"}
+    assert storage.read_json(tmp_path / "missing.json", "none") == "none"
+
+
+@links
+def test_a_link_in_the_queue_is_removed_and_what_it_points_to_is_never_sent(environ, emet, tmp_path):
+    root = storage.data_dir(environ)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"conversation_id": "session-0", "trace_id": "turn-x", "spans": [], "end": True}), encoding="utf-8")
+    link = root / "queue" / "00000000000000000001-aaaa.json"
+    link.symlink_to(outside)
+    transport.enqueue(root, {"conversation_id": "session-0", "trace_id": "turn-b", "spans": [], "end": True})
+    assert transport.Sender(root, commands.load(environ)).flush() == 0
+    assert [item["trace_id"] for item in emet.envelopes] == ["turn-b"]
+    assert outside.exists() and not link.is_symlink() and transport.queued(root) == []
+    assert log_lines(root)[0].endswith(" queued batch dropped, it is a link")
+
+
+@links
+def test_a_link_put_in_the_queue_after_the_check_is_still_not_sent(environ, emet, tmp_path, monkeypatch):
+    root = storage.data_dir(environ)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"conversation_id": "session-0", "trace_id": "turn-x", "spans": [], "end": True}), encoding="utf-8")
+    (root / "queue" / "00000000000000000001-aaaa.json").symlink_to(outside)
+    # The check sees no link, as when one is planted between the check and the read
+    monkeypatch.setattr(type(root), "is_symlink", lambda self: False)
+    assert transport.Sender(root, commands.load(environ)).flush() == 0
+    assert emet.requests == [] and outside.exists()

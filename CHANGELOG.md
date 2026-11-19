@@ -13,7 +13,9 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - The plugin no longer writes through a symbolic link in its data folder. Before, a link placed at the log, or at the name a file has while it is being written, made the plugin write into the file the link pointed to. A link at the log is now removed and a new log is started; the file being written is always a new one, and a leftover from a crashed run is cleared first. On macOS and Linux the open itself refuses a link. Windows has no such flag, so there the check alone applies.
-- A subagent's file is checked again each time it is read. The plugin keeps the path of every subagent it follows in the session's state file, and read whatever file that path named. A changed state file could so make it send some other file to Emet. The path must now lie in the session's own `subagents` folder and must not be a symbolic link; otherwise that subagent is no longer followed, and the log says `subagent skipped`, without the path.
+- A subagent's file is checked again each time it is read. The plugin keeps the path of every subagent it follows in the session's state file, and read whatever file that path named. A changed state file could so make it send some other file to Emet. The path must now lie in the session's own `subagents` folder and must not be a symbolic link, and neither must that folder. The file is opened without following a link and judged once it is open, and a file that has a second name (a hard link) is refused. Otherwise that subagent is no longer followed, and the log says `subagent skipped`, without the path.
+- A symbolic link in the retry queue is removed and the file it points to is never read or sent; the log says `queued batch dropped, it is a link`. The plugin's own files (state, status, pause, queue) are no longer read through a link on macOS and Linux, and a link in place of the `state` or `queue` folder is removed and the folder made again.
+- A damaged subagent entry in the session's state file no longer stops the run. It is passed over and the rest of the session is sent.
 
 ## [0.1.4] - 2026-11-19
 
