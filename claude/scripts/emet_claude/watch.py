@@ -26,6 +26,7 @@ polling of its turn. A turn without one is polled again after a later Stop.
 | `not_found` | yes | Emet answered that it has no trace with this id (404 `not_found`). |
 | `expired` | yes | The turn was delivered more than a day ago and still has no report. It is no longer asked for. |
 | `wake_turn` | yes | The turn Claude took after this plugin woke it with a report. It is sent to Emet, and its report is never asked for. |
+| `own_command` | yes | A turn a command of this plugin started, such as `/emet:status`. It is sent, and its report is never asked for. |
 | `timed_out` | no | The report was not ready within the 300 seconds of the run. |
 | `key_refused` | no | Emet refused the key on a report read (401 or 403), and the run stopped. |
 | `rate_limited` | no | Emet answered 429 to a report read. The run stopped and paused the report reads of every session. |
@@ -136,6 +137,10 @@ OLD_CLAUDE_CODE = "old_claude_code"
 NO_PERSON = "no_person"
 # The turn after a wake: sent, and never polled
 WAKE_TURN = "wake_turn"
+# A turn a command of this plugin started: sent, and never polled. Its answer lists the plugin's own files
+OWN_COMMAND = "own_command"
+# The line written in place of a report read, for each outcome of a turn that is never polled
+NEVER_POLLED = {WAKE_TURN: "was started by a wake", OWN_COMMAND: "was started by a command of the plugin"}
 # Emet's 404 codes that end the wait for a report
 FINAL_MISSES = ("not_assessed", "failed", "not_found")
 # Every outcome a check can hold, with whether it ends the polling of its turn. The table above says what each means
@@ -145,6 +150,7 @@ OUTCOMES: Dict[str, bool] = {
     **dict.fromkeys(FINAL_MISSES, True),
     EXPIRED: True,
     WAKE_TURN: True,
+    OWN_COMMAND: True,
     TIMED_OUT: False,
     KEY_REFUSED: False,
     RATE_LIMITED: False,
@@ -301,7 +307,10 @@ def newer_turn(stop: Stop) -> bool:
     starts = [
         (offset, entry)
         for offset, entry in found
-        if transcript.starts_turn(entry) and not entry.get("isSidechain") and not transcript.LOCAL_COMMAND.match(transcript.text_of(entry))
+        if transcript.starts_turn(entry)
+        and not entry.get("isSidechain")
+        # A command of the plugin is in the same wrapper as a local command, and a model call answers it
+        and (not transcript.LOCAL_COMMAND.match(transcript.text_of(entry)) or transcript.own_command(entry))
     ]
     if any(offset >= stop.size for offset, _ in starts):
         return True
@@ -405,8 +414,8 @@ def before_the_window_closes(due: float, end: float, soonest: float) -> float:
 
 
 def newer_trace(root: Path, endpoint: str, session_id: str, trace: Trace) -> bool:
-    """Says whether a later turn of the session has been delivered."""
-    found = delivered(pending.lines(root, session_id), endpoint)
+    """Says whether a later turn of the session has been delivered. A turn one of the plugin's commands started is one too."""
+    found = delivered(person_turns(pending.lines(root, session_id)), endpoint)
     ids = [other.trace_uuid for other in found]
     after = ids[ids.index(trace.trace_uuid) + 1 :] if trace.trace_uuid in ids else ids
     for other in found:
@@ -419,6 +428,25 @@ def newer_trace(root: Path, endpoint: str, session_id: str, trace: Trace) -> boo
         elif other.trace_uuid in after:
             return True
     return False
+
+
+def own_command_turns(lines: List[Dict[str, Any]]) -> Set[str]:
+    """Returns the traces of the turns a command of this plugin started. Their reports are never read."""
+    return {
+        item["trace_uuid"]
+        for item in lines
+        if item.get(pending.STARTED_BY) == pending.OWN_COMMAND and isinstance(item.get("trace_uuid"), str)
+    }
+
+
+def person_turns(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Returns the lines with the mark of a command turn taken off: the person who ran the command has moved on, unlike after a wake."""
+    return [
+        {key: value for key, value in item.items() if key != pending.STARTED_BY}
+        if item.get(pending.STARTED_BY) == pending.OWN_COMMAND
+        else item
+        for item in lines
+    ]
 
 
 def read_report(config: Config, trace_uuid: str) -> Answer:
@@ -563,8 +591,8 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
     Only an outcome of OUTCOMES can be recorded. Without wait the status file is left alone when another process is writing it.
     """
     item = {"trace_uuid": trace_uuid, "outcome": outcome, "final": OUTCOMES[outcome], "at": storage.now(pause.clock()), **(ids or {})}
-    # No report is read for a wake turn, and the line must not look as if one was
-    line = f"turn {trace_uuid} was started by a wake, not polled" if outcome == WAKE_TURN else f"report {trace_uuid} -> {outcome}"
+    # No report is read for such a turn, and the line must not look as if one was
+    line = f"turn {trace_uuid} {NEVER_POLLED[outcome]}, not polled" if outcome in NEVER_POLLED else f"report {trace_uuid} -> {outcome}"
     target = checks_path(root, session_id)
     try:
         written = target.read_bytes() if target.exists() else b""
@@ -794,11 +822,12 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         # Read again at every step: the sender, or another Stop of this session, adds ids while this runs
         lines = pending.lines(root, session_id)
         done |= settled(checks(root, session_id))
-        # Recorded, so the turn after a wake does not look like one that was missed
+        # Recorded, so a turn that is never polled does not look like one that was missed
+        commands = own_command_turns(lines)
         for trace in delivered(lines, config.endpoint, by_plugin=True):
             if trace.trace_uuid not in done:
                 done.add(trace.trace_uuid)
-                record(root, session_id, trace.trace_uuid, WAKE_TURN)
+                record(root, session_id, trace.trace_uuid, OWN_COMMAND if trace.trace_uuid in commands else WAKE_TURN)
         waiting = []
         for trace in delivered(lines, config.endpoint):
             if trace.trace_uuid in done:

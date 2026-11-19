@@ -37,9 +37,10 @@ description: Link the Emet reports of the latest turns, say for each recent turn
 | `watch waits, the session already has a watcher`, `watch left, a later Stop of the session waits`, `watch left, the watcher before it ran on` | One report check runs for a session at a time. A turn ended while the check of an earlier turn was still running, so the new one waited to take over, or left | Normal. Nothing to do |
 | `report <id> -> <word>` | The outcome of reading one turn's report. The word is one of the `outcome` words in the table under **Report check** | Normal. Nothing to do |
 | `turn <id> was started by a wake, not polled` | The turn Claude took after a notice about a flagged report. Its report is never read | Normal. Nothing to do |
+| `turn <id> was started by a command of the plugin, not polled` | A turn that `/emet:status` or `/emet:setup` started. Its report is never read | Normal. Nothing to do |
 | `report <id> -> 500, asked again later` (any status, or `network`) | Emet did not answer a report read as expected, and the plugin asks again | Nothing to do unless it repeats; then check the network or proxy |
 | `report <id> not handed to Claude, ...` | Emet flagged a report and Claude was not told, because the session had 3 notices already (`wake_cap`), a later turn had started (`newer_turn`) or the report came late (`late`) | Nothing to do. It is listed under **Flagged** with its link |
-| `report <id> -> <word>, not recorded ...`, `turn <id> was started by a wake, not polled, not recorded ...` | An outcome could not be written to the session's checks file. Claude is not woken for a report that was not recorded | Report it with the log line and the plugin version |
+| `report <id> -> <word>, not recorded ...`, `turn <id> was started by a wake, not polled, not recorded ...`, `turn <id> was started by a command of the plugin, not polled, not recorded ...` | An outcome could not be written to the session's checks file. Claude is not woken for a report that was not recorded | Report it with the log line and the plugin version |
 | `check not shown, the status file is in use`, `check not shown ...` | An outcome was recorded and could not be added to `status.json`, so the list under **Report check** can miss it | Nothing to do if it happens once. Report it with the log line if it repeats |
 | `verdict not saved, its folder is a link`, `verdict not saved ...` | The text written for Claude about a flagged report could not be saved in the `verdicts` folder. This does not stop the notice to Claude | Report it with the log line and the plugin version |
 | `stop not written, a later Stop of the session is already named`, `stop not written ...` | The plugin could not note the latest turn end of the session, or a later one was noted already | Normal for the first. Report the second with the log line if it repeats |
@@ -75,6 +76,7 @@ After a turn ends, the plugin reads Emet's report on it, and wakes Claude when t
 | `not_found` | Not checked | Emet has no trace with this id. |
 | `expired` | Not checked | No report came within a day of the turn's delivery, and the plugin stopped asking. |
 | `wake_turn` | Not checked | The turn Claude took after the plugin handed it a notice about a flagged report. The plugin never reads the report of such a turn. |
+| `own_command` | Not checked | A command of this plugin, such as `/emet:status`, started the turn. The plugin never reads the report of such a turn. |
 | `timed_out` | Not checked | The report was not ready within 5 minutes. The plugin asks again when a later turn of that session ends. |
 | `key_refused` | Not checked | Emet refused the key on a report read. |
 | `rate_limited` | Not checked | Emet limited the report reads, and the plugin paused them. |

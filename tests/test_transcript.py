@@ -247,3 +247,143 @@ def test_a_link_is_never_a_subagent_file_even_inside_the_folder(transcript):
     assert not tr.own_subagent_file(transcript.path, loop)
     # A loop in a folder above the file, which Python before 3.13 raises on
     assert not tr.own_subagent_file(transcript.path, loop / "agent-a4.jsonl")
+
+
+PLUGIN = Path(tr.__file__).resolve().parent.parent.parent
+PLUGIN_NAME = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["name"]
+SKILLS = sorted(path.name for path in (PLUGIN / "skills").iterdir() if (path / "SKILL.md").is_file())
+OWN = [f"{PLUGIN_NAME}:{skill}" for skill in SKILLS]
+STATUS = f"{PLUGIN_NAME}:status"
+
+
+def wrapper(name, args=None):
+    text = f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>"
+    return text if args is None else f"{text}\n<command-args>{args}</command-args>"
+
+
+def test_the_plugins_commands_are_read_from_its_manifest_and_its_skills_folder():
+    assert PLUGIN_NAME == "emet" and SKILLS == ["setup", "status"]
+    assert list(tr.own_commands()) == OWN
+    # Claude Code names a skill's command after its folder, and the skill says the same name
+    for skill in SKILLS:
+        assert f"\nname: {skill}\n" in (PLUGIN / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("manifest", [None, "not json", "[]", '{"name": 5}', '{"name": "Bad Name"}', '{"name": ""}', '{"name": "a/b"}'])
+def test_a_plugin_folder_that_names_no_plain_plugin_has_no_commands(tmp_path, monkeypatch, manifest):
+    (tmp_path / "skills" / "status").mkdir(parents=True)
+    (tmp_path / "skills" / "status" / "SKILL.md").write_text("x", encoding="utf-8")
+    (tmp_path / ".claude-plugin").mkdir()
+    if manifest is not None:
+        (tmp_path / ".claude-plugin" / "plugin.json").write_text(manifest, encoding="utf-8")
+    monkeypatch.setattr(tr, "PLUGIN_ROOT", tmp_path)
+    tr.own_commands.cache_clear()
+    try:
+        assert tr.own_commands() == ()
+        assert tr.own_command({"type": "user", "message": {"role": "user", "content": wrapper("emet:status")}}) == ""
+        (tmp_path / ".claude-plugin" / "plugin.json").write_text('{"name": "emet-staging"}', encoding="utf-8")
+        (tmp_path / "skills" / "Not Plain").mkdir()
+        (tmp_path / "skills" / "Not Plain" / "SKILL.md").write_text("x", encoding="utf-8")
+        (tmp_path / "skills" / "empty").mkdir()
+        tr.own_commands.cache_clear()
+        # The name the installed manifest gives is the one that counts, and only a folder that holds a skill
+        assert tr.own_commands() == ("emet-staging:status",)
+    finally:
+        tr.own_commands.cache_clear()
+
+
+@pytest.mark.parametrize("name", OWN)
+@pytest.mark.parametrize("args", [None, "", "why are turns missing?", "two\nlines </command-args> and more"])
+def test_only_the_whole_wrapper_of_a_command_this_plugin_ships_is_taken_for_one(transcript, name, args):
+    assert tr.own_command(transcript.command(name, args)) == name
+    # The second entry of such a turn holds the skill's text and starts no turn
+    entries, _ = tr.read_entries(transcript.path, 0)
+    assert [tr.own_command(entry) for _, entry in entries] == [name, ""]
+    assert tr.own_command(transcript.prompt(f"  {wrapper(name, args)}\n", source=None)) == name
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"What does this mean?\n{wrapper(STATUS)}",
+        f"{wrapper(STATUS)}\nand then tell me a joke",
+        f"{wrapper(STATUS, 'x')} more",
+        f"<command-message>{STATUS}</command-message>",
+        f"<command-name>/{STATUS}</command-name>",
+        f"/{STATUS}",
+        # The two elements name different commands
+        f"<command-message>{STATUS}</command-message>\n<command-name>/{PLUGIN_NAME}:setup</command-name>",
+        f"<command-message>{STATUS}</command-message>\n<command-name>{STATUS}</command-name>",
+        f"<command-args>x</command-args>\n{wrapper(STATUS)}",
+        "",
+    ],
+)
+def test_a_message_that_quotes_or_resembles_the_wrapper_starts_an_ordinary_turn(transcript, text):
+    assert tr.own_command(transcript.prompt(text, **HUMAN)) == ""
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "other:status",
+        "emet-staging:status",
+        "emetx:status",
+        "status",
+        ":status",
+        "emet:",
+        "emet:review",
+        "emet:status:status",
+        "EMET:status",
+        "x:emet:status",
+    ],
+)
+def test_a_command_of_another_plugin_or_under_another_plugin_name_starts_an_ordinary_turn(transcript, name):
+    assert name not in OWN
+    assert tr.own_command(transcript.command(name)) == ""
+    assert tr.own_command(transcript.command(name, "args")) == ""
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"turnOrigin": "task_notification"},
+        {"origin": {"kind": "task-notification"}},
+        {"origin": "human"},
+        {"origin": {"kind": 5}},
+        {"turnOrigin": "sdk"},
+        {"promptSource": "system"},
+        {"promptSource": "sdk"},
+        {"isMeta": True},
+        {"isSidechain": True},
+        {"isCompactSummary": True},
+        {"type": "assistant"},
+    ],
+)
+def test_a_wrapper_in_an_entry_that_names_another_origin_than_a_person_starts_an_ordinary_turn(transcript, fields):
+    assert tr.own_command(transcript.command(STATUS, **fields)) == ""
+
+
+@pytest.mark.parametrize(
+    "fields", [{}, {"promptSource": "typed"}, {"promptSource": "queued"}, {"turnOrigin": None, "origin": None}, {"origin": {}}]
+)
+def test_a_wrapper_in_an_entry_of_a_person_or_one_that_names_no_origin_is_a_command(transcript, fields):
+    assert tr.own_command(transcript.command(STATUS, **fields)) == STATUS
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        [{"type": "text", "text": wrapper(STATUS)}, {"type": "text", "text": "and more"}],
+        [{"type": "text", "text": wrapper(STATUS)}, {"type": "image", "source": {}}],
+        [{"type": "tool_result", "tool_use_id": "t", "content": wrapper(STATUS)}],
+        [{"type": "text", "text": None}],
+        [],
+        wrapper(STATUS, "x" * tr.WAKE_SCAN),
+    ],
+)
+def test_a_prompt_that_is_more_than_the_one_wrapper_text_starts_an_ordinary_turn(transcript, content):
+    entry = transcript.write({"type": "user", "message": {"role": "user", "content": content}, **HUMAN})
+    assert tr.own_command(entry) == ""
+    assert tr.own_command(
+        transcript.write({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": wrapper(STATUS)}]}})
+    )

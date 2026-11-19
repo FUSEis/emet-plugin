@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import stat
@@ -29,6 +30,18 @@ NOTICE_ORIGINS = ("task_notification", "task-notification")
 WAKE_SCAN = 64 * 1024
 # How long after the poller handed a report to Claude a turn can still be the one that wake started
 WAKE_WINDOW_S = 600
+# The plugin's own folder, two above this package
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
+# A plugin or skill name as it can stand in a command
+COMMAND_PART = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+# The whole prompt of a turn a skill's slash command started, as Claude Code 2.1.305 writes it
+COMMAND_PROMPT = re.compile(
+    r"<command-message>([^<>\s]{1,200})</command-message>\s*<command-name>/([^<>\s]{1,200})</command-name>"
+    r"(?:\s*<command-args>.*</command-args>)?",
+    re.S,
+)
+# How Claude Code names a turn a person started, in turnOrigin and in origin.kind
+PERSON_ORIGIN = "human"
 
 
 def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List[Tuple[int, Entry]], int]:
@@ -127,6 +140,49 @@ def started_by_wake(entry: Entry, handed: Sequence[float] = ()) -> bool:
         return False
     start = timestamps.parse(entry.get("timestamp"))
     return start is not None and any(0 <= start.timestamp() - at <= WAKE_WINDOW_S for at in handed)
+
+
+@functools.lru_cache(maxsize=1)
+def own_commands() -> Tuple[str, ...]:
+    """Returns the commands this plugin ships, each as plugin:skill, from its manifest and its skills folder. Never raises.
+
+    The plugin's name is the one in the installed plugin.json. A command Claude Code names under another plugin name is not one of these.
+    """
+    manifest = storage.read_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json", None)
+    name = manifest.get("name") if isinstance(manifest, dict) else None
+    if not isinstance(name, str) or not COMMAND_PART.fullmatch(name):
+        return ()
+    try:
+        skills = sorted(path.parent.name for path in (PLUGIN_ROOT / "skills").glob("*/SKILL.md"))
+    except OSError:
+        return ()
+    return tuple(f"{name}:{skill}" for skill in skills if COMMAND_PART.fullmatch(skill))
+
+
+def own_command(entry: Entry) -> str:
+    """Returns the command of this plugin that started the turn, as plugin:skill, or "" for any other turn.
+
+    The whole prompt must be Claude Code's wrapper of the command, and nothing may name another origin than a person.
+    A message that quotes the wrapper among other words is an ordinary turn.
+    """
+    if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isSidechain") or entry.get("isCompactSummary"):
+        return ""
+    origin = entry.get("origin")
+    if origin is not None and not isinstance(origin, dict):
+        return ""
+    named = [entry.get("turnOrigin"), origin.get("kind") if origin else None]
+    if any(name is not None and name != PERSON_ORIGIN for name in named):
+        return ""
+    if entry.get("promptSource") is not None and entry.get("promptSource") not in PERSON_SOURCES:
+        return ""
+    parts = content_parts(entry)
+    if len(parts) != 1 or parts[0].get("type") != "text" or not isinstance(parts[0].get("text"), str):
+        return ""
+    text = parts[0]["text"]
+    match = COMMAND_PROMPT.fullmatch(text.strip()) if len(text) <= WAKE_SCAN else None
+    if not match or match.group(1) != match.group(2):
+        return ""
+    return match.group(1) if match.group(1) in own_commands() else ""
 
 
 def prompt_text(entry: Entry) -> str:

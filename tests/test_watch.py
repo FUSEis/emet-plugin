@@ -2463,3 +2463,106 @@ def test_a_redirected_report_read_is_not_followed(environ, emet):
     emet.report(T1, 302)
     assert watch.read_report(config.load(environ), T1) == watch.Answer(302)
     assert [read["path"] for read in emet.reads] == [f"/api/v1/traces/{T1}/report/"]
+
+
+def test_a_turn_a_command_of_the_plugin_started_is_never_polled_and_is_recorded_as_its_own_outcome(
+    session, environ, emet, clock, capfdbinary
+):
+    deliver(environ, clock, started_by="own_command")
+    finish(environ, clock)
+    # Emet flags the answer of /emet:status, a long list of claims about the plugin's files
+    emet.report(T1, 200, document())
+    start = clock.now
+    assert stop(session, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert emet.reads == [] and clock.now == start
+    assert not (root(environ) / "verdicts").exists()
+    (check,) = watch.checks(root(environ), SESSION)
+    assert check == {"trace_uuid": T1, "outcome": "own_command", "final": True, "at": storage.now(clock.now)}
+    assert status(environ)["checks"] == [{"session_id": SESSION, **check}]
+    assert f"turn {T1} was started by a command of the plugin, not polled" in log(environ)
+    assert "report " not in log(environ) and "->" not in log(environ) and "wake" not in log(environ)
+    # However often Stop fires
+    assert stop(session, environ) == 0
+    assert outcomes(environ) == [(T1, "own_command", True)] and emet.reads == []
+    found = watch.checks(root(environ), SESSION)
+    assert watch.settled(found) == {T1} and watch.wakes(found) == 0
+
+
+def test_each_mark_is_recorded_under_its_own_outcome_and_neither_turn_is_polled(session, environ, emet, clock):
+    third = str(uuid.UUID(int=3))
+    deliver(environ, clock, T1, started_by="own_command")
+    deliver(environ, clock, T2, started_by="report_wake")
+    # A mark this version does not know is still a turn that is never polled
+    deliver(environ, clock, third, started_by="something_newer")
+    finish(environ, clock)
+    assert stop(session, environ) == 0
+    assert sorted(outcomes(environ)) == sorted([(T1, "own_command", True), (T2, "wake_turn", True), (third, "wake_turn", True)])
+    assert emet.reads == []
+    assert set(watch.NEVER_POLLED) == {"own_command", "wake_turn"} <= {word for word, final in watch.OUTCOMES.items() if final}
+
+
+def test_a_command_turn_holds_back_the_report_of_the_turn_before_it(transcript, environ, emet, clock, capfdbinary):
+    # The same lines as for the turn after a wake above, which holds nothing back: here a person ran a command and has moved on
+    next_turn(transcript, clock)
+    deliver(environ, clock, T1)
+    deliver(environ, clock, T2, started_by="own_command")
+    emet.report(T1, 200, document())
+    emet.report(T2, 200, document())
+    assert stop(transcript, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert sorted(outcomes(environ)) == sorted([(T2, "own_command", True), (T1, "flagged", True)])
+    (held,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T1]
+    assert (held["handed"], held["held"]) == (False, "newer_turn")
+    assert emet.polled(T2) == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "woken"),
+    [("emet:status", False), ("emet:setup", False), ("other:status", True)],
+)
+def test_a_command_of_the_plugin_that_starts_while_the_report_is_awaited_keeps_claude_asleep(
+    session, environ, emet, clock, sleeper, capfdbinary, name, woken
+):
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    # Another skill's command is in the same wrapper, and is still passed over here as it was
+    sleeper.at(4, lambda: session.command(name))
+    assert stop(session, environ) == (2 if woken else 0)
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["handed"], check.get("held")) == (woken, None if woken else "newer_turn")
+
+
+def test_a_command_of_the_plugin_starts_a_turn_that_is_sent_unchanged_and_never_wakes_claude(
+    transcript, environ, emet, clock, capfdbinary, sender_on_the_clock
+):
+    transcript.write(
+        {"type": "user", "message": {"role": "user", "content": "How did March go?"}, "promptSource": "typed", "version": "2.1.305"}
+    )
+    transcript.text("msg_1", "Spend rose 12% in March.", version="2.1.305", timestamp=stamp(clock))
+    send(transcript, environ)
+    (first,) = pending.traces(root(environ), SESSION)
+    # The person runs /emet:status before the report of the first answer is ready
+    clock.advance(20)
+    command = transcript.command("emet:status", version="2.1.305", timestamp=stamp(clock))
+    transcript.text("msg_2", "Skipped turns: None recorded.", version="2.1.305", timestamp=stamp(clock))
+    send(transcript, environ)
+    first, second = pending.traces(root(environ), SESSION)
+    assert second == emet.trace_uuids[command["uuid"]]
+    # The turn is sent whole, as a person's turn, with nothing that names the plugin as its start
+    sent = emet.envelopes[1]
+    assert "plugin_local" not in sent and "own_command" not in json.dumps(sent) and "turn_started_by" not in json.dumps(sent)
+    assert "/emet:status" in json.dumps(sent) and "Skipped turns: None recorded." in json.dumps(sent)
+    # Emet flags both: the first answer, and the status answer it misread
+    emet.report(first, 200, document())
+    emet.report(second, 200, document())
+    assert stop(transcript, environ, prompt_id=command["promptId"]) == 0
+    assert stop(transcript, environ, prompt_id=command["promptId"]) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert emet.polled(second) == 0 and emet.polled(first) == 1
+    assert sorted(outcomes(environ)) == sorted([(first, "flagged", True), (second, "own_command", True)])
+    (held,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == first]
+    assert (held["handed"], held["held"]) == (False, "newer_turn")
+    # Only the report of the first answer is saved, for /emet:status to list
+    assert [path.name.split(".")[1] for path in (root(environ) / "verdicts").glob("*.json")] == [first]

@@ -73,12 +73,18 @@ def resource(config: Config, first: transcript.Entry, cwd: str) -> Dict[str, Any
 
 
 def started_by(envelope: Dict[str, Any]) -> str:
-    """Returns the hook of this plugin that started the envelope's turn, read from its root span, or "" for any other turn."""
+    """Returns what of this plugin started the envelope's turn, or "" for any other turn.
+
+    A wake is read from the root span, which Emet is sent. A command of the plugin is read from what is kept for the plugin's files.
+    """
     spans = envelope.get("spans")
     for span in spans if isinstance(spans, list) else []:
         attributes = span.get("attributes") if isinstance(span, dict) and span.get("kind") == "turn" else None
         if isinstance(attributes, dict) and attributes.get(STARTED_BY_ATTRIBUTE) == REPORT_WAKE:
             return REPORT_WAKE
+    local = envelope.get(LOCAL)
+    if isinstance(local, dict) and local.get(pending.STARTED_BY) == pending.OWN_COMMAND:
+        return pending.OWN_COMMAND
     return ""
 
 
@@ -184,6 +190,9 @@ def for_turn(
     local = {"ended": root["ended_at"]}
     if pending.plain(first.get("promptId")):
         local["prompt_id"] = first["promptId"]
+    # Kept on this machine only: the turn is sent as any other, and its report is never read
+    if not woken and transcript.own_command(first):
+        local[pending.STARTED_BY] = pending.OWN_COMMAND
     return trace_id, wrap(config, session_id, trace_id, [root, *built.spans], resource(config, first, cwd), title, local), built
 
 

@@ -59,11 +59,15 @@ The report check (`watch.py` and `report.py`) is the one part of the plugin that
    - `test_the_hook_entry_point_runs_the_poller_and_passes_its_exit_code`
    - `test_an_error_in_the_poller_is_logged_by_type_and_never_raised`
    - `test_input_that_is_no_hook_input_exits_0_in_silence`
-3. **No wake chains.** The turn Claude takes after a wake is sent to Emet, and its report is never read. A Stop that a hook started is not polled. One revision of a report wakes Claude once, and a session gets three wakes at most. A report that is ready more than 60 seconds after its turn ended, or after a newer turn began, is kept and wakes no one.
+3. **No wake chains.** The turn Claude takes after a wake is sent to Emet, and its report is never read. The same holds for a turn one of the plugin's own commands started (`/emet:status`, `/emet:setup`): its answer lists the plugin's files, and a report on it would wake Claude about the plugin itself. Such a turn is told by its whole prompt, which must be Claude Code's wrapper of a command the plugin ships under the name in its `plugin.json`. Unlike the turn after a wake, it holds back the report of the turn before it, since a person started it. A Stop that a hook started is not polled. One revision of a report wakes Claude once, and a session gets three wakes at most. A report that is ready more than 60 seconds after its turn ended, or after a newer turn began, is kept and wakes no one.
    - `test_a_wake_starts_a_turn_that_is_sent_and_never_wakes_claude_again`
    - `test_a_turn_a_hook_started_is_not_polled`
    - `test_the_turn_after_a_wake_is_never_polled_and_is_recorded_as_its_own_outcome`
    - `test_the_stop_that_takes_over_after_a_wake_never_wakes_claude_for_the_woken_turn`
+   - `test_a_turn_a_command_of_the_plugin_started_is_never_polled_and_is_recorded_as_its_own_outcome`
+   - `test_a_command_of_the_plugin_starts_a_turn_that_is_sent_unchanged_and_never_wakes_claude`
+   - `test_a_command_turn_holds_back_the_report_of_the_turn_before_it`
+   - In `tests/test_transcript.py`: `test_only_the_whole_wrapper_of_a_command_this_plugin_ships_is_taken_for_one`
    - `test_the_same_report_never_wakes_claude_twice_however_often_stop_fires`
    - `test_wakes_are_capped_per_session`
    - `test_a_report_ready_a_minute_after_its_turn_ended_still_wakes_claude_and_a_later_one_does_not`

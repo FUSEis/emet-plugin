@@ -349,6 +349,12 @@ def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_can_writ
         assert matching, f"no row of the skill's log table shows a line of the form {line}"
         shown.remove(matching[0])
     assert "A line that matches no row of the table is shown as it is" in text
+    # One pattern covers the line of every turn that is never polled, so each is held by name
+    from emet_claude import watch
+
+    for started in watch.NEVER_POLLED.values():
+        assert f"| `turn <id> {started}, not polled` |" in table, started
+        assert f"`turn <id> {started}, not polled, not recorded ...`" in table, started
     assert "Quote the log line as it is written, in backticks, before you explain it." in text
 
 
@@ -641,6 +647,8 @@ def test_the_readme_says_when_claude_speaks_about_a_report_and_that_no_setting_t
     needed = ".".join(str(part) for part in watch.MIN_CLAUDE_CODE)
     for said in (
         "Only for a report Emet marked as flagged.",
+        "Never about the plugin's own commands. The answer to `/emet:status` or `/emet:setup` is sent to Emet like any turn",
+        "Running one of them counts as your next turn",
         f"ready within {watch.LATE_S} seconds of the end of the turn, and you have not started another turn since",
         f"The first read comes about {watch.FIRST_S} seconds after the turn ends.",
         f"At most {watch.WAKE_CAP} times in one session.",

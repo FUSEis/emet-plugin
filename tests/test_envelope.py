@@ -425,3 +425,38 @@ def test_a_notice_with_the_wake_text_that_follows_no_recorded_wake_is_sent_as_an
     (model,) = by_kind(envelopes[0]["spans"], "model")
     assert report.WAKE_OPENING in model["payload"]["input_messages"][0]["parts"][0]["content"]
     assert model["is_truncated"] is False
+
+
+@pytest.mark.parametrize("mode", ["sanitized", "full", "metadata"])
+def test_a_turn_a_command_of_the_plugin_started_is_sent_as_any_other_and_marked_only_for_the_plugins_files(transcript, mode, monkeypatch):
+    simple_turn(transcript)
+    transcript.command("emet:status", "why")
+    transcript.text("msg_status", "Turns are reaching Emet.")
+    first, second = build(transcript, mode)
+    (env,) = second[1]
+    assert envelope.started_by(env) == "own_command" and envelope.started_by(first[1][0]) == ""
+    assert env[envelope.LOCAL]["started_by"] == "own_command" and "started_by" not in first[1][0][envelope.LOCAL]
+    # Nothing of the mark is sent: Emet gets what it got before the plugin knew its own commands
+    assert "own_command" not in json.dumps(envelope.sendable(env)) and STARTED_BY not in json.dumps(envelope.sendable(env))
+    monkeypatch.setattr(tr, "own_command", lambda entry: "")
+    (unmarked,) = build(transcript, mode)[1][1]
+    assert envelope.started_by(unmarked) == ""
+    assert envelope.sendable(unmarked) == envelope.sendable(env)
+    if mode != "metadata":
+        (model,) = by_kind(env["spans"], "model")
+        assert model["payload"]["input_messages"][0]["parts"][0]["content"] == "/emet:status why"
+
+
+def test_the_turn_after_a_wake_is_never_marked_as_a_command_turn(transcript, monkeypatch):
+    monkeypatch.setattr(tr, "own_command", lambda entry: "emet:status")
+    wake_turn(transcript)
+    (env,) = build(transcript)[0][1]
+    assert envelope.started_by(env) == "report_wake" and "started_by" not in env[envelope.LOCAL]
+
+
+@pytest.mark.parametrize(
+    "local", [None, "own_command", [], {}, {"started_by": "report_wake"}, {"started_by": True}, {"started_by": "other"}]
+)
+def test_only_the_one_mark_of_a_command_turn_is_read_back_from_a_queued_file(local):
+    assert envelope.started_by({"spans": [], envelope.LOCAL: local}) == ""
+    assert envelope.started_by({envelope.LOCAL: {"started_by": "own_command"}}) == "own_command"
