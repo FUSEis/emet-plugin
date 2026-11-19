@@ -343,10 +343,9 @@ def test_a_longer_wait_emet_names_for_the_reads_moves_the_end_of_their_pause(env
     until = pause.until(root(environ), pause.READS)
     assert until == storage.now(clock.now + 30)
     clock.advance(10)
-    pause.extend(root(environ), 5.0, pause.READS)
-    pause.extend(root(environ), 20.0, pause.READS)
-    pause.extend(root(environ), None, pause.READS)
-    assert pause.until(root(environ), pause.READS) == until
+    for shorter in (5.0, 20.0, None):
+        pause.extend(root(environ), shorter, pause.READS)
+        assert pause.until(root(environ), pause.READS) == until
     pause.extend(root(environ), 120.0, pause.READS)
     assert pause.until(root(environ), pause.READS) == storage.now(clock.now + 120)
     assert pause.read(root(environ), pause.READS)["delay"] == 30
