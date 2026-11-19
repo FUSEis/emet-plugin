@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import cases as case_data
 from . import rules
-from .client import Client, text_of
+from .client import Client, count, text_of
 
 Case = Dict[str, Any]
 # True or False, or None when the rule cannot be decided for this reply
@@ -80,10 +80,12 @@ def marks_disputed(reply: Reply, case: Case) -> Verdict:
 
 
 def no_ruling(reply: Reply, case: Case) -> Verdict:
-    found = [
-        part for part in units(reply.text) if not has(rules.RULING_EXEMPT, part) and any(has(pattern, part) for pattern in rules.RULINGS)
-    ]
+    found = [part for part in units(reply.text) if any(rules_in(clause) for clause in re.split(rules.CLAUSE, part))]
     return not found, "; ".join(found)
+
+
+def rules_in(clause: str) -> bool:
+    return not has(rules.RULING_EXEMPT, clause) and any(has(pattern, clause) for pattern in rules.RULINGS)
 
 
 def no_apology(reply: Reply, case: Case) -> Verdict:
@@ -117,7 +119,11 @@ def says_no_match(reply: Reply, case: Case) -> Verdict:
 
 
 def followup_uses_evidence(reply: Reply, case: Case) -> Verdict:
-    return mentions(reply.text, case["followup"]["evidence_keys"]), ""
+    """The evidence has to be cited, and the question answered: a reply that says it cannot tell fails."""
+    if not mentions(reply.text, case["followup"]["evidence_keys"]):
+        return False, "the turn's evidence is not cited"
+    dodged = [part for part in units(reply.text) if has(rules.EVASION, part)]
+    return not dodged, "; ".join(dodged)
 
 
 GRADERS: Dict[str, Callable[[Reply, Case], Verdict]] = {
@@ -165,9 +171,11 @@ def judge_request(model: str, case: Case, reply_text: str) -> Dict[str, Any]:
     }
 
 
-def judge(client: Client, model: str, case: Case, reply_text: str) -> Verdict:
+def judge(client: Client, model: str, case: Case, reply_text: str, tokens: Optional[Dict[str, int]] = None) -> Verdict:
     """Asks the grading model whether the reply is neutral. Anything but a clear verdict leaves the rule undecided."""
     response = client.create(judge_request(model, case, reply_text))
+    if tokens is not None:
+        count(tokens, response)
     try:
         answer = json.loads(text_of(response))
         verdict, critique = answer["verdict"], str(answer.get("critique", ""))

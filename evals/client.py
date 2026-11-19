@@ -5,8 +5,10 @@ Requests and responses are the JSON the API documents (https://platform.claude.c
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -17,9 +19,12 @@ API_URL = "https://api.anthropic.com/v1/messages"
 # The version whose request and response shapes this file was written against
 API_VERSION = "2026-10-21"
 KEY_VARIABLE = "ANTHROPIC_API_KEY"
-# Rate limits, server errors and overload are worth another try; a bad request is not
-RETRIED = (408, 409, 429)
+# The API's errors page says to retry a rate limit, a server error and an overload. A 5xx sent after the model
+# ran can be billed once more; a reply lost after the request was sent is never asked for again
+RETRIED = (429,)
 RETRIES = 4
+# A timeout says nothing about whether the request arrived (socket.timeout is its own class before Python 3.10)
+TIMEOUTS = (socket.timeout, TimeoutError)
 MAX_WAIT_S = 60.0
 # A case scripts this many assistant turns before its notice, and this many more for each earlier wake in the session
 SCRIPTED_ASSISTANT_TURNS = 2
@@ -38,6 +43,21 @@ class ApiError(Exception):
         super().__init__(f"{status} {kind}")
         self.status = status
         self.kind = kind
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, so the key is never sent on to another address."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def count(tokens: Dict[str, int], response: Dict[str, Any]) -> None:
+    """Adds the tokens a response reports to a running total."""
+    usage = response.get("usage")
+    for key in ("input", "output"):
+        spent = usage.get(f"{key}_tokens") if isinstance(usage, dict) else None
+        tokens[key] += spent if isinstance(spent, int) and not isinstance(spent, bool) else 0
 
 
 def text_of(response: Dict[str, Any]) -> str:
@@ -69,19 +89,35 @@ class AnthropicClient:
             wait: Optional[float] = None
             try:
                 call = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
-                with urllib.request.urlopen(call, timeout=self.timeout) as reply:
-                    answer: Dict[str, Any] = json.loads(reply.read())
-                    return answer
+                with urllib.request.build_opener(NoRedirect).open(call, timeout=self.timeout) as reply:
+                    return parsed(reply.status, reply.read())
             except urllib.error.HTTPError as error:
+                if 300 <= error.code < 400:
+                    raise ApiError(error.code, "redirect") from None
                 kind = error_kind(error)
                 if attempt == RETRIES or not (error.code in RETRIED or error.code >= 500):
                     raise ApiError(error.code, kind) from None
                 wait = retry_after(error)
-            except (urllib.error.URLError, TimeoutError, ConnectionError):
-                if attempt == RETRIES:
+            except urllib.error.URLError as error:
+                # The request never left, so asking again cannot run it twice
+                if attempt == RETRIES or isinstance(error.reason, TIMEOUTS):
                     raise ApiError(0, "connection_error") from None
+            except (*TIMEOUTS, ConnectionError, http.client.HTTPException):
+                # Sent, and the reply was lost: the API may have run it
+                raise ApiError(0, "no_reply") from None
             self.sleep(min(wait if wait is not None else 2.0**attempt, MAX_WAIT_S))
         raise ApiError(0, "connection_error")  # pragma: no cover - the loop always returns or raises
+
+
+def parsed(status: int, body: bytes) -> Dict[str, Any]:
+    """Returns the response object. Anything else is an error of this one call, like any other."""
+    try:
+        answer = json.loads(body)
+    except ValueError:
+        raise ApiError(status, "bad_response") from None
+    if not isinstance(answer, dict):
+        raise ApiError(status, "bad_response")
+    return answer
 
 
 def error_kind(error: urllib.error.HTTPError) -> str:

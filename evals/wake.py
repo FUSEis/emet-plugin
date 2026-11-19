@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import cases as case_data
 from . import graders, rules
-from .client import AnthropicClient, ApiError, Client, ReplayClient, blocks, text_of
+from .client import AnthropicClient, ApiError, Client, ReplayClient, blocks, count, text_of
 from .graders import Reply
 
 HERE = Path(__file__).resolve().parent
@@ -68,9 +69,7 @@ def converse(client: Client, model: str, case: Dict[str, Any], messages: List[Di
     texts = []
     for _ in range(MAX_STEPS):
         response = client.create(request(model, messages, effort))
-        usage = response.get("usage") or {}
-        sample["tokens"]["input"] += int(usage.get("input_tokens") or 0)
-        sample["tokens"]["output"] += int(usage.get("output_tokens") or 0)
+        count(sample["tokens"], response)
         if response.get("stop_reason") in UNGRADED_STOPS:
             sample["error"] = str(response.get("stop_reason"))
             break
@@ -104,6 +103,7 @@ def run_sample(client: Client, model: str, case: Dict[str, Any], number: int, ju
         "checks": {},
         "notes": {},
         "tokens": {"input": 0, "output": 0},
+        "grader_tokens": {"input": 0, "output": 0},
     }
     messages = case_data.messages(case)
     first, followup = Reply(), Reply()
@@ -128,7 +128,7 @@ def run_sample(client: Client, model: str, case: Dict[str, Any], number: int, ju
             continue
         else:
             try:
-                verdict, note = graders.judge(client, judge_model, case, target.text)
+                verdict, note = graders.judge(client, judge_model, case, target.text, sample["grader_tokens"])
             except ApiError as error:
                 verdict, note = None, f"the grader failed: api {error}"
         sample["checks"][rule.id] = verdict
@@ -140,9 +140,10 @@ def judge_agreement(client: Client, judge_model: str, cases: List[Dict[str, Any]
     """Measures the model grader against the hand labels, overall and on each label apart."""
     by_id = {case["id"]: case for case in cases}
     found: Dict[str, Any] = {"agree": 0, "total": 0, "fail_caught": 0, "fail": 0, "pass_kept": 0, "pass": 0, "disagreed": []}
+    found["tokens"] = {"input": 0, "output": 0}
     for item in labels:
         try:
-            verdict, note = graders.judge(client, judge_model, by_id[item["case"]], item["reply"])
+            verdict, note = graders.judge(client, judge_model, by_id[item["case"]], item["reply"], found["tokens"])
         except ApiError as error:
             verdict, note = None, f"api {error}"
         said = {True: "pass", False: "fail", None: "none"}[verdict]
@@ -189,7 +190,8 @@ def tally(passed: int, total: int, **more: int) -> Dict[str, Any]:
 
 
 def clean(sample: Sample) -> bool:
-    return all(verdict is not False for verdict in sample["checks"].values())
+    """True only when every check the sample was graded on passed. An undecided verdict is not a pass."""
+    return all(verdict is True for verdict in sample["checks"].values())
 
 
 def cell(count: Dict[str, Any], interval: bool = True) -> str:
@@ -209,7 +211,8 @@ def table(result: Dict[str, Any]) -> str:
         "",
         f"Wording `{result['wording']}`, {len(result['cases'])} cases, {result['samples_per_case']} samples per case and model, "
         f"run {result['started']}."
-        + (" **Offline replay of the written replies: these are not model results.**" if result["offline"] else ""),
+        + (" **Offline replay of the written replies: these are not model results.**" if result["offline"] else "")
+        + (f" Rendered by the plugin at `{result['plugin_scripts']}`." if result.get("plugin_scripts") else ""),
         "",
         "Each cell is the pass rate, then passed/graded and the 95% Wilson interval in percent.",
         "",
@@ -219,7 +222,12 @@ def table(result: Dict[str, Any]) -> str:
     for rule in rules.RULES:
         if any(summary[model]["checks"][rule.id]["total"] or summary[model]["checks"][rule.id]["undecided"] for model in models):
             lines.append(f"| {rule.says} | " + " | ".join(cell(summary[model]["checks"][rule.id]) for model in models) + " |")
-    lines += ["", "Samples that passed every check, by case:", "", "| Case | " + " | ".join(f"`{model}`" for model in models) + " |"]
+    lines += [
+        "",
+        "Samples that passed every check, by case (an undecided verdict is not a pass):",
+        "",
+        "| Case | " + " | ".join(f"`{model}`" for model in models) + " |",
+    ]
     lines.append("|---|" + "---|" * len(models))
     for case_id in result["cases"]:
         lines.append(f"| {case_id} | " + " | ".join(cell(summary[model]["cases"][case_id], interval=False) for model in models) + " |")
@@ -232,6 +240,8 @@ def table(result: Dict[str, Any]) -> str:
             f"({low} to {high}), caught {agreement['fail_caught']}/{agreement['fail']} of the failing replies "
             f"and kept {agreement['pass_kept']}/{agreement['pass']} of the passing ones."
         )
+        spent = result["grader_tokens"]
+        lines.append(f"The grader used {spent['input']} input and {spent['output']} output tokens, the hand labels included.")
     else:
         lines.append("The model grader was not run.")
     for model in models:
@@ -239,20 +249,46 @@ def table(result: Dict[str, Any]) -> str:
         undecided = sum(count["undecided"] for count in mine["checks"].values())
         lines.append(
             f"`{model}`: {mine['errors']} of {mine['samples']} samples not graded (API error, refusal or cut reply), "
-            f"{undecided} verdicts undecided, {mine['tokens']['input']} input and {mine['tokens']['output']} output tokens."
+            f"{undecided} verdicts undecided, {mine['tokens']['input']} input and {mine['tokens']['output']} output tokens "
+            "of its own."
         )
     return "\n".join(lines) + "\n"
 
 
 def failure(sample: Sample) -> str:
-    """Renders one failing sample for reading: the failed rules, then the exact reply."""
+    """Renders one sample that did not pass every check: the failed and the undecided rules, then the exact reply."""
     failed = [f"- {rule}: {sample['notes'].get(rule) or 'failed'}" for rule, verdict in sample["checks"].items() if verdict is False]
+    failed += [f"- {rule}: undecided, {sample['notes'].get(rule)}" for rule, verdict in sample["checks"].items() if verdict is None]
     parts = [f"# {sample['case']} / {sample['model']} / sample {sample['sample']}", "", *failed]
     for title, reply in (("Reply", sample["reply"]), ("Reply to the follow-up", sample["followup"])):
         if reply:
             parts += ["", f"## {title}", "", reply["text"] or "(no text)"]
             parts += [f"\nTool call: `{call['name']}` {json.dumps(call['input'], ensure_ascii=False)}" for call in reply["tools"]]
     return "\n".join(parts) + "\n"
+
+
+def refuse_used(folder: Optional[Path]) -> None:
+    """Stops before any call when the named folder already holds files, so two runs never share one."""
+    if folder is not None and folder.exists() and (not folder.is_dir() or any(folder.iterdir())):
+        raise SystemExit(f"{folder} already holds files. Name a new or an empty folder with --out.")
+
+
+def publish(result: Dict[str, Any], folder: Optional[Path]) -> Path:
+    """Writes every file to a folder beside the target, then renames it, so a results folder is whole or absent."""
+    base = folder or HERE / "results" / result["started"].replace(":", "").replace("-", "")
+    base.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f"{base.name}.", suffix=".partial", dir=base.parent))
+    write(result, staging)
+    target, number = base, 1
+    while folder is None and target.exists():
+        # Another run started in the same second
+        number += 1
+        target = base.with_name(f"{base.name}-{number}")
+    if target.exists():
+        # Empty, as checked before the run; a folder filled since then makes this fail and keeps both
+        target.rmdir()
+    staging.rename(target)
+    return target
 
 
 def write(result: Dict[str, Any], folder: Path) -> None:
@@ -283,8 +319,11 @@ def run(
     jobs = [(model, case, number) for model in models for case in cases for number in range(1, samples + 1)]
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         results = list(pool.map(lambda job: run_sample(client, job[0], job[1], job[2], judge_model, effort), jobs))
+    spent = [agreement["tokens"]] if agreement else []
+    spent += [sample["grader_tokens"] for sample in results]
     return {
         "wording": case_data.wording(cases),
+        "grader_tokens": {key: sum(item[key] for item in spent) for key in ("input", "output")},
         "started": started,
         "offline": offline,
         "models": list(models),
@@ -312,11 +351,24 @@ def arguments(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=4, metavar="N", help="samples run at once (default: %(default)s)")
     parser.add_argument("--out", type=Path, default=None, metavar="DIR", help="results folder (default: evals/results/<time>)")
     parser.add_argument("--offline", action="store_true", help="replay the written replies: no key, no network, no model")
+    parser.add_argument(
+        "--plugin-scripts",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="render with the report.py of another checkout, such as ../emet-plugin-main/claude/scripts (default: this checkout)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None, client: Optional[Client] = None) -> int:
     options = arguments(argv)
+    repeated = sorted({model for model in options.models if options.models.count(model) > 1})
+    if repeated:
+        raise SystemExit(f"Model listed twice: {', '.join(repeated)}")
+    refuse_used(options.out)
+    if options.plugin_scripts is not None:
+        case_data.use_plugin(options.plugin_scripts)
     cases = case_data.load()
     if options.cases:
         unknown = sorted(set(options.cases) - {case["id"] for case in cases})
@@ -332,8 +384,8 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[Client] = None) 
     models = ["replay"] if options.offline else options.models
     judge_model = "" if options.no_judge else "replay" if options.offline else options.judge_model
     result = run(client, models, cases, options.samples, judge_model, options.effort, options.workers, options.offline)
-    folder = options.out or HERE / "results" / result["started"].replace(":", "").replace("-", "")
-    write(result, folder)
+    result["plugin_scripts"] = str(options.plugin_scripts) if options.plugin_scripts is not None else ""
+    folder = publish(result, options.out)
     sys.stdout.write(table(result))
     sys.stderr.write(f"\nResults and failing replies: {folder}\n")
     graded = sum(mine["samples"] - mine["errors"] for mine in result["summary"].values())

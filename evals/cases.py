@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -15,6 +17,25 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "claude" / "scripts"))
 
 from emet_claude import report  # noqa: E402
+
+
+def use_plugin(scripts: Path) -> None:
+    """Renders every notice with the report.py of another checkout, loaded under its own name beside this one's."""
+    package = scripts / "emet_claude"
+    name = "emet_claude_at_" + hashlib.sha256(str(package.resolve()).encode("utf-8")).hexdigest()[:12]
+    spec = importlib.util.spec_from_file_location(name, package / "__init__.py", submodule_search_locations=[str(package)])
+    if not (package / "report.py").is_file() or spec is None or spec.loader is None:
+        raise SystemExit(f"No emet_claude/report.py under {scripts}. Name the plugin's scripts folder, such as ../other/claude/scripts.")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    # Nothing is written into the other checkout, not even bytecode
+    writes, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+        globals()["report"] = importlib.import_module(f"{name}.report")
+    finally:
+        sys.dont_write_bytecode = writes
+
 
 Case = Dict[str, Any]
 Message = Dict[str, Any]
