@@ -71,7 +71,7 @@ The other files hold ids, times, counts and HTTP statuses. They hold no text fro
 
 | File | What it holds | Kept until |
 | --- | --- | --- |
-| `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, and for each subagent still followed the path of its transcript, its ids and a position. | The plugin is uninstalled. |
+| `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, for each subagent still followed the path of its transcript, its ids and a position, and the version of the file's own format. | The plugin is uninstalled. |
 | `state/<session>.pending.jsonl` | One line for each turn Emet accepted: Emet's ids of the trace and of its conversation, the time, the address that accepted it, Claude Code's id of the turn and the time the turn ended. Also a line for a turn Emet refused (its id and the HTTP status), for a turn that could not be read (the name of the error's type), and for the end of each run (the time and the number of turns queued). | The plugin is uninstalled. |
 | `pause.json` | The time before which the plugin asks Emet nothing, and the length of the last wait, written after Emet could not be reached. | Emet answers again after the pause has run out. |
 | `status.json` | What `/emet:status` reports: the plugin version, Team ID, capture mode, the email sent, the public start of the key, the result of the key check, counts, the pause time, and for the last five sessions the repository folder name, the time and the report link. | Rewritten at every run. |

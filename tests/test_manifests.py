@@ -449,3 +449,10 @@ def test_contributing_lists_every_file_the_plugin_keeps_with_the_module_that_own
         (row,) = [line for line in owners.splitlines() if line.startswith("|") and f"`{name}`" in line]
         assert f"`{owner}`" in row.split("|")[-2], name
         assert (ROOT / "claude" / "scripts" / "emet_claude" / owner).is_file()
+
+
+def test_the_status_skill_explains_the_log_line_of_a_session_left_alone_over_its_state_file():
+    line = "session not sent, its state file is of a version this plugin does not know"
+    assert f"`{line}`" in (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
+    assert f'"{line}"' in (PLUGIN / "scripts" / "emet_claude" / "commands.py").read_text(encoding="utf-8")
+    assert f"`{line}`" in section("CONTRIBUTING.md", "## Files the plugin keeps")
