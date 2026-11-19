@@ -588,7 +588,8 @@ def test_only_the_five_newest_turns_are_polled_at_once(session, environ, emet, c
         emet.report(trace, 202)
     assert stop(session, environ) == 0
     assert [emet.polled(trace) for trace in traces] == [0, 0, 13, 13, 13, 13, 13]
-    assert outcomes(environ) == [(trace, "timed_out", False) for trace in traces]
+    # The two it never asked about did not time out, and stay to be polled
+    assert outcomes(environ) == [(trace, "timed_out", False) for trace in traces[2:]]
 
 
 def test_older_turns_are_polled_as_newer_ones_get_their_outcome(session, environ, emet, clock):
@@ -978,6 +979,27 @@ def test_the_turn_that_just_ended_is_not_taken_for_a_newer_one(transcript, envir
     assert stop(transcript, environ, prompt_id=prompt_id) == 2
 
 
+@pytest.mark.parametrize(("named", "polled"), [("sdk-cli", False), ("sdk-ts", False), ("sdk-py", False), ("cli", True), ("", True)])
+def test_the_environment_can_only_add_a_reason_to_find_no_person_at_the_session(session, environ, emet, clock, named, polled):
+    environ["CLAUDE_CODE_ENTRYPOINT"] = named
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    start = clock.now
+    assert stop(session, environ) == (2 if polled else 0)
+    assert bool(emet.reads) is polled
+    if not polled:
+        assert clock.now == start and outcomes(environ) == [(T1, "no_person", False)]
+
+
+def test_an_environment_that_names_a_person_does_not_undo_what_the_session_file_says(transcript, environ, emet, clock):
+    environ["CLAUDE_CODE_ENTRYPOINT"] = "cli"
+    transcript.prompt("What is 2 + 2?", source="sdk")
+    transcript.text("msg_1", "4")
+    deliver(environ, clock)
+    assert stop(transcript, environ) == 0
+    assert emet.reads == [] and outcomes(environ) == [(T1, "no_person", False)]
+
+
 @pytest.mark.parametrize(
     "fields",
     [{"source": "sdk"}, {"turnOrigin": "sdk"}, {"entrypoint": "sdk-cli"}, {"entrypoint": "sdk-ts"}],
@@ -1098,6 +1120,56 @@ def test_the_same_report_never_wakes_claude_twice_however_often_stop_fires(sessi
     assert codes == [2] + [0] * 9
     assert emet.polled(T1) == 1
     assert capfdbinary.readouterr()[1].count(report.WAKE_OPENING.encode()) == 1
+
+
+def test_a_flagged_report_that_was_held_back_uses_up_no_wake(session, environ, emet, clock):
+    for number in range(1, 4):
+        trace = str(uuid.UUID(int=number))
+        deliver(environ, clock, trace)
+        emet.report(trace, 200, document())
+        # Delivered before the Stop, so it is an earlier turn and is held back
+        clock.advance(5)
+        assert stop(session, environ) == 0
+    assert [item["held"] for item in watch.checks(root(environ), SESSION)] == ["newer_turn"] * 3
+    codes = []
+    for number in range(4, 4 + watch.WAKE_CAP + 1):
+        trace = str(uuid.UUID(int=number))
+        deliver(environ, clock, trace)
+        emet.report(trace, 200, document())
+        codes.append(stop(session, environ))
+    assert codes == [2] * watch.WAKE_CAP + [0]
+    assert watch.checks(root(environ), SESSION)[-1]["held"] == "wake_cap"
+
+
+def long_session(transcript, monkeypatch):
+    """A session file whose first turn is longer than what the poller reads before and after its start."""
+    monkeypatch.setattr(watch, "TAIL_BYTES", 2000)
+    monkeypatch.setattr(watch, "AHEAD_BYTES", 2000)
+    transcript.prompt("x" * 6000)
+    transcript.text("msg_1", "4")
+    assert transcript.path.stat().st_size > 6000
+
+
+def test_a_turn_that_starts_after_the_stop_is_found_in_a_long_session_file(transcript, environ, emet, clock, sleeper, monkeypatch):
+    long_session(transcript, monkeypatch)
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    sleeper.at(4, lambda: transcript.text("msg_2", "y" * 1000))
+    sleeper.at(4, lambda: transcript.prompt("And 3 + 3?"))
+    assert stop(transcript, environ) == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+def test_a_turn_that_starts_further_past_the_stop_than_the_poller_reads_is_not_found(
+    transcript, environ, emet, clock, sleeper, monkeypatch
+):
+    long_session(transcript, monkeypatch)
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    # A known limit: only AHEAD_BYTES past the Stop are read
+    sleeper.at(4, lambda: transcript.text("msg_2", "y" * 2500))
+    sleeper.at(4, lambda: transcript.prompt("And 3 + 3?"))
+    assert stop(transcript, environ) == 2
 
 
 def test_wakes_are_capped_per_session(session, environ, emet, clock, tmp_path):
@@ -1455,6 +1527,8 @@ def test_the_hook_entry_point_runs_the_poller_and_passes_its_exit_code(session, 
 
     for name, value in environ.items():
         monkeypatch.setenv(name, value)
+    # The tests themselves can run under a Claude Code with no person at it
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     deliver(environ, clock)
     emet.report(T1, 200, document())
     monkeypatch.setattr(sys, "argv", ["emet_hook.py", "watch"])
@@ -1540,6 +1614,11 @@ def test_the_process_ends_itself_below_the_hook_limit(monkeypatch):
     assert (timer.interval, timer.function, timer.args, timer.daemon) == (320, os._exit, (0,), True)
     assert cancelled == "cancelled"
     assert watch.BUDGET_S == 300 < watch.HARD_STOP_S < 330 - watch.REQUEST_TIMEOUT_S + 1
+
+
+def test_the_poller_ends_itself_inside_the_time_its_hook_is_given():
+    # The hook that runs the poller must be given HOOK_TIMEOUT_S, and a request begun at the last moment still fits
+    assert watch.BUDGET_S < watch.BUDGET_S + watch.REQUEST_TIMEOUT_S <= watch.HARD_STOP_S < watch.HOOK_TIMEOUT_S == 330
 
 
 def test_a_report_read_is_tried_once_within_ten_seconds_through_the_one_opener_that_follows_no_redirect(environ, emet, monkeypatch):

@@ -1,7 +1,9 @@
 """Reads the Emet report of each delivered turn after the turn ends, and wakes Claude when a report is flagged.
 
-Runs as its own background hook, started at every Stop, one at a time per session. It exits 0
-whatever happens, except when it hands a flagged report to Claude. Each outcome is added as a line
+Runs as its own background hook, started at every Stop, one at a time per session. A Stop that
+finds a watcher writes its turn to state/<session_id>.stop.json, so the watcher judges that turn
+by its own Stop, and waits to take over. It exits 0 whatever happens, except when it hands a
+flagged report to Claude. Each outcome is added as a line
 to state/<session_id>.checks.jsonl and shown in the status file. A flagged verdict is saved to its
 own file under verdicts/ before Claude is woken. Only that file holds text from a report.
 
@@ -58,6 +60,8 @@ from .config import Config, load
 
 # The first Claude Code that can run a background hook which wakes Claude
 MIN_CLAUDE_CODE = (2, 1, 287)
+# Read from the environment as a second sign of a session with no person at it. Not a plugin option
+ENTRYPOINT_NAME = "CLAUDE_CODE_ENTRYPOINT"
 VERSION_FORM = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,3}")
 UUID_FORM = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # The name of a saved verdict: the session id, the trace and the revision of the report
@@ -186,8 +190,13 @@ def started_by_hook(hook_input: Mapping[str, Any]) -> bool:
     return hook_input.get("stop_hook_active") is True
 
 
-def headless(found: List[Tuple[int, Dict[str, Any]]]) -> bool:
-    """Says whether no person is at the session (claude -p, the SDK). There a wake is ignored and this hook holds up the exit."""
+def headless(found: List[Tuple[int, Dict[str, Any]]], environ: Mapping[str, str]) -> bool:
+    """Says whether no person is at the session (claude -p, the SDK). There a wake is ignored and this hook holds up the exit.
+
+    The environment can only add a reason to say yes: whether Claude Code sets the name for a hook is not confirmed.
+    """
+    if environ.get(ENTRYPOINT_NAME, "").startswith("sdk"):
+        return True
     entries = [entry for _, entry in found]
     starts = [entry for entry in entries if transcript.starts_turn(entry)]
     if starts and "sdk" in (starts[-1].get("promptSource"), starts[-1].get("turnOrigin")):
@@ -585,10 +594,14 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     return report.wake_message(document, *link)
 
 
-def close(root: Path, config: Config, session_id: str, outcome: str) -> str:
-    """Ends a run early: every turn still waiting is recorded as not checked, and stays to be polled after a later Stop."""
+def close(root: Path, config: Config, session_id: str, outcome: str, only: Optional[Set[str]] = None) -> str:
+    """Ends a run early: every turn still waiting is recorded as not checked, and stays to be polled after a later Stop.
+
+    With only, just those turns are recorded.
+    """
     for trace in unchecked(root, config, session_id, outcome):
-        record(root, session_id, trace.trace_uuid, outcome)
+        if only is None or trace.trace_uuid in only:
+            record(root, session_id, trace.trace_uuid, outcome)
     return ""
 
 
@@ -624,10 +637,13 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
     plans: Dict[str, Plan] = {}
     # Handled in this run, whether or not the outcome could be written
     done: Set[str] = set()
+    # Asked for at least once in this run
+    asked: Set[str] = set()
     while True:
         now = pause.clock()
         if now - start >= BUDGET_S:
-            return close(root, config, session_id, TIMED_OUT)
+            # A turn this run never asked about did not time out
+            return close(root, config, session_id, TIMED_OUT, asked)
         # Emet cannot be reached, or it limited the rate of the report reads
         if pause.until(root) or pause.until(root, pause.READS):
             return close(root, config, session_id, PAUSED)
@@ -655,6 +671,7 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
             # Checked before each request: the ones before it in this pass can each take the full timeout
             if pause.clock() - start >= BUDGET_S:
                 break
+            asked.add(trace.trace_uuid)
             answer = read_report(config, trace.trace_uuid)
             if answer.status in (200, 202):
                 # Emet serves the reads again, so the next limit starts from the shortest pause
@@ -735,7 +752,7 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     if claude_code_version(found) < MIN_CLAUDE_CODE:
         storage.log(root, "watch skipped, Claude Code is older than 2.1.287 or its version is not known")
         return skip(root, config, session_id, OLD_CLAUDE_CODE)
-    if headless(found):
+    if headless(found, environ):
         storage.log(root, "watch skipped, no person is at the session")
         return skip(root, config, session_id, NO_PERSON)
     stop = Stop(session_id, transcript_path, plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex)
