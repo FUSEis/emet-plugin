@@ -260,7 +260,9 @@ class Sender:
             self.accepted.append(Accepted(session_id, repository, outcome))
             # Kept at once and for the envelope's own session: a queued turn can be delivered by another session's worker
             if envelope.get("end") is True and outcome.trace_uuid:
-                pending.note(self.root, session_id, outcome.trace_uuid, str(getattr(self.config, "endpoint", "")))
+                pending.note(
+                    self.root, session_id, outcome.trace_uuid, str(getattr(self.config, "endpoint", "")), outcome.conversation_uuid
+                )
         else:
             self.failures.append(outcome)
         if outcome.delivered or outcome.final:

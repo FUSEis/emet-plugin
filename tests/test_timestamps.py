@@ -423,7 +423,11 @@ def test_a_skipped_turn_is_marked_in_the_sessions_own_file_before_the_run_is_sta
     after = turn(transcript, "And 3 + 3?", "6")
     run(transcript, environ)
     lines = pending.lines(storage.data_dir(environ), "session-1")
-    assert [sorted(line) for line in lines] == [["reason", "skipped"], ["at", "endpoint", "trace_uuid"], ["finished", "queued"]]
+    assert [sorted(line) for line in lines] == [
+        ["reason", "skipped"],
+        ["at", "conversation_uuid", "endpoint", "trace_uuid"],
+        ["finished", "queued"],
+    ]
     assert lines[0]["reason"] == "Unreadable"
     assert timestamps.parse(lines[0]["skipped"]) is not None
     assert pending.traces(storage.data_dir(environ), "session-1") == [emet.trace_uuids[after["uuid"]]]

@@ -154,6 +154,8 @@ class FakeEmet:
         # Report reads, kept apart from the sends; each is answered with the next (status, content type, body), then Emet's not found
         self.reads: List[Dict[str, Any]] = []
         self.read_replies: List[Tuple[int, str, bytes]] = []
+        # Answers to the report reads of one trace uuid, used before read_replies. The last one repeats
+        self.reports: Dict[str, List[Tuple[int, bytes, Optional[str]]]] = {}
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -182,8 +184,19 @@ class FakeEmet:
 
             def do_GET(self) -> None:
                 owner.reads.append({"path": self.path, "headers": dict(self.headers)})
-                status, content_type, reply = owner.read_replies.pop(0) if owner.read_replies else (404, "application/json", NOT_FOUND)
+                parts = self.path.strip("/").split("/")
+                planned = owner.reports.get(parts[-2]) if len(parts) > 1 else None
+                retry_after = None
+                if planned:
+                    status, reply, retry_after = planned.pop(0) if len(planned) > 1 else planned[0]
+                    content_type = "application/json"
+                elif owner.read_replies:
+                    status, content_type, reply = owner.read_replies.pop(0)
+                else:
+                    status, content_type, reply = 404, "application/json", NOT_FOUND
                 self.send_response(status)
+                if retry_after is not None:
+                    self.send_header("Retry-After", retry_after)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(reply)))
                 if status in (301, 302, 307, 308):
@@ -208,6 +221,17 @@ class FakeEmet:
 
     def spans(self) -> List[Dict[str, Any]]:
         return [span for envelope in self.envelopes for span in envelope.get("spans", [])]
+
+    def report(self, trace_uuid: str, status: int, body: Any = None, retry_after: Optional[str] = None) -> None:
+        """Plans the next answer to a report read of the trace: a document for 200, or Emet's error code for 404."""
+        if status == 404:
+            body = {"error": "No report.", "code": body, "status_code": 404}
+        reply = body if isinstance(body, bytes) else json.dumps({} if body is None else body).encode()
+        self.reports.setdefault(trace_uuid, []).append((status, reply, retry_after))
+
+    def polled(self, trace_uuid: str) -> int:
+        """Counts the report reads of the trace."""
+        return sum(1 for read in self.reads if read["path"] == f"/api/v1/traces/{trace_uuid}/report/")
 
     def close(self) -> None:
         self.server.shutdown()

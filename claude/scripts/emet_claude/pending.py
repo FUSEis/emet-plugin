@@ -2,11 +2,12 @@
 
 One file per session, a JSON object per line. Lines are only ever added, so another process can
 read the file while a worker is still sending. A trace line names the endpoint that accepted the
-turn. A finished line ends one run and counts the envelopes still in the retry queue: while that
-is above zero, a later run of any session can still add an id here. A skipped line marks a turn or
-a later addition that could not be built and was never sent, with the error's type as its reason.
-A refused line names a turn Emet refused for good, by the id the plugin sent it under, with the
-HTTP status and the endpoint that refused it. It holds no trace_uuid, so it is never read as a report to fetch.
+turn, and Emet's id of its conversation when the reply gave one. A finished line ends one run and
+counts the envelopes still in the retry queue: while that is above zero, a later run of any session
+can still add an id here. A skipped line marks a turn or a later addition that could not be built
+and was never sent, with the error's type as its reason. A refused line names a turn Emet refused
+for good, by the id the plugin sent it under, with the HTTP status and the endpoint that refused it.
+It holds no trace_uuid, so it is never read as a report to fetch.
 """
 
 from __future__ import annotations
@@ -79,9 +80,12 @@ def append(root: Path, session_id: str, item: Dict[str, Union[str, int]], once: 
         storage.log(root, f"pending not written: {type(error).__name__}")
 
 
-def note(root: Path, session_id: str, trace_uuid: str, endpoint: str) -> None:
-    """Keeps the id of a turn whose last batch Emet accepted."""
-    append(root, session_id, {"trace_uuid": trace_uuid, "at": storage.now(), "endpoint": endpoint}, once=trace_uuid)
+def note(root: Path, session_id: str, trace_uuid: str, endpoint: str, conversation_uuid: str = "") -> None:
+    """Keeps the id of a turn whose last batch Emet accepted, with Emet's id of its conversation when the reply gave one."""
+    item: Dict[str, Union[str, int]] = {"trace_uuid": trace_uuid, "at": storage.now(), "endpoint": endpoint}
+    if conversation_uuid:
+        item["conversation_uuid"] = conversation_uuid
+    append(root, session_id, item, once=trace_uuid)
 
 
 def refuse(root: Path, session_id: str, trace_id: str, status: int, endpoint: str) -> None:

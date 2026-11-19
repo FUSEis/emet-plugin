@@ -67,6 +67,38 @@ def locked(path: Path) -> Iterator[None]:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+@contextmanager
+def try_locked(path: Path) -> Iterator[bool]:
+    """Takes the lock on path only when no one holds it, and never waits. Yields whether it was taken."""
+    with open(path, "a+") as handle:
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def now(at: Optional[float] = None) -> str:
     """Writes the current time, or the one at seconds since the epoch, the one way the plugin's files hold a time."""
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(at))
