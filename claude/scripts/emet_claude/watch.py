@@ -36,7 +36,12 @@ polling of its turn. A turn without one is polled again after a later Stop.
 
 A `flagged` line that was not handed over names the reason under "held": `wake_cap` (the session
 already had 3 wakes), `newer_turn` (a later turn had started or been delivered) or `late` (the
-report was ready more than 60 seconds after its turn ended).
+report was ready more than 60 seconds after its turn ended). The first of the three that applies
+is the one named.
+
+A turn is still polled after those 60 seconds, until the 300 are over. A flagged report that
+comes then wakes no one. It is read so that it can be saved and recorded, for the next prompt
+to carry it.
 """
 
 from __future__ import annotations
@@ -54,6 +59,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
@@ -100,6 +106,8 @@ EXTRA = 0.1
 WAKE_CAP = 3
 # Seconds after its turn ended that a report can still wake Claude. A starting value to tune on production timings
 LATE_S = 60
+# How long before that window closes its last read starts, which leaves the request time to be answered
+EDGE_S = 1
 # Why a flagged report was not handed to Claude
 CAPPED = "wake_cap"
 NEWER_TURN = "newer_turn"
@@ -272,7 +280,8 @@ def last_time(found: List[Tuple[int, Dict[str, Any]]]) -> float:
     for _, entry in reversed(found):
         at = timestamps.parse(entry.get("timestamp"))
         if at is not None:
-            return at.timestamp()
+            # Milliseconds, as the Stop file and a trace line hold a time, so every path compares the same number
+            return at.replace(microsecond=at.microsecond // 1000 * 1000).timestamp()
     return 0.0
 
 
@@ -321,7 +330,7 @@ def announce(root: Path, stop: Stop) -> None:
         return
     saved = {"token": stop.token, "prompt_id": stop.prompt_id, "size": stop.size, "at": storage.now(stop.at)}
     if stop.ended:
-        saved["ended"] = storage.now(stop.ended)
+        saved["ended"] = timestamps.text(datetime.fromtimestamp(stop.ended, timezone.utc))
     for attempt in range(STOP_WRITES):
         try:
             storage.write_json(stop_path(root, stop.session_id), saved)
@@ -362,6 +371,37 @@ def earlier_turn(trace: Trace, stop: Stop) -> bool:
         return trace.prompt_id != stop.prompt_id
     # Without both ids: a turn is delivered after it ends, so one delivered before the last entry of the latest turn is an earlier one
     return trace.at < int(stop.ended)
+
+
+def turn_end(trace: Trace, stop: Stop) -> float:
+    """Returns when the trace's turn ended: by its own line, else the last entry the Stop read, else the second the Stop began in."""
+    return trace.ended or stop.ended or float(int(stop.at))
+
+
+def hold_reason(root: Path, config: Config, stop: Stop, trace: Trace, found: List[Dict[str, Any]]) -> str:
+    """Returns why a flagged report is not handed to Claude, or "" when it is. stop is the session's latest Stop.
+
+    The first reason that applies is the one recorded: the cap, then a newer turn, then a late report.
+    """
+    if wakes(found) >= WAKE_CAP:
+        return CAPPED
+    # A wake that lands in a running turn is folded into it and can go unseen
+    if earlier_turn(trace, stop) or newer_trace(root, config.endpoint, stop.session_id, trace) or newer_turn(stop):
+        return NEWER_TURN
+    # The user has moved on by then. Asked last: only the report of the turn in view can be called late
+    if pause.clock() - turn_end(trace, stop) > LATE_S:
+        return LATE
+    return ""
+
+
+def before_the_window_closes(due: float, end: float, soonest: float) -> float:
+    """Returns when to ask next: as planned, or sooner, so that one read still starts inside the time a wake is allowed in.
+
+    The waits only grow by chance and by the time requests take, so the planned read would often come just after it.
+    Never sooner than soonest: the shortest wait, or the one Emet named.
+    """
+    edge = end + LATE_S - EDGE_S
+    return edge if soonest <= edge < due else due
 
 
 def newer_trace(root: Path, endpoint: str, session_id: str, trace: Trace) -> bool:
@@ -524,7 +564,7 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
     """
     item = {"trace_uuid": trace_uuid, "outcome": outcome, "final": OUTCOMES[outcome], "at": storage.now(pause.clock()), **(ids or {})}
     # No report is read for a wake turn, and the line must not look as if one was
-    said = f"turn {trace_uuid} was started by a wake, not polled" if outcome == WAKE_TURN else f"report {trace_uuid} -> {outcome}"
+    line = f"turn {trace_uuid} was started by a wake, not polled" if outcome == WAKE_TURN else f"report {trace_uuid} -> {outcome}"
     target = checks_path(root, session_id)
     try:
         written = target.read_bytes() if target.exists() else b""
@@ -534,9 +574,9 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
         with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as handle:
             handle.write(start + json.dumps(item) + "\n")
     except OSError as error:
-        storage.log(root, f"{said}, not recorded {type(error).__name__}")
+        storage.log(root, f"{line}, not recorded {type(error).__name__}")
         return False
-    storage.log(root, said)
+    storage.log(root, line)
     show(root, {"session_id": session_id, **item}, wait)
     return True
 
@@ -669,15 +709,7 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     found = checks(root, session_id)
     if known(found, trace.trace_uuid, report_uuid, revision):
         return ""
-    held = ""
-    if wakes(found) >= WAKE_CAP:
-        held = CAPPED
-    # A wake that lands in a running turn is folded into it and can go unseen
-    elif earlier_turn(trace, stop) or newer_trace(root, config.endpoint, session_id, trace) or newer_turn(stop):
-        held = NEWER_TURN
-    # The user has moved on by then. Counted from the turn's own end, else from what the Stop knows of it
-    elif pause.clock() - (trace.ended or stop.ended or stop.at) > LATE_S:
-        held = LATE
+    held = hold_reason(root, config, stop, trace, found)
     link = (config.endpoint, session_id, trace.conversation_uuid)
     verdict = {
         "session_id": session_id,
@@ -811,7 +843,8 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
                     storage.log(root, f"report {trace.trace_uuid} -> {answer.status or 'network'}, asked again later")
                 wait = max(float(STEPS_S[min(plan.step, len(STEPS_S) - 1)]), answer.retry_after or 0.0)
                 plan.step += 1
-                plan.due = pause.clock() + wait * (1 + extra())
+                soonest = pause.clock() + max(float(STEPS_S[0]), answer.retry_after or 0.0)
+                plan.due = before_the_window_closes(pause.clock() + wait * (1 + extra()), turn_end(trace, stop), soonest)
         now = pause.clock()
         due = [plans[trace.trace_uuid].due for trace in watched if trace.trace_uuid not in done]
         until = min([*due, now + TICK_S, start + BUDGET_S])
