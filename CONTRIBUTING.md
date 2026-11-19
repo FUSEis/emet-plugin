@@ -57,15 +57,17 @@ The report check (`watch.py` and `report.py`) is the one part of the plugin that
    - `test_the_hook_entry_point_runs_the_poller_and_passes_its_exit_code`
    - `test_an_error_in_the_poller_is_logged_by_type_and_never_raised`
    - `test_input_that_is_no_hook_input_exits_0_in_silence`
-3. **No wake chains.** The turn Claude takes after a wake is sent to Emet, and its report is never read. A Stop that a hook started is not polled. One revision of a report wakes Claude once, and a session gets five wakes at most.
+3. **No wake chains.** The turn Claude takes after a wake is sent to Emet, and its report is never read. A Stop that a hook started is not polled. One revision of a report wakes Claude once, and a session gets three wakes at most. A report that is ready more than 60 seconds after its turn ended, or after a newer turn began, is kept and wakes no one.
    - `test_a_wake_starts_a_turn_that_is_sent_and_never_wakes_claude_again`
    - `test_a_turn_a_hook_started_is_not_polled`
    - `test_the_turn_after_a_wake_is_never_polled_and_is_recorded_as_its_own_outcome`
    - `test_the_stop_that_takes_over_after_a_wake_never_wakes_claude_for_the_woken_turn`
    - `test_the_same_report_never_wakes_claude_twice_however_often_stop_fires`
    - `test_wakes_are_capped_per_session`
+   - `test_a_report_ready_a_minute_after_its_turn_ended_still_wakes_claude_and_a_later_one_does_not`
+   - `test_the_first_reason_that_applies_is_the_one_a_held_report_names`
 4. **Emet's text appears only inside the data block.** Every value of a report is untrusted. It reaches Claude as a JSON string between the two markers, cleaned and cut, with fixed words before and after. Outside the block the plugin writes only its own words, whole numbers it checked, and a link it built from its own values. Only the rendered text is saved, never the report.
-   - In `tests/test_report.py`: `test_a_fake_closing_marker_in_any_field_stays_inside_the_block`, `test_a_closing_marker_written_with_lookalike_brackets_is_escaped_like_a_real_one`, `test_every_line_of_the_block_is_json_the_plugin_wrote`, `test_control_bidirectional_and_invisible_characters_are_removed`, `test_the_fixed_instruction_comes_before_the_data`, `test_an_unknown_status_is_never_repeated_and_reads_as_unreadable`, `test_the_link_is_built_from_the_plugins_own_values_and_never_from_the_document`, `test_the_whole_message_stays_within_the_limit_for_the_worst_report`
+   - In `tests/test_report.py`: `test_a_fake_closing_marker_in_any_field_stays_inside_the_block`, `test_a_closing_marker_written_with_lookalike_brackets_is_escaped_like_a_real_one`, `test_every_line_of_the_block_is_json_the_plugin_wrote`, `test_control_bidirectional_and_invisible_characters_are_removed`, `test_the_fixed_words_of_a_wake_are_these_and_in_this_order`, `test_an_unknown_status_is_never_repeated_and_reads_as_unreadable`, `test_the_link_is_built_from_the_plugins_own_values_and_never_from_the_document`, `test_the_whole_message_stays_within_the_limit_for_the_worst_report`
    - `test_the_body_of_a_202_is_never_rendered`
    - `test_the_saved_verdict_holds_the_rendered_text_and_ids_not_the_document`
    - `test_no_file_but_the_verdict_holds_report_text_and_none_holds_the_key`

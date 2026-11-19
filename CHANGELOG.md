@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - The code that reads a turn's report from Emet after the turn ends, and tells Claude when the report disputes a claim (`watch.py`). No hook starts it, so nothing changes for an installed plugin. [CONTRIBUTING.md](CONTRIBUTING.md#files-the-plugin-keeps) lists the files it writes when it runs.
 - `claude/README.md` lists every file the plugin keeps in its data folder, what each holds, which can hold text from a turn, and for how long.
 - `SECURITY.md` has a trust model: what the plugin reads, where it sends, how it treats Emet's answers, what it does not defend against, and how to pin a release to a tag or a commit.
+- The plugin keeps two more values for each delivered turn, in its own folder: Claude Code's id of the turn (`promptId` in the session file) and the time of the turn's last entry. They are written to the session's `pending.jsonl` file next to Emet's id of the turn, and wait with a turn in the retry queue. Neither is sent: they are taken off before a request is made, and Emet receives the same envelope as before.
 
 ### Changed
 

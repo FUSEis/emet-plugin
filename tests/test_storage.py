@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from emet_claude import commands, storage, transcript, transport
+from emet_claude import commands, pending, storage, transcript, transport, watch
 
 
 def log_lines(root):
@@ -338,3 +338,22 @@ def test_a_deeply_nested_hook_input_or_account_file_is_never_parsed(environ, tmp
     config.mkdir()
     (config / ".claude.json").write_text(DEEP, encoding="utf-8")
     assert commands.signed_in_email(environ) == ("", "Claude account file unreadable")
+
+
+def test_a_deeply_nested_input_to_the_report_check_is_never_parsed(environ, tmp_path, no_deep_parse, capfdbinary):
+    root = storage.data_dir(environ)
+    (root / "state").mkdir(parents=True, exist_ok=True)
+    # Short enough to pass every size limit, so only the depth check stands before the parser
+    deep = nested(storage.JSON_MAX_DEPTH + 1)
+    kept = '{"trace_uuid": "kept"}'
+    pending.path(root, "session-1").write_text(deep + "\n" + kept + "\n", encoding="utf-8")
+    assert pending.lines(root, "session-1") == [{"trace_uuid": "kept"}]
+    watch.checks_path(root, "session-1").write_text(deep + "\n" + kept + "\n", encoding="utf-8")
+    assert watch.checks(root, "session-1") == [{"trace_uuid": "kept"}]
+    assert watch.parsed(deep.encode()) is None
+    session = tmp_path / "session-1.jsonl"
+    session.write_text(deep + "\n" + '{"type": "user"}\n', encoding="utf-8")
+    assert [entry for _, entry in watch.session_entries(str(session))[0]] == [{"type": "user"}]
+    assert watch.run(deep.encode(), environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert log_lines(root)[-1].endswith(" watch error ValueError"), "the hook input was refused for its depth, before the parser"

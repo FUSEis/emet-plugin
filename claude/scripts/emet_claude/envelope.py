@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import VERSION, content, timestamps, transcript
+from . import VERSION, content, pending, timestamps, transcript
 from .config import Config
 from .spans import Builder, Built
 
@@ -23,6 +23,8 @@ REPOSITORY_ATTRIBUTE = "vcs.repository.name"
 STARTED_BY_ATTRIBUTE = "emet.plugin.turn_started_by"
 REPORT_WAKE = "report_wake"
 # Sent in place of the prompt of such a turn, which is Emet's own report text in Claude Code's wrapper
+# What an envelope holds for the plugin's own files. Taken off before the envelope is sent
+LOCAL = "plugin_local"
 WAKE_PROMPT = "[Emet's report of an earlier answer, handed to Claude by the Emet plugin. No person wrote this prompt.]"
 
 
@@ -80,6 +82,22 @@ def started_by(envelope: Dict[str, Any]) -> str:
     return ""
 
 
+def turn_identity(envelope: Dict[str, Any]) -> Tuple[str, str]:
+    """Returns Claude Code's id of the envelope's turn and the time the turn ended, each "" when the envelope names none.
+
+    Read back from a queued file, so both are checked again: a plain name, and a time written the one way.
+    """
+    local = envelope.get(LOCAL)
+    named = local if isinstance(local, dict) else {}
+    ended = timestamps.parse(named.get("ended"))
+    return pending.plain(named.get("prompt_id")), timestamps.text(ended) if ended else ""
+
+
+def sendable(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    """Returns the envelope as Emet is sent it, without what the plugin keeps for its own files."""
+    return {key: value for key, value in envelope.items() if key != LOCAL}
+
+
 def wrap(
     config: Config,
     session_id: str,
@@ -87,8 +105,12 @@ def wrap(
     spans: List[Dict[str, Any]],
     resource_attrs: Dict[str, Any],
     title: str = "",
+    local: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Returns the envelopes for one trace. Only the last carries end, so Emet seals the trace once."""
+    """Returns the envelopes for one trace. Only the last carries end, so Emet seals the trace once.
+
+    local goes on every envelope: the batch that ends the turn may be delivered alone, from the queue, by another session.
+    """
     groups = batches(content.clean(spans)) or [[]]
     envelopes = []
     for index, group in enumerate(groups):
@@ -109,6 +131,8 @@ def wrap(
             envelope["conversation_title"] = content.clean_text(title)
         # Spans were cleaned once, before batching
         envelope["spans"] = group
+        if local:
+            envelope[LOCAL] = dict(local)
         envelopes.append(envelope)
     return envelopes
 
@@ -156,7 +180,11 @@ def for_turn(
     title = ""
     if transcript.by_person(first) and not woken and capture.keeps_content:
         title = capture.text(text)[0].strip().splitlines()[0][:TITLE_MAX] if text.strip() else ""
-    return trace_id, wrap(config, session_id, trace_id, [root, *built.spans], resource(config, first, cwd), title), built
+    # The turn's own identity for the poller, which cannot tell it from the order turns are delivered in
+    local = {"ended": root["ended_at"]}
+    if pending.plain(first.get("promptId")):
+        local["prompt_id"] = first["promptId"]
+    return trace_id, wrap(config, session_id, trace_id, [root, *built.spans], resource(config, first, cwd), title, local), built
 
 
 def for_tail(

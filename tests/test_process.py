@@ -9,12 +9,13 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 
-from emet_claude import commands, pending, report, storage, watch
+from emet_claude import commands, pending, report, storage, timestamps, watch
 from helpers import FakeEmet, Transcript
 from test_report import claim, document
 
@@ -73,9 +74,13 @@ def root(environ: Dict[str, str]) -> Path:
     return storage.data_dir(environ)
 
 
-def deliver(environ: Dict[str, str]) -> None:
-    """Writes the line the sender writes once Emet accepted the turn, stamped by the real clock the child reads."""
-    pending.note(root(environ), SESSION, T1, environ["CLAUDE_PLUGIN_OPTION_ENDPOINT"], CONVERSATION)
+def deliver(environ: Dict[str, str], ended_ago: float = 0.0) -> None:
+    """Writes the line the sender writes once Emet accepted the turn, stamped by the real clock the child reads.
+
+    The turn ended now, or ended_ago seconds before. Without an end the report would be held as a late one.
+    """
+    ended = timestamps.text(datetime.now(timezone.utc) - timedelta(seconds=ended_ago))
+    pending.note(root(environ), SESSION, T1, environ["CLAUDE_PLUGIN_OPTION_ENDPOINT"], CONVERSATION, ended=ended)
 
 
 def finish(environ: Dict[str, str]) -> None:
@@ -154,6 +159,20 @@ def test_the_unchanged_command_wakes_claude_after_its_real_first_wait(
         f"the hook exactly as Claude Code runs it exits 2 with an empty stdout for a flagged report (log: {log(environ)!r})"
     )
     assert err == wake_bytes(emet, ready), "the hook exactly as Claude Code runs it writes the rendered report to stderr as UTF-8 bytes"
+
+
+def test_a_flagged_report_of_a_turn_that_ended_too_long_ago_ends_the_process_with_exit_0_and_no_output(
+    session: Transcript, environ: Dict[str, str], emet: FakeEmet, at_once: Path
+) -> None:
+    deliver(environ, ended_ago=watch.LATE_S + PROCESS_TIMEOUT_S)
+    finish(environ)
+    emet.report(T1, 200, flagged())
+    result = hook(environ, stop_input(session), at_once)
+    assert result == (0, b"", b""), (
+        "a report that comes after the user has moved on must not wake Claude: exit 0 and nothing on either stream"
+    )
+    held = [(item["outcome"], item["handed"], item["held"]) for item in watch.checks(root(environ), SESSION)]
+    assert held == [("flagged", False, watch.LATE)], "the report was read and kept for later, and the record says why Claude was not woken"
 
 
 @pytest.mark.parametrize("word", sorted(set(report.STATUS_WORDS) - {report.FLAGGED}), ids=lambda word: f"report_is_{word}")

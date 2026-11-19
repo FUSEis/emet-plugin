@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import VERSION, pause, pending, storage
 from .config import Config
-from .envelope import REPOSITORY_ATTRIBUTE, started_by
+from .envelope import REPOSITORY_ATTRIBUTE, sendable, started_by, turn_identity
 
 TIMEOUT_S = 15
 KEY_CHECK_TIMEOUT_S = 5
@@ -77,7 +77,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
     """
     request = urllib.request.Request(
         f"{config.endpoint}/api/v1/traces/",
-        data=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
+        data=json.dumps(sendable(envelope), ensure_ascii=False).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {config.emet_key}",
             "Content-Type": "application/json",
@@ -274,7 +274,7 @@ class Sender:
             mark = started_by(envelope)
             if outcome.trace_uuid and (envelope.get("end") is True or mark):
                 endpoint = str(getattr(self.config, "endpoint", ""))
-                pending.note(self.root, session_id, outcome.trace_uuid, endpoint, outcome.conversation_uuid, mark)
+                pending.note(self.root, session_id, outcome.trace_uuid, endpoint, outcome.conversation_uuid, mark, *turn_identity(envelope))
         else:
             self.failures.append(outcome)
         if outcome.delivered or outcome.final:

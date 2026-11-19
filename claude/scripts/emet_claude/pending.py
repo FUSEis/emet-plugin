@@ -9,7 +9,9 @@ and was never sent, with the error's type as its reason. A refused line names a 
 for good, by the id the plugin sent it under, with the HTTP status and the endpoint that refused it.
 It holds no trace_uuid, so it is never read as a report to fetch. A trace line with started_by
 names a turn that a hook of this plugin started, such as the turn after a wake. Its report is
-never read.
+never read. A trace line also names the turn itself when the sender could: prompt_id is Claude
+Code's id of the turn, and ended is the time of the turn's last entry, in UTC with milliseconds.
+Both stay on this machine. The poller tells by them which turn a report is about.
 """
 
 from __future__ import annotations
@@ -30,6 +32,11 @@ SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 STARTED_BY = "started_by"
 
 
+def plain(value: Any) -> str:
+    """Returns an id when it is a plain name, else "". Ids are written to files and compared, never trusted."""
+    return value if isinstance(value, str) and SESSION_ID.fullmatch(value) else ""
+
+
 def path(root: Path, session_id: str) -> Path:
     return root / "state" / f"{session_id}.pending.jsonl"
 
@@ -45,7 +52,7 @@ def lines(root: Path, session_id: str) -> List[Dict[str, Any]]:
     found = []
     for line in text.splitlines():
         with contextlib.suppress(ValueError, RecursionError):
-            item = json.loads(line)
+            item = storage.loads(line)
             if isinstance(item, dict):
                 found.append(item)
     return found
@@ -84,16 +91,30 @@ def append(root: Path, session_id: str, item: Dict[str, Union[str, int]], once: 
         storage.log(root, f"pending not written: {type(error).__name__}")
 
 
-def note(root: Path, session_id: str, trace_uuid: str, endpoint: str, conversation_uuid: str = "", started_by: str = "") -> None:
+def note(
+    root: Path,
+    session_id: str,
+    trace_uuid: str,
+    endpoint: str,
+    conversation_uuid: str = "",
+    started_by: str = "",
+    prompt_id: str = "",
+    ended: str = "",
+) -> None:
     """Keeps the id of a turn Emet accepted, with Emet's id of its conversation when the reply gave one.
 
     started_by names the hook of this plugin that started the turn, and marks the line as one whose report is never read.
+    prompt_id and ended name the turn itself: Claude Code's id of it and the time of its last entry.
     """
     item: Dict[str, Union[str, int]] = {"trace_uuid": trace_uuid, "at": storage.now(), "endpoint": endpoint}
     if conversation_uuid:
         item["conversation_uuid"] = conversation_uuid
     if started_by:
         item[STARTED_BY] = started_by
+    if prompt_id:
+        item["prompt_id"] = prompt_id
+    if ended:
+        item["ended"] = ended
     append(root, session_id, item, once=trace_uuid)
 
 
