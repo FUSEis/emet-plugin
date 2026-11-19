@@ -210,3 +210,87 @@ def test_the_required_check_waits_for_the_changelog_job_and_runs_again_when_a_la
 
 def test_contributing_names_the_label_the_changelog_check_reads():
     assert f"`{changelog_check().LABEL}`" in (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+
+def section(path, heading):
+    """Returns the text under one heading of a Markdown file, up to the next heading of the same level."""
+    text = (ROOT / path).read_text(encoding="utf-8")
+    assert f"\n{heading}\n" in text, heading
+    return text.partition(f"\n{heading}\n")[2].partition("\n## ")[0]
+
+
+def test_the_readme_lists_every_file_the_plugin_keeps():
+    from emet_claude import pause, pending, report, transport, watch
+
+    kept = section("claude/README.md", "## Where data goes and what stays local")
+    here = Path("data")
+    names = [
+        "queue/*.json",
+        "state/<session>.json",
+        pending.path(here, "<session>").relative_to(here).as_posix(),
+        watch.checks_path(here, "<session>").relative_to(here).as_posix(),
+        watch.stop_path(here, "<session>").relative_to(here).as_posix(),
+        watch.verdict_folder(here).name + "/*.json",
+        pause.SENDS,
+        pause.READS,
+        "status.json",
+        "emet.log",
+        "emet.log.1",
+        "*.lock",
+    ]
+    for name in names:
+        assert f"`{name}`" in kept, name
+    # Each file the report check alone writes says so
+    for name in names[3:6] + [pause.READS]:
+        assert f"`{name}` (report check)" in kept, name
+    assert f"{report.TOTAL_LIMIT:,} characters at most" in kept
+    assert f"| {watch.VERDICT_DAYS} days." in kept
+    assert f"At most {transport.QUEUE_MAX_FILES} files or {transport.QUEUE_MAX_BYTES // 1024**2} MB" in kept
+    assert f"starts again at {storage_log_megabytes()} MB" in kept
+
+
+def storage_log_megabytes():
+    from emet_claude import storage
+
+    return storage.LOG_MAX_BYTES // 1_000_000
+
+
+def test_the_security_policy_states_the_limits_the_code_holds():
+    from emet_claude import report, watch
+
+    policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    assert f"{report.TOTAL_LIMIT:,} characters at most" in policy
+    assert f"for {watch.VERDICT_DAYS} days" in policy
+    assert f"over {watch.REPORT_MAX_BYTES // 1024**2} MB" in policy
+    assert "`localhost`, `127.0.0.1`, `::1`" in policy
+
+
+def test_contributing_names_only_tests_that_exist():
+    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    named = set(re.findall(r"`(test_[a-z0-9_]+)`", guide))
+    defined = set()
+    for path in (ROOT / "tests").glob("test_*.py"):
+        defined |= set(re.findall(r"^def (test_[a-z0-9_]+)\(", path.read_text(encoding="utf-8"), re.M))
+    assert len(named) > 30
+    assert named <= defined, sorted(named - defined)
+    # The fixture the first rule names
+    assert "def no_wait_for_the_watcher_lock(" in (ROOT / "tests" / "test_watch.py").read_text(encoding="utf-8")
+    assert "`no_wait_for_the_watcher_lock`" in guide
+
+
+def test_contributing_lists_every_file_the_plugin_keeps_with_the_module_that_owns_it():
+    owners = section("CONTRIBUTING.md", "## Files the plugin keeps")
+    for name, owner in [
+        ("state/<session>.json", "commands.py"),
+        ("state/<session>.pending.jsonl", "pending.py"),
+        ("state/<session>.checks.jsonl", "watch.py"),
+        ("state/<session>.stop.json", "watch.py"),
+        ("verdicts/<session>.<trace>.<revision>.json", "watch.py"),
+        ("queue/<number>-<hash>.json", "transport.py"),
+        ("read-pause.json", "pause.py"),
+        ("status.json", "commands.py"),
+        ("emet.log", "storage.py"),
+    ]:
+        (row,) = [line for line in owners.splitlines() if line.startswith("|") and f"`{name}`" in line]
+        assert f"`{owner}`" in row.split("|")[-2], name
+        assert (ROOT / "claude" / "scripts" / "emet_claude" / owner).is_file()

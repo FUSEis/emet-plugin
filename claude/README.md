@@ -57,12 +57,34 @@ For each finished turn, one trace:
 
 ## Where data goes and what stays local
 
-The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses any other destination, whatever the environment says. It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`), readable only by you:
+The plugin sends only to Emet (`https://app.emet.so`), over HTTPS. It refuses any other destination, whatever the environment says. The one exception is an Emet on the same machine, for plugin development.
 
-- `state/`: how far each session's transcript has been read.
-- `queue/`: turns that could not be delivered yet, retried oldest first on the next turn. At most 500 turns or 256 MB; the oldest are dropped beyond that.
-- `pause.json`: the time before which the plugin asks Emet nothing, written after Emet could not be reached.
-- `status.json` and `emet.log`: what `/emet:status` reports. They hold ids, counts, HTTP statuses, report links and the email sent, never content or the key.
+It keeps a private folder in Claude Code's plugin data directory (`~/.claude/plugins/data/…`). On macOS and Linux the plugin sets the folder so that only your user can open it. On Windows it has the access rules of the folder it sits in.
+
+Two kinds of file in it can hold text from your session:
+
+| File | What it holds | Kept until |
+| --- | --- | --- |
+| `queue/*.json` | Turns that could not be delivered yet, whole, as your capture mode sends them: prompts, answers and tool results in `sanitized` and `full`, none of them in `metadata`. | Emet accepts or refuses the turn. It is retried on the next turn, oldest first. At most 500 files or 256 MB; the oldest are dropped beyond that. There is no time limit. |
+| `verdicts/*.json` (report check) | One file for each report Emet flagged: Emet's ids, the time, whether Claude was told, and the text written for Claude about it, 4,000 characters at most. The text quotes the disputed claims, Emet's reasons, and the sentences of Claude's answer they are about. The report itself is never saved. | 7 days. A file older than that is removed the next time the report check runs. |
+
+The other files hold ids, times, counts and outcome words. They hold no text from a turn or a report:
+
+| File | What it holds | Kept until |
+| --- | --- | --- |
+| `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, and for each subagent still followed the path of its transcript, its ids and a position. | The plugin is uninstalled. |
+| `state/<session>.pending.jsonl` | One line for each turn Emet accepted: Emet's ids of the trace and of its conversation, the time, and the address that accepted it. Also a line for a turn Emet refused (its id and the HTTP status), for a turn that could not be read (the name of the error's type), and for the end of each run (the time and the number of turns queued). | The plugin is uninstalled. |
+| `state/<session>.checks.jsonl` (report check) | One line for each outcome of reading a turn's report: the trace id, an outcome word such as `clear`, `flagged` or `timed_out`, the time, Emet's id and revision of the report, and whether Claude was told. | The plugin is uninstalled. |
+| `state/<session>.stop.json` (report check) | The session's latest turn end: a random name for it, Claude Code's id of the turn, the size of the transcript, and two times. | The next turn end replaces it. |
+| `pause.json` | The time before which the plugin asks Emet nothing, and the length of the last wait, written after Emet could not be reached. | Emet answers again after the pause has run out. |
+| `read-pause.json` (report check) | The same, for the report reads alone, written after Emet limited their rate. | Emet answers a report read after the pause has run out. |
+| `status.json` | What `/emet:status` reports: the plugin version, Team ID, capture mode, the email sent, the public start of the key, the result of the key check, counts, pause times, and for the last five sessions the repository folder name, the time and the report link. With the report check, also the last five outcomes. | Rewritten at every run. |
+| `emet.log`, `emet.log.1` | One line for each thing the plugin did: the time, ids, counts, HTTP statuses and the names of error types. | The log starts again at 1 MB, and one earlier file is kept. |
+| `*.lock` | Nothing. They stop two processes from writing one file at once. | The plugin is uninstalled. |
+
+The log and `status.json` never hold the key, a prompt, an answer or a tool result. When Emet refuses a send with an error, they keep the first 200 characters of the error message Emet answered with.
+
+The files marked *report check* are written only when the plugin reads a turn's report from Emet. The code for that is on `main` and is not part of 0.1.4, and no hook starts it. So an installed plugin writes none of them, whether it was installed from 0.1.4 or from `main`.
 
 Emet's handling of the data it receives is covered by the [Emet privacy policy](https://emet.so/privacy).
 
