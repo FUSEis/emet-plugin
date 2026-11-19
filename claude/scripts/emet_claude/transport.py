@@ -109,7 +109,7 @@ def post(config: Config, envelope: Dict[str, Any]) -> Outcome:
 def miss_code(body: bytes) -> str:
     """Returns the code of Emet's JSON error body, or "" for any other body."""
     try:
-        error = json.loads(body)
+        error = storage.loads(body)
     except (ValueError, RecursionError):
         return ""
     code = error.get("code") if isinstance(error, dict) else None
@@ -149,7 +149,7 @@ def check_key(config: Config) -> str:
 def accepted_uuid(body: bytes, field: str) -> str:
     """Returns the uuid Emet's 202 body gives under field, or "" when it has none."""
     try:
-        accepted = json.loads(body)
+        accepted = storage.loads(body)
         return str(uuid.UUID(str(accepted[field])))
     except (ValueError, TypeError, KeyError, RecursionError):
         return ""

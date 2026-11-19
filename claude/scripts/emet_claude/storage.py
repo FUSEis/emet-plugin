@@ -5,18 +5,24 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import time
 import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional
+from typing import Any, Iterator, Mapping, Optional, Union
 
 LOG_MAX_BYTES = 1_000_000
 # No line the plugin writes is near this long, so a longer one holds text from somewhere else
 LOG_LINE_MAX = 300
 # Makes an open fail on a symbolic link. Windows has no such flag
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+# Far above any nesting Claude Code or Emet writes, far below the depth where Python 3.9 can abort
+JSON_MAX_DEPTH = 200
+# A whole JSON string, closed or not, so that a bracket inside one is never counted. It matches from any quote, so no text is read twice
+JSON_STRING = re.compile(r'"(?:[^"\\]|\\.|\\\Z)*(?:"|\Z)', re.DOTALL)
+JSON_BRACKET = re.compile(r"[\[\]{}]")
 # For reading: no link is followed, a pipe put in the file's place cannot make the open wait, and Windows changes no byte
 READ_FLAGS = os.O_RDONLY | NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
 
@@ -58,11 +64,40 @@ def write_private(path: Path, text: str) -> None:
         raise
 
 
+def too_deep(text: str) -> bool:
+    """Says whether JSON text nests arrays and objects deeper than JSON_MAX_DEPTH. Reads the text once and never recurses."""
+    if text.count("[") + text.count("{") <= JSON_MAX_DEPTH:
+        return False
+    bare = JSON_STRING.sub("", text)
+    if bare.count("[") + bare.count("{") <= JSON_MAX_DEPTH:
+        return False
+    depth = 0
+    for bracket in JSON_BRACKET.finditer(bare):
+        if bracket.group() in "[{":
+            depth += 1
+            if depth > JSON_MAX_DEPTH:
+                return True
+        elif depth:
+            depth -= 1
+    return False
+
+
+def loads(data: Union[str, bytes]) -> Any:
+    """Parses JSON that came from a file or the network. Nesting deeper than JSON_MAX_DEPTH is a ValueError.
+
+    Python 3.9, which macOS ships, can abort the whole process while it parses very deep nesting, and no except catches that.
+    """
+    text = data.decode(json.detect_encoding(data), "surrogatepass") if isinstance(data, bytes) else data
+    if too_deep(text):
+        raise ValueError("JSON nested too deep")
+    return json.loads(text)
+
+
 def read_json(path: Path, default: Any) -> Any:
     """Returns what the file holds, or default when it cannot be read. A symbolic link is not read where the platform can refuse one."""
     try:
         with os.fdopen(os.open(str(path), READ_FLAGS), "r", encoding="utf-8") as handle:
-            return json.loads(handle.read())
+            return loads(handle.read())
     except (OSError, ValueError):
         return default
 

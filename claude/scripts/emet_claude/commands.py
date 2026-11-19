@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import subprocess
 import sys
@@ -63,7 +62,7 @@ def signed_in_email(environ: Mapping[str, str], root: Optional[Path] = None) -> 
     """
     path = Path(environ.get("CLAUDE_CONFIG_DIR") or Path.home()) / ".claude.json"
     try:
-        account = json.loads(path.read_text(encoding="utf-8")).get("oauthAccount")
+        account = storage.loads(path.read_text(encoding="utf-8")).get("oauthAccount")
     except FileNotFoundError:
         return "", "no Claude account file"
     # AttributeError: the file holds a JSON list or string, which has no .get
@@ -309,7 +308,7 @@ def process(
 def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -> None:
     root = storage.data_dir(environ)
     try:
-        hook_input = json.loads(raw or b"{}")
+        hook_input = storage.loads(raw or b"{}")
         if not isinstance(hook_input, dict):
             hook_input = {}
         if mode == "session-start" and hook_input.get("source") not in SAME_KEY_SOURCES:

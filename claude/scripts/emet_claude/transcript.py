@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import stat
@@ -57,7 +56,7 @@ def entries_of(handle: BinaryIO, offset: int, sidechain: bool = False) -> Tuple[
             break
         start, position = position, position + len(raw)
         try:
-            entry = json.loads(raw)
+            entry = storage.loads(raw)
         # RecursionError: a line nested too deep to read, which would otherwise fail on every run
         except (ValueError, RecursionError):
             continue
@@ -244,7 +243,7 @@ def subagents(transcript: Path) -> Dict[str, Tuple[Path, Dict[str, Any]]]:
         return found
     for meta_path in folder.glob("agent-*.meta.json"):
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = storage.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         tool_use_id = meta.get("toolUseId") if isinstance(meta, dict) else None

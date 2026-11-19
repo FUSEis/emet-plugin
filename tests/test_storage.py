@@ -1,9 +1,10 @@
 import json
 import os
+import time
 
 import pytest
 
-from emet_claude import commands, storage, transport
+from emet_claude import commands, storage, transcript, transport
 
 
 def log_lines(root):
@@ -233,3 +234,107 @@ def test_a_link_put_in_the_queue_after_the_check_is_still_not_sent(environ, emet
     monkeypatch.setattr(type(root), "is_symlink", lambda self: False)
     assert transport.Sender(root, commands.load(environ)).flush() == 0
     assert emet.requests == [] and outside.exists()
+
+
+def nested(depth, opening="[", closing="]"):
+    return opening * depth + closing * depth
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        nested(storage.JSON_MAX_DEPTH + 1),
+        "[" * 100_000,
+        '{"a":' * (storage.JSON_MAX_DEPTH + 1) + "1" + "}" * (storage.JSON_MAX_DEPTH + 1),
+        '[{"a":' * 150 + "1" + "}]" * 150,
+        '["]]]]", ' * 3 + nested(storage.JSON_MAX_DEPTH + 1) + "]",
+    ],
+    # Named, since Windows cannot hold a test id this long in its environment
+    ids=["arrays", "arrays never closed", "objects", "arrays and objects", "after strings that hold brackets"],
+)
+def test_json_nested_deeper_than_the_limit_is_refused_before_it_is_parsed(monkeypatch, text):
+    monkeypatch.setattr(storage.json, "loads", lambda text: pytest.fail("parsed"))
+    for data in (text, text.encode()):
+        with pytest.raises(ValueError, match="nested too deep"):
+            storage.loads(data)
+
+
+def test_json_at_the_limit_and_brackets_inside_strings_are_parsed():
+    deep = nested(storage.JSON_MAX_DEPTH)
+    assert storage.loads(deep) == storage.json.loads(deep)
+    code = "[" * 5000 + "{" * 5000
+    quoted = 'she said \\"' + "[" * 5000
+    assert storage.loads(storage.json.dumps({"text": code, "more": [quoted, {"a": code}]})) == {"text": code, "more": [quoted, {"a": code}]}
+    wide = [[index, {"n": index}] for index in range(5000)]
+    assert storage.loads(storage.json.dumps(wide).encode()) == wide
+    assert storage.loads(b"\xef\xbb\xbf[1]") == [1]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['"' * 100_001, '["' + "[" * 100_000, "[" * 150 + '"' + "[" * 100_000, "[" * 201 + '"\\' * 50_000, "[" * 201 + '"\\"' * 50_000 + '"'],
+    # Named, since Windows cannot hold a test id this long in its environment
+    ids=["quotes", "unclosed string", "deep then unclosed", "escaped quotes to the end", "escaped quotes"],
+)
+def test_json_that_cannot_be_read_is_an_ordinary_error_and_takes_no_time(text):
+    started = time.perf_counter()
+    with pytest.raises(ValueError):
+        storage.loads(text)
+    # Each character is read once. Reading the rest again from every quote would take minutes here
+    assert time.perf_counter() - started < 5
+
+
+def test_the_depth_limit_stays_far_below_where_python_39_gives_up():
+    assert storage.JSON_MAX_DEPTH == 200
+
+
+@pytest.fixture
+def no_deep_parse(monkeypatch):
+    """Fails the test if text nested as deep as the hostile input reaches the parser."""
+    real = storage.json.loads
+
+    def loads(text, *args, **kwargs):
+        assert not storage.too_deep(text if isinstance(text, str) else text.decode("utf-8", "replace")), "deep text was parsed"
+        return real(text, *args, **kwargs)
+
+    monkeypatch.setattr(storage.json, "loads", loads)
+
+
+DEEP = "[" * 100_000
+
+
+def test_a_deeply_nested_answer_from_the_server_is_never_parsed(no_deep_parse):
+    assert transport.miss_code(DEEP.encode()) == ""
+    assert transport.accepted_conversation(DEEP.encode()) == ""
+    assert transport.accepted_trace(DEEP.encode()) == ""
+
+
+def test_a_deeply_nested_private_file_is_never_parsed(tmp_path, no_deep_parse):
+    (tmp_path / "state.json").write_text(DEEP, encoding="utf-8")
+    assert storage.read_json(tmp_path / "state.json", "unreadable") == "unreadable"
+
+
+def test_a_deeply_nested_line_of_a_session_file_is_never_parsed(tmp_path, no_deep_parse):
+    path = tmp_path / "session-1.jsonl"
+    path.write_text(DEEP + "\n" + '{"type": "user", "message": {"content": "hello"}}\n', encoding="utf-8")
+    entries, end = transcript.read_entries(path, 0)
+    assert [entry["type"] for _, entry in entries] == ["user"] and end == path.stat().st_size
+
+
+def test_a_deeply_nested_subagent_description_is_never_parsed(tmp_path, no_deep_parse):
+    session = tmp_path / "session-1.jsonl"
+    session.write_text("", encoding="utf-8")
+    folder = tmp_path / "session-1" / "subagents"
+    folder.mkdir(parents=True)
+    (folder / "agent-a1.meta.json").write_text(DEEP, encoding="utf-8")
+    (folder / "agent-a1.jsonl").write_text("", encoding="utf-8")
+    assert transcript.subagents(session) == {}
+
+
+def test_a_deeply_nested_hook_input_or_account_file_is_never_parsed(environ, tmp_path, no_deep_parse):
+    commands.run_worker("stop", DEEP.encode(), environ)
+    assert log_lines(storage.data_dir(environ))[-1].endswith(" worker error ValueError")
+    config = tmp_path / "claude-config"
+    config.mkdir()
+    (config / ".claude.json").write_text(DEEP, encoding="utf-8")
+    assert commands.signed_in_email(environ) == ("", "Claude account file unreadable")
