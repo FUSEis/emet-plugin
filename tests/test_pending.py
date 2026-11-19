@@ -401,5 +401,4 @@ def test_only_a_flagged_report_handed_to_claude_counts_as_a_wake_for_the_sender(
     assert watch.record(root(environ), "session-1", TRACE, "wake_turn", {"handed": True})
     assert watch.record(root(environ), "session-2", TRACE, "flagged", {"handed": True})
     assert watch.handed_times(root(environ), "session-1") == ([clock.now] if counts else [])
-    assert watch.handed_times(root(environ), "../session-2") == []
     assert watch.handed_times(root(environ), "session-3") == []

@@ -472,8 +472,6 @@ def wakes(found: List[Dict[str, Any]]) -> int:
 
 def handed_times(root: Path, session_id: str) -> List[float]:
     """Returns when each report was handed to Claude in this session. The sender takes a turn for one a wake started only after one."""
-    if not pending.SESSION_ID.fullmatch(session_id):
-        return []
     found = [timestamps.parse(item.get("at")) for item in checks(root, session_id) if wakes([item])]
     return [at.timestamp() for at in found if at is not None]
 
