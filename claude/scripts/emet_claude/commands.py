@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar
 from urllib.parse import urlencode
 
-from . import VERSION, envelope, pause, pending, storage, transcript, transport
+from . import VERSION, envelope, pause, pending, storage, transcript, transport, watch
 from .config import FROM_CLAUDE_ACCOUNT, Config, load
 from .spans import Builder, Capture
 
@@ -140,6 +140,7 @@ def update_status(
             problem=config.problem,
             queued=len(transport.queued(root)),
             paused_until=pause.until(root),
+            reads_paused_until=pause.until(root, pause.READS),
             updated_at=storage.now(),
         )
         status.update(fields)
@@ -307,6 +308,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if mode == "worker":
         run_worker(argv[1] if len(argv) > 1 else "stop", sys.stdin.buffer.read())
         return 0
+    if mode == "watch":
+        # The one mode that can exit with another code than 0, to wake Claude for a flagged report
+        return watch.run(sys.stdin.buffer.read())
     if mode not in HOOK_MODES:
         return 0
     raw = sys.stdin.buffer.read()

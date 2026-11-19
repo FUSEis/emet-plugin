@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -26,10 +27,16 @@ def data_dir(environ: Mapping[str, str] = os.environ) -> Path:
 def write_private(path: Path, text: str) -> None:
     """Writes atomically with owner-only permissions, since files can hold session content."""
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    os.replace(temp, path)
+    try:
+        fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, path)
+    except OSError:
+        # A write cut short must not leave the content behind under another name
+        with contextlib.suppress(OSError):
+            temp.unlink()
+        raise
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -63,6 +70,38 @@ def locked(path: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_EX)
             try:
                 yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+@contextmanager
+def try_locked(path: Path) -> Iterator[bool]:
+    """Takes the lock on path only when no one holds it, and never waits. Yields whether it was taken."""
+    with open(path, "a+") as handle:
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                yield False
+                return
+            try:
+                yield True
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 

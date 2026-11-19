@@ -132,7 +132,8 @@ def test_a_run_after_a_finished_turn_stamps_its_end(transcript, environ, emet):
     assert stamps(environ) == []
     run(transcript, environ)
     lines = pending.lines(root(environ), "session-1")
-    assert [sorted(item) for item in lines] == [["at", "endpoint", "trace_uuid"], ["finished", "queued"]]
+    assert [sorted(item) for item in lines] == [["at", "conversation_uuid", "endpoint", "trace_uuid"], ["finished", "queued"]]
+    assert lines[0]["conversation_uuid"] == emet.conversations[0]
     assert lines[0]["endpoint"] == emet.url
     assert lines[1]["queued"] == 0
     assert all(value for value in (lines[0]["at"], lines[1]["finished"]))
@@ -242,6 +243,15 @@ def test_a_session_id_that_is_not_a_plain_name_reads_nothing(environ):
 def test_a_file_that_is_not_text_reads_as_empty(environ):
     pending.path(root(environ), "session-1").write_bytes(b"\xff\xfe\n")
     assert pending.lines(root(environ), "session-1") == []
+
+
+def test_a_trace_line_names_the_conversation_only_when_emet_named_one(environ):
+    other = "1b4e28ba-2fa1-41d2-883f-0016d3cca427"
+    pending.note(root(environ), "session-1", TRACE, "", "7d3c1c52-0d0a-4a52-8d0e-0c7e3a1b2c3d")
+    pending.note(root(environ), "session-1", other, "")
+    first, second = pending.lines(root(environ), "session-1")
+    assert first["conversation_uuid"] == "7d3c1c52-0d0a-4a52-8d0e-0c7e3a1b2c3d"
+    assert "conversation_uuid" not in second
 
 
 def test_a_trace_written_twice_is_read_once(environ):

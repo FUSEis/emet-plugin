@@ -308,3 +308,47 @@ def test_the_pause_file_holds_one_time_in_the_form_of_the_other_files(environ, c
 def test_the_pause_file_is_private(environ):
     pause.extend(root(environ))
     assert stat.S_IMODE(pause.path(root(environ)).stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("name", [pause.SENDS, pause.READS])
+def test_an_answer_does_not_end_a_pause_another_process_has_just_started(environ, clock, name):
+    pause.extend(root(environ), 120.0, name)
+    until = pause.until(root(environ), name)
+    pause.clear(root(environ), name)
+    assert pause.until(root(environ), name) == until
+    clock.advance(121)
+    pause.clear(root(environ), name)
+    assert not pause.path(root(environ), name).exists()
+
+
+def test_a_pause_is_forgotten_under_the_lock_that_starts_one(environ, clock, monkeypatch):
+    taken = []
+    real = storage.locked
+
+    def named(path):
+        taken.append(path.name)
+        return real(path)
+
+    pause.extend(root(environ))
+    clock.advance(31)
+    monkeypatch.setattr(storage, "locked", named)
+    pause.clear(root(environ))
+    assert taken == ["pause.lock"]
+    pause.clear(root(environ))
+    assert taken == ["pause.lock"]
+
+
+def test_a_longer_wait_emet_names_for_the_reads_moves_the_end_of_their_pause(environ, clock):
+    pause.extend(root(environ), None, pause.READS)
+    until = pause.until(root(environ), pause.READS)
+    assert until == storage.now(clock.now + 30)
+    clock.advance(10)
+    for shorter in (5.0, 20.0, None):
+        pause.extend(root(environ), shorter, pause.READS)
+        assert pause.until(root(environ), pause.READS) == until
+    pause.extend(root(environ), 120.0, pause.READS)
+    assert pause.until(root(environ), pause.READS) == storage.now(clock.now + 120)
+    assert pause.read(root(environ), pause.READS)["delay"] == 30
+    pause.extend(root(environ), 90_000.0, pause.READS)
+    assert pause.until(root(environ), pause.READS) == storage.now(clock.now + 3600)
+    assert pause.until(root(environ)) == ""
