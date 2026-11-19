@@ -23,7 +23,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 {
   "extraKnownMarketplaces": {
     "emet-plugin": {
-      "source": { "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.3" },
+      "source": { "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.4" },
       "autoUpdate": false
     }
   },
@@ -47,7 +47,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 - `enabledPlugins: true` in managed settings turns the plugin on for everyone, and developers cannot turn it off.
 - Options in managed `pluginConfigs` take precedence over a developer's own, so the team and capture mode cannot be changed locally. A project's `.claude/settings.json` cannot set `pluginConfigs` at all, and the plugin refuses any destination other than Emet. A project's `env` can still set an option nobody else set, such as a key on a machine that has none; with the key and options in managed settings, a cloned repository cannot change how much traces hold, or send them anywhere but Emet or a program listening on the developer's own machine (`localhost`, `127.0.0.1`, `::1`), which then receives the key and the turns. The plugin allows that for its own development, and `/emet:status` says when turns go anywhere but Emet.
 - The key goes in `env` because `pluginConfigs` cannot hold a secret option. Claude Code reads it when it starts and passes it to the plugin's hooks. A key a developer saved with `/plugin configure` takes precedence over it, so ask developers not to enter one.
-- If you use `strictKnownMarketplaces`, add `{ "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.3" }` to the allowlist. An allowlist entry matches only the same `ref`.
+- If you use `strictKnownMarketplaces`, add `{ "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.4" }` to the allowlist. An allowlist entry matches only the same `ref`.
 - For developers on several Emet teams, deliver one profile per group, each with its own Team ID and key.
 
 ### What a key in managed settings means

@@ -272,7 +272,7 @@ toml = [
 
 [[package]]
 name = "emet-plugin"
-version = "0.1.3"
+version = "0.1.4"
 source = { virtual = "." }
 
 [package.dev-dependencies]
