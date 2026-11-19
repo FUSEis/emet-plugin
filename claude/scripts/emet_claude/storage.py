@@ -7,11 +7,14 @@ import json
 import os
 import sys
 import time
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
 LOG_MAX_BYTES = 1_000_000
+# No line the plugin writes is near this long, so a longer one holds text from somewhere else
+LOG_LINE_MAX = 300
 
 
 def data_dir(environ: Mapping[str, str] = os.environ) -> Path:
@@ -111,9 +114,22 @@ def now(at: Optional[float] = None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(at))
 
 
+def one_line(message: str) -> str:
+    """Returns the message with every line break, control and invisible character replaced, cut to the length of a log line.
+
+    A value read from a file or the network can so never start a line of its own.
+    """
+    kept = (
+        "?" if unicodedata.category(character)[0] == "C" or character in "\u2028\u2029" else character
+        for character in message[:LOG_LINE_MAX]
+    )
+    return "".join(kept)
+
+
 def log(root: Path, message: str) -> None:
     """Appends one line. Never content: ids, counts and HTTP statuses only."""
     path = root / "emet.log"
+    message = one_line(message)
     try:
         if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
             os.replace(path, root / "emet.log.1")
