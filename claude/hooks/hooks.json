@@ -1,5 +1,5 @@
 {
-  "description": "Sends each finished turn to Emet in the background",
+  "description": "Sends each finished turn to Emet in the background, and tells Claude when Emet disputes a claim in an answer",
   "hooks": {
     "SessionStart": [
       {
@@ -19,6 +19,13 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/emet_hook.py\" stop",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/emet_hook.py\" watch",
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 330
           }
         ]
       }

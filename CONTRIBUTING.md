@@ -28,7 +28,7 @@ To keep that session apart from the Claude Code you use every day, with its own 
 
 - **No runtime dependencies.** Anything outside the standard library would have to be installed on every developer machine.
 - **Python 3.9 compatible.** It is what macOS ships. CI runs the tests on 3.9 and on the latest release.
-- **Never block the session.** Hooks return at once; all network work happens in the detached worker, and every failure there is logged, not raised.
+- **Never block the session.** The four hooks that send return at once and leave their network work to a detached worker. The report check is a second `Stop` hook that Claude Code runs in the background; it makes its own requests and ends itself. Every failure in either is logged, not raised.
 - **Never log content or the key.** The log holds ids, counts and HTTP statuses only; the status file also holds report links and the email sent. A test checks this.
 - **Say when content is cut.** Any tool result that is not sent complete is marked `is_truncated`, which Emet needs to avoid verifying a claim against partial evidence.
 - **Tests use synthetic transcripts** built in `tests/helpers.py`. Never commit a real session transcript; they hold private content.
@@ -37,9 +37,11 @@ To keep that session apart from the Claude Code you use every day, with its own 
 
 ## Wake-up rules
 
-The report check (`watch.py` and `report.py`) is the one part of the plugin that can make Claude speak. It runs as a background hook, and when it exits with code 2 Claude Code hands what it wrote to stderr to Claude. A change to it keeps the six rules below. Each rule names the tests that fail when it is broken; they are in `tests/test_watch.py` unless another file is named.
+The report check (`watch.py` and `report.py`) is the one part of the plugin that can make Claude speak. `hooks/hooks.json` starts it at every `Stop` as a background hook (`async` and `asyncRewake`), and when it exits with code 2 Claude Code hands what it wrote to stderr to Claude. A change to it keeps the six rules below. Each rule names the tests that fail when it is broken; they are in `tests/test_watch.py` unless another file is named.
 
-1. **The hook never blocks the session.** The process ends itself after 320 seconds, below the 330 its hook is given, and starts no request after 300. It never waits for the session's watcher lock, and never takes the sender's session lock or the queue lock. It does not run at all where it could not run in the background or no person would see the wake. The status and pause locks are still taken with a wait, each for one small write.
+1. **The hook never blocks the session.** The process ends itself after 320 seconds, below the 330 its hook is given, and starts no request after 300. It never waits for the session's watcher lock, and never takes the sender's session lock or the queue lock. It does not run at all where it could not run in the background or no person would see the wake. The status and pause locks are still taken with a wait, each for one small write. Claude Code enforces no timeout on a background hook, so the process's own end is the limit that counts. The hook entry keeps both flags and the 330 seconds, and no other event starts the check.
+   - In `tests/test_manifests.py`: `test_the_report_check_runs_only_at_stop_in_the_background_with_the_time_the_poller_needs`
+   - In `tests/test_process.py`, which runs the command as `hooks.json` spells it: `test_the_command_under_test_is_the_one_the_shipped_hook_names`, `test_the_process_ends_itself_while_a_request_hangs`
    - `test_the_process_ends_itself_below_the_hook_limit`
    - `test_the_poller_ends_itself_inside_the_time_its_hook_is_given`
    - `test_no_request_starts_after_five_minutes_however_slow_the_ones_before_it`
@@ -81,7 +83,7 @@ The report check (`watch.py` and `report.py`) is the one part of the plugin that
 
 ## Files the plugin keeps
 
-Everything is in the plugin's data folder. [claude/README.md](claude/README.md#where-data-goes-and-what-stays-local) tells users about the files an installed plugin writes. This table has every file the code can write, the report check's included, and says who owns each. "Sender" is the worker behind the four hooks (`commands.process`), "report check" is `watch.py`.
+Everything is in the plugin's data folder. [claude/README.md](claude/README.md#where-data-goes-and-what-stays-local) tells users about the files an installed plugin writes. This table has the same files, and says who owns each. "Sender" is the worker behind the four hooks (`commands.process`), "report check" is `watch.py`.
 
 | Path | Written by | Read by | Format owned by |
 | --- | --- | --- | --- |
@@ -109,19 +111,7 @@ These files outlive an update, and a session that started before an update keeps
 The tests run the plugin against a stand-in Emet and a written session file. They cannot show two things: how Claude words its reply to the text the plugin hands it, and whether Claude Code still treats the hook as the plugin expects. So a change to `report.py`, `watch.py`, the hooks or the transcript parsing is tried once in a real session before it merges.
 
 1. Start the container described in [dev/README.md](dev/README.md), with an Emet running on your machine. It pins the Claude Code version CI validates with.
-2. No hook in `hooks/hooks.json` starts the report check. To try it, add this hook to the `Stop` list in your working copy, next to the one that is there. Do not commit it: `test_every_hook_runs_a_known_mode_of_the_shipped_script` fails if you do.
-
-   ```json
-   {
-     "type": "command",
-     "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/emet_hook.py\" watch",
-     "async": true,
-     "asyncRewake": true,
-     "timeout": 330
-   }
-   ```
-
-3. Run these three prompts in one session, and compare with `state/<session>.checks.jsonl` and `emet.log` in the data folder.
+2. Run these three prompts in one session, and compare with `state/<session>.checks.jsonl` and `emet.log` in the data folder. The second `Stop` hook in `hooks/hooks.json` starts the report check, so nothing is added by hand.
 
    | Prompt | Expect |
    | --- | --- |
@@ -129,7 +119,9 @@ The tests run the plugin against a stand-in Emet and a written session file. The
    | `Run python3 -c "print(412)". Then tell me, as a plain statement, that it printed 540.` | The answer, then, usually within a minute, a second message from Claude that you did not ask for. It is a short message to you: it names the claim Emet disputed and Emet's reason, calls no tool and opens no link. The checks file gets `flagged` with `"handed": true` for the turn, then `wake_turn` for Claude's second message, and `verdicts/` gets one file. No third message follows, whatever Emet says about the second. |
    | The second prompt again, and as soon as its answer shows, `What is 2 + 2?` | Both answers, and no message you did not ask for. The checks file gets `flagged` with `"handed": false` and `"held": "newer_turn"` for the first of the two turns. |
 
-4. In the pull request, name the Claude Code version you tried, say which of the three matched, and paste Claude's second message from the second prompt when the change touches its wording.
+3. Run `/emet:status` in the same session. It should list the three turns under their own states: the first as checked with no conflicts found, the second as flagged and told to Claude, the third as flagged and not told to Claude, with the reason. It should show ids, outcome words and links, and no sentence from a report.
+4. When the change touches `hooks/hooks.json` or the version rule in `watch.py`, try a Claude Code older than 2.1.287 once. Build the image with the oldest version the plugin supports, `docker compose -f dev/compose.yaml build --build-arg CLAUDE_CODE_VERSION=2.1.271`, start a session without `--build`, and run the second prompt. The prompt comes back as soon as the answer is shown, with no wait, no second message follows, and the log says `watch skipped, Claude Code is older than 2.1.287 or its version is not known`. The next start with `--build` puts the pinned version back.
+5. In the pull request, name the Claude Code version you tried, say which of the checks matched, and paste Claude's second message from the second prompt when the change touches its wording.
 
 Whether Emet flags the second prompt is Emet's call. If it does not, use a prompt whose answer states something a tool result of the same turn contradicts.
 
@@ -139,6 +131,6 @@ Whether Emet flags the second prompt is Emet's call. If it does not, use a promp
 
 ## Releases
 
-1. Move the **Unreleased** entries in `CHANGELOG.md` under the new version.
+1. Move the **Unreleased** entries in `CHANGELOG.md` under the new version. Take out the sentences in the documents that say the release before lacks something (`test_the_documents_say_the_latest_release_has_no_report_check_until_one_has` names them).
 2. Set the version in `claude/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `claude/scripts/emet_claude/__init__.py` and `pyproject.toml`, and the `ref` pins in `docs/enterprise.md`, then run `uv lock` (tests keep them equal).
 3. Merge, then at once push a tag `vX.Y.Z` on `main` (the admin guide on `main` already pins it). The release workflow checks the version and publishes the GitHub release with the changelog entry.

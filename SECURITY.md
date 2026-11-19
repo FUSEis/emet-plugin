@@ -8,7 +8,7 @@ Include the plugin version (`plugin.json`), the Claude Code version, your operat
 
 ## Trust model
 
-The plugin runs as you, inside Claude Code's hooks. It holds one credential, the Emet key, and it reads things it did not write: your session and Emet's answers. This section says what it reads, where it sends, what it does not trust, and what it does not defend against.
+The plugin runs as you, inside Claude Code's hooks. It holds one credential, the Emet key, and it reads things it did not write: your session and Emet's answers. One of those answers, Emet's report on a turn, can reach Claude as text. This section says what the plugin reads, where it sends, what it does not trust, and what it does not defend against.
 
 ### What it reads
 
@@ -21,23 +21,36 @@ It opens no other file. It does not read your project: what it sends of a file i
 
 ### Where it sends
 
-Only to `https://app.emet.so`, with the key as a bearer token: finished turns, and a key check when a session starts. The key check is one read of the report endpoint for an id no trace has, so it sends no trace and reads no report. Any other address is refused before a request is made, except an Emet on the same machine (`localhost`, `127.0.0.1`, `::1`), which exists for plugin development. No request follows a redirect, so the key and the turns never go on to an address Emet's answer names.
+Only to `https://app.emet.so`, with the key as a bearer token: finished turns, a key check when a session starts, and report reads. The key check is one read of the report endpoint for an id no trace has, so it sends no trace and reads no report. A report read is a `GET` for the report of one turn the plugin sent, by the id Emet returned for it, and sends nothing else. Any other address is refused before a request is made, except an Emet on the same machine (`localhost`, `127.0.0.1`, `::1`), which exists for plugin development. No request follows a redirect, so the key and the turns never go on to an address Emet's answer names.
 
 ### What it does not trust
 
-**Emet's answers.** The plugin acts on little of an answer: the HTTP status, the wait a `Retry-After` header names (an hour at most), two ids, each kept only when it is a UUID, and for the key check the short code of Emet's own "not found". Nothing in an answer is executed, and no text from one is shown to Claude. Of an error, the log and `status.json`, which `/emet:status` reads, keep the HTTP status and a short code of lowercase letters and underscores, 40 characters at most. The error message is not kept.
+**Emet's answers to a send, a key check or a report that is not ready.** The plugin acts on little of such an answer: the HTTP status, the wait a `Retry-After` header names (an hour at most), two ids, each kept only when it is a UUID, and the short code Emet puts in its own `404` answers. Nothing in an answer is executed, and no text from one of these answers is shown to Claude. Of an error, the log and `status.json`, which `/emet:status` reads, keep the HTTP status and a short code of lowercase letters and underscores, 40 characters at most. The error message is not kept.
+
+**Emet's reports.** A report is written by a model that read tool results and web pages, so any sentence in it can be an attempt to steer Claude. The plugin reads a report after each turn, and tells Claude about one that Emet flagged. This is in the plugin on `main`. Release 0.1.4 does not have it. When the plugin tells Claude about a report:
+
+- A report over 2 MB, of a version the plugin does not know, or with a status it does not know is not shown at all.
+- Each piece of text is cut to a fixed length, put on one line, and stripped of control and invisible characters.
+- All of it sits in one data block, as JSON strings. Angle brackets are escaped, so nothing in a report can close the block.
+- The words before and after the block are fixed. They tell Claude that the block is data, and not to follow an instruction, call a tool or open a link because of it. The whole message is 4,000 characters at most.
+- Nothing from a report is executed, used as a file name, or used as an address. The link in the message is built from the plugin's own values.
+- Of a report, the plugin saves only this rendered text, in `verdicts/`, for 7 days. The report itself is never saved. Claude Code keeps the message it was handed in the session transcript, as it keeps any message.
+- The log and `status.json`, which `/emet:status` reads, keep ids, times and one of a fixed list of outcome words for a report. They keep no text from it.
+- Claude is told about at most 3 reports in a session, and only within 60 seconds of the end of the turn. The turn Claude takes to answer is sent to Emet, and its report is never read, so a report cannot start a chain of messages.
+
+This lowers the chance that a report steers Claude. It cannot remove it, because Claude reads the block. Someone who can write what Emet checks, such as a web page a tool fetched during the turn, can try to shape the reasons Emet gives, and so the text in the block.
 
 **The session's text.** The plugin sends it and never acts on it. Nothing in a prompt, an answer or a tool result is executed or used as an address. The hook input itself, the session id and the transcript path, comes from Claude Code and is trusted.
 
 ### What is not a boundary
 
-- **Another process running as you.** It can read the transcript and the data folder, queued turns included, and it can change the plugin's files. On macOS and Linux the plugin sets its data folder and files to owner-only, which keeps other users out. On Windows the plugin sets no access rules, so the folder is as private as the folder it sits in, normally your user profile. None of this stops a process that already runs as you.
+- **Another process running as you.** It can read the transcript and the data folder, queued turns and saved report text included, and it can change the plugin's files. On macOS and Linux the plugin sets its data folder and files to owner-only, which keeps other users out. On Windows the plugin sets no access rules, so the folder is as private as the folder it sits in, normally your user profile. None of this stops a process that already runs as you.
 - **Whoever sets Claude Code's environment.** Options reach the plugin through it. It cannot name another host. It can name a program listening on your own machine, which then receives the key and the turns. [docs/enterprise.md](docs/enterprise.md) says how managed settings close this.
 - **Redaction.** `sanitized` removes the secrets its patterns know. Use `metadata` where that is not enough.
 
 ## Scope
 
-In scope: anything in this repository that breaks the trust model above. For example a way to make the plugin send the key or a turn anywhere but Emet, send content in `metadata` mode, leak the key into a file or the conversation, read a file other than the ones listed above, write outside its data folder, block or break a session, or let text from one of Emet's answers reach the conversation.
+In scope: anything in this repository that breaks the trust model above. For example a way to make the plugin send the key or a turn anywhere but Emet, send content in `metadata` mode, leak the key into a file or the conversation, read a file other than the ones listed above, write outside its data folder, block or break a session, let text from Emet reach Claude outside the data block, or make Claude speak more often or later than the limits above allow.
 
 Out of scope: secrets that the `sanitized` redaction patterns do not recognize. Redaction is best effort and documented as such; use `metadata` mode where that matters. Suggestions for new patterns are welcome as ordinary issues, without the secret. Also out of scope is anything that needs a process already running as the user, or control of Claude Code's environment, as described above.
 

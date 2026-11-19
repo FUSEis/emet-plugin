@@ -22,6 +22,8 @@ FLUSH_WAIT_S = 1.0
 # Subagent transcripts followed per session, newest kept
 MAX_TRACKED_AGENTS = 200
 HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
+# The mode of the background Stop hook that reads reports. It starts no worker
+WATCH_MODE = "watch"
 # Hooks that fire only once the current turn is over
 TURN_END_MODES = ("stop", "session-end")
 # Deliveries listed by /emet:status
@@ -324,7 +326,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if mode == "worker":
         run_worker(argv[1] if len(argv) > 1 else "stop", sys.stdin.buffer.read())
         return 0
-    if mode == "watch":
+    if mode == WATCH_MODE:
         # The one mode that can exit with another code than 0, to wake Claude for a flagged report
         return watch.run(sys.stdin.buffer.read())
     if mode not in HOOK_MODES:
