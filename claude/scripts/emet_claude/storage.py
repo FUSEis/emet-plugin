@@ -23,6 +23,8 @@ JSON_MAX_DEPTH = 200
 # A whole JSON string, closed or not, so that a bracket inside one is never counted. It matches from any quote, so no text is read twice
 JSON_STRING = re.compile(r'"(?:[^"\\]|\\.|\\\Z)*(?:"|\Z)', re.DOTALL)
 JSON_BRACKET = re.compile(r"[\[\]{}]")
+# The key under which a saved JSON object names the version of its format
+VERSION_KEY = "v"
 # For reading: no link is followed, a pipe put in the file's place cannot make the open wait, and Windows changes no byte
 READ_FLAGS = os.O_RDONLY | NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
 
@@ -100,6 +102,12 @@ def read_json(path: Path, default: Any) -> Any:
             return loads(handle.read())
     except (OSError, ValueError):
         return default
+
+
+def known_version(saved: Mapping[str, Any], newest: int) -> bool:
+    """Says whether this code can read a saved object: it names no version, which reads as 1, or a whole number from 1 to newest."""
+    found = saved.get(VERSION_KEY, 1)
+    return type(found) is int and 1 <= found <= newest
 
 
 def write_json(path: Path, value: Any) -> None:

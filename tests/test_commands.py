@@ -1,3 +1,4 @@
+import contextlib
 import email.message
 import http.client
 import io
@@ -1286,3 +1287,109 @@ def test_a_subagent_file_and_a_private_file_are_opened_for_reading_with_the_flag
     assert storage.read_json(tmp_path / "state.json", None) == {}
     assert [name for name, _ in opened] == [agent_path.name, "state.json"]
     assert all(flags & os.O_NOFOLLOW and flags & os.O_NONBLOCK for _, flags in opened)
+
+
+def state_file(environ):
+    return Path(environ["CLAUDE_PLUGIN_DATA"]) / "state" / "session-1.json"
+
+
+def test_the_state_file_names_the_version_of_its_format(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ)
+    assert state(environ)["v"] == commands.STATE_VERSION == 1
+
+
+def test_a_state_file_with_no_version_is_read_as_the_first_one(transcript, environ, emet):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    # As 0.1.4 wrote it
+    rewrite_state(environ, lambda saved: saved.pop("v"))
+    second = finished_turn(transcript, "And 3 + 3?", "6")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
+    assert state(environ)["v"] == 1
+
+
+def test_a_key_of_the_state_file_this_version_does_not_know_is_kept(transcript, environ, emet):
+    finished_turn(transcript)
+    run(transcript, environ)
+    rewrite_state(environ, lambda saved: saved.update(added_later={"by": "a newer plugin"}))
+    finished_turn(transcript, "And 3 + 3?", "6")
+    run(transcript, environ)
+    assert state(environ)["added_later"] == {"by": "a newer plugin"}
+    assert len(emet.envelopes) == 2
+
+
+@pytest.mark.parametrize("version", [2, 10**30, 0, -1, "1", "2", True, 1.0, None, [1]])
+def test_a_session_whose_state_file_is_of_an_unknown_version_is_neither_sent_again_nor_moved(transcript, environ, emet, version):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    rewrite_state(environ, lambda saved: saved.update(v=version))
+    newer = state_file(environ).read_bytes()
+    second = finished_turn(transcript, "And 3 + 3?", "6")
+    run(transcript, environ)
+    run(transcript, environ)
+    # Neither the session again from its start, nor the new turn from a place this version cannot read
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"]]
+    assert state_file(environ).read_bytes() == newer
+    log = (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+    assert log.count("session not sent, its state file is of a version this plugin does not know") == 2
+    assert "worker error" not in log
+    # The run still ends for a reader of the session's file
+    assert [line["queued"] for line in pending.lines(storage.data_dir(environ), "session-1") if "finished" in line] == [0, 0, 0]
+    # A plugin that knows the version finds the place as it was left, and sends what waited once
+    rewrite_state(environ, lambda saved: saved.update(v=1))
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
+
+
+def test_a_session_left_alone_over_its_state_file_still_sends_what_waits_in_the_queue(transcript, environ, emet, clock):
+    root = storage.data_dir(environ)
+    finished_turn(transcript)
+    run(transcript, environ)
+    rewrite_state(environ, lambda saved: saved.update(v=2))
+    newer = state_file(environ).read_bytes()
+    finished_turn(transcript, "And 3 + 3?", "6")
+    queued_batch(environ, "session-0", "turn-a")
+    queued_batch(environ, "session-1", "turn-b")
+    # A pause holds the queue on this path as on any other
+    pause.extend(root)
+    run(transcript, environ)
+    assert len(emet.envelopes) == 1 and len(transport.queued(root)) == 2
+    clock.advance(pause.LONGEST_S + 1)
+    run(transcript, environ)
+    assert [(env["conversation_id"], env["trace_id"]) for env in emet.envelopes[1:]] == [("session-0", "turn-a"), ("session-1", "turn-b")]
+    assert transport.queued(root) == []
+    assert state_file(environ).read_bytes() == newer
+    assert [line["queued"] for line in pending.lines(root, "session-1") if "finished" in line] == [0, 2, 0]
+    # What the flush delivered is shown, as after any run
+    assert status(environ)["queued"] == 0
+    assert [item["session_id"] for item in status(environ)["recent"]] == ["session-1", "session-0"]
+    assert (root / "emet.log").read_text(encoding="utf-8").count("session not sent") == 2
+
+
+def test_the_queue_is_flushed_under_its_lock_when_a_session_is_left_alone(transcript, environ, emet, monkeypatch):
+    finished_turn(transcript)
+    run(transcript, environ)
+    rewrite_state(environ, lambda saved: saved.update(v=2))
+    queued_batch(environ, "session-0", "turn-a")
+    held, sent = [], []
+    locked, post = storage.locked, transport.post
+
+    @contextlib.contextmanager
+    def spy(path):
+        with locked(path):
+            held.append(path.name)
+            try:
+                yield
+            finally:
+                held.remove(path.name)
+
+    def checked(*args):
+        sent.append("queue.lock" in held)
+        return post(*args)
+
+    monkeypatch.setattr(storage, "locked", spy)
+    monkeypatch.setattr(transport, "post", checked)
+    run(transcript, environ)
+    assert sent == [True]

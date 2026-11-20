@@ -8,7 +8,8 @@ state/<session_id>.checks.jsonl and shown in the status file. A flagged verdict 
 own file under verdicts/ before Claude is woken. Only that file holds text from a report.
 
 Exit code 2 hands the text to Claude Code. It does not prove Claude told the user: a wake that
-lands inside a running turn can go unseen. So the verdict file is kept either way.
+lands inside a running turn can go unseen. So the verdict file is kept either way, until the
+prompt hook (`missed.py`) finds the wake in the session file or shows the verdict with a prompt.
 
 Each line of the checks file holds one of these words under "outcome". A final outcome ends the
 polling of its turn. A turn without one is polled again after a later Stop.
@@ -26,6 +27,7 @@ polling of its turn. A turn without one is polled again after a later Stop.
 | `not_found` | yes | Emet answered that it has no trace with this id (404 `not_found`). |
 | `expired` | yes | The turn was delivered more than a day ago and still has no report. It is no longer asked for. |
 | `wake_turn` | yes | The turn Claude took after this plugin woke it with a report. It is sent to Emet, and its report is never asked for. |
+| `shown` | yes | The prompt hook (`missed.py`) gave this turn's flagged report to Claude Code with the prompt "prompt_id" names. |
 | `timed_out` | no | The report was not ready within the 300 seconds of the run. |
 | `key_refused` | no | Emet refused the key on a report read (401 or 403), and the run stopped. |
 | `rate_limited` | no | Emet answered 429 to a report read. The run stopped and paused the report reads of every session. |
@@ -34,10 +36,14 @@ polling of its turn. A turn without one is polled again after a later Stop.
 | `old_claude_code` | no | The Stop was not polled: Claude Code is older than 2.1.287, or its version could not be read. |
 | `no_person` | no | The Stop was not polled: no person is at the session (`claude -p`, the SDK). |
 
-A `flagged` line that was not handed over names the reason under "held": `wake_cap` (the session
-already had 3 wakes), `newer_turn` (a later turn had started or been delivered) or `late` (the
-report was ready more than 60 seconds after its turn ended). The first of the three that applies
-is the one named.
+A `flagged` line that was not handed over names the reason under "held": `shown_turn` (the turn
+began with a prompt that carried an earlier verdict), `wake_cap` (the session already had 3 wakes),
+`newer_turn` (a later turn had started or been delivered) or `late` (the report was ready
+more than 60 seconds after its turn ended). The first of the four that applies is the one named.
+
+Claude's answer in a `shown_turn` quotes the claims of the earlier verdict, and Emet flags such an
+answer again. So its report is read and recorded, and Claude is never told of it: no wake, and no
+verdict is saved.
 
 A turn is still polled after those 60 seconds, until the 300 are over. A flagged report that
 comes then wakes no one. It is read so that it can be saved and recorded, for the next prompt
@@ -52,6 +58,7 @@ import json
 import os
 import random
 import re
+import stat
 import sys
 import threading
 import time
@@ -64,7 +71,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from . import VERSION, pause, pending, report, storage, timestamps, transcript, transport
-from .config import Config, load
+from .config import Config, endpoint_problem, load
 
 # The first Claude Code that reports a waking hook it cannot start once, not at every turn. The README requires it
 MIN_CLAUDE_CODE = (2, 1, 287)
@@ -109,6 +116,7 @@ LATE_S = 60
 # How long before that window closes its last read starts, which leaves the request time to be answered
 EDGE_S = 1
 # Why a flagged report was not handed to Claude
+SHOWN_TURN = "shown_turn"
 CAPPED = "wake_cap"
 NEWER_TURN = "newer_turn"
 LATE = "late"
@@ -117,6 +125,24 @@ MAX_WATCHED = 5
 # A turn delivered longer ago than this is no longer polled
 MAX_AGE_S = 24 * 3600
 VERDICT_DAYS = 7
+# The formats of the Stop file and of a saved verdict. A file that names no version is read as 1
+STOP_VERSION = 1
+VERDICT_VERSION = 1
+# Far above any verdict save_verdict writes. A longer file is not read
+VERDICT_MAX_BYTES = 64 * 1024
+# How far ahead of the clock a saved verdict's time may be, for a clock that was set back
+CLOCK_SLACK_S = 300
+# Why a saved verdict is not shown, as the log names it. Nothing else of the file is logged
+BAD_NAME = "name"
+A_LINK = "link"
+TOO_LONG = "size"
+NOT_READ = "unreadable"
+BAD_VERSION = "version"
+OTHER_WORDING = "wording"
+BAD_SHAPE = "shape"
+OTHER_NAME = "mismatch"
+BAD_TEXT = "text"
+BAD_AGE = "age"
 # Checks listed in the status file
 RECENT_CHECKS = 5
 WAKE_EXIT = 2
@@ -136,6 +162,8 @@ OLD_CLAUDE_CODE = "old_claude_code"
 NO_PERSON = "no_person"
 # The turn after a wake: sent, and never polled
 WAKE_TURN = "wake_turn"
+# A flagged verdict given to Claude Code with a later prompt. The prompt hook records it
+SHOWN = "shown"
 # Emet's 404 codes that end the wait for a report
 FINAL_MISSES = ("not_assessed", "failed", "not_found")
 # Every outcome a check can hold, with whether it ends the polling of its turn. The table above says what each means
@@ -145,6 +173,7 @@ OUTCOMES: Dict[str, bool] = {
     **dict.fromkeys(FINAL_MISSES, True),
     EXPIRED: True,
     WAKE_TURN: True,
+    SHOWN: True,
     TIMED_OUT: False,
     KEY_REFUSED: False,
     RATE_LIMITED: False,
@@ -328,7 +357,13 @@ def announce(root: Path, stop: Stop) -> None:
     if latest(root, stop).size > stop.size:
         storage.log(root, "stop not written, a later Stop of the session is already named")
         return
-    saved = {"token": stop.token, "prompt_id": stop.prompt_id, "size": stop.size, "at": storage.now(stop.at)}
+    saved = {
+        storage.VERSION_KEY: STOP_VERSION,
+        "token": stop.token,
+        "prompt_id": stop.prompt_id,
+        "size": stop.size,
+        "at": storage.now(stop.at),
+    }
     if stop.ended:
         saved["ended"] = timestamps.text(datetime.fromtimestamp(stop.ended, timezone.utc))
     for attempt in range(STOP_WRITES):
@@ -347,9 +382,12 @@ def announce(root: Path, stop: Stop) -> None:
 
 
 def latest(root: Path, own: Stop) -> Stop:
-    """Returns the session's latest Stop: the one in its file, or this run's own when the file is damaged or of an earlier Stop."""
+    """Returns the session's latest Stop: the one in its file, or this run's own when the file is damaged or of an earlier Stop.
+
+    A file of a version this code does not know is read as a damaged one.
+    """
     saved = storage.read_json(stop_path(root, own.session_id), None)
-    if not isinstance(saved, dict):
+    if not isinstance(saved, dict) or not storage.known_version(saved, STOP_VERSION):
         return own
     at = timestamps.parse(saved.get("at"))
     token, size, prompt_id = saved.get("token"), saved.get("size"), saved.get("prompt_id")
@@ -381,8 +419,11 @@ def turn_end(trace: Trace, stop: Stop) -> float:
 def hold_reason(root: Path, config: Config, stop: Stop, trace: Trace, found: List[Dict[str, Any]]) -> str:
     """Returns why a flagged report is not handed to Claude, or "" when it is. stop is the session's latest Stop.
 
-    The first reason that applies is the one recorded: the cap, then a newer turn, then a late report.
+    The first reason that applies is the one recorded: a turn that carried a verdict, the cap, then a newer turn, then a late report.
     """
+    # Its answer quotes the claims of the verdict it carried. Telling Claude of that would start a chain
+    if trace.prompt_id and trace.prompt_id in shown_prompts(found):
+        return SHOWN_TURN
     if wakes(found) >= WAKE_CAP:
         return CAPPED
     # A wake that lands in a running turn is folded into it and can go unseen
@@ -477,14 +518,17 @@ def delivered(lines: List[Dict[str, Any]], endpoint: str, by_plugin: bool = Fals
             trace_uuid = str(uuid.UUID(item.get("trace_uuid")))
         except (ValueError, TypeError, AttributeError):
             continue
-        conversation = item.get("conversation_uuid")
         ended = timestamps.parse(item.get("ended"))
+        conversation = ""
+        with contextlib.suppress(ValueError, TypeError, AttributeError):
+            # Kept in one form: it is written into a saved verdict, which is read back only with ids as the plugin writes them
+            conversation = str(uuid.UUID(item.get("conversation_uuid")))
         found.setdefault(
             trace_uuid,
             Trace(
                 trace_uuid,
                 at.timestamp(),
-                conversation if isinstance(conversation, str) else "",
+                conversation,
                 pending.plain(item.get("prompt_id")),
                 ended.timestamp() if ended else 0.0,
             ),
@@ -543,6 +587,11 @@ def wakes(found: List[Dict[str, Any]]) -> int:
     return sum(1 for item in found if item.get("handed") is True and item.get("outcome") == FLAGGED)
 
 
+def shown_prompts(found: List[Dict[str, Any]]) -> Set[str]:
+    """Returns Claude Code's id of each prompt of the session that carried a saved verdict."""
+    return {pending.plain(item.get("prompt_id")) for item in found if item.get("outcome") == SHOWN} - {""}
+
+
 def handed_times(root: Path, session_id: str) -> List[float]:
     """Returns when each report was handed to Claude in this session. The sender takes a turn for one a wake started only after one."""
     found = [timestamps.parse(item.get("at")) for item in checks(root, session_id) if wakes([item])]
@@ -563,8 +612,14 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
     Only an outcome of OUTCOMES can be recorded. Without wait the status file is left alone when another process is writing it.
     """
     item = {"trace_uuid": trace_uuid, "outcome": outcome, "final": OUTCOMES[outcome], "at": storage.now(pause.clock()), **(ids or {})}
-    # No report is read for a wake turn, and the line must not look as if one was
-    line = f"turn {trace_uuid} was started by a wake, not polled" if outcome == WAKE_TURN else f"report {trace_uuid} -> {outcome}"
+    # No report is read for a wake turn or a showing, and the line must not look as if one was
+    line = (
+        f"turn {trace_uuid} was started by a wake, not polled"
+        if outcome == WAKE_TURN
+        else f"verdict {trace_uuid} shown with a prompt"
+        if outcome == SHOWN
+        else f"report {trace_uuid} -> {outcome}"
+    )
     target = checks_path(root, session_id)
     try:
         written = target.read_bytes() if target.exists() else b""
@@ -633,31 +688,137 @@ def expired(verdict: Dict[str, Any]) -> bool:
     return at is not None and pause.clock() - at.timestamp() > VERDICT_DAYS * 24 * 3600
 
 
-def well_formed(verdict: Any, session_id: str) -> bool:
-    """Says whether a saved verdict is one this module wrote for the session. The text goes to Claude, so nothing else passes."""
-    if not isinstance(verdict, dict) or verdict.get("session_id") != session_id or timestamps.parse(verdict.get("at")) is None:
-        return False
-    text, trace_uuid = verdict.get("text"), verdict.get("trace_uuid")
-    if not isinstance(text, str) or len(text) > report.TOTAL_LIMIT or not text.startswith(report.MISSED_OPENING):
-        return False
-    if not isinstance(trace_uuid, str) or not UUID_FORM.fullmatch(trace_uuid):
-        return False
-    return isinstance(verdict.get("handed"), bool) and type(verdict.get("revision")) is int
+def is_uuid(value: Any) -> bool:
+    """Says whether the value is a UUID as the plugin writes one."""
+    return isinstance(value, str) and UUID_FORM.fullmatch(value) is not None
+
+
+def shaped(verdict: Dict[str, Any]) -> bool:
+    """Says whether the verdict has every key settle writes, each of the type and in the form settle writes it. Its time is judged apart."""
+    return (
+        bool(pending.plain(verdict.get("session_id")))
+        and is_uuid(verdict.get("trace_uuid"))
+        and all(verdict.get(key) == "" or is_uuid(verdict.get(key)) for key in ("report_uuid", "conversation_uuid"))
+        and report.is_count(verdict.get("revision"))
+        and isinstance(verdict.get("endpoint"), str)
+        and endpoint_problem(verdict["endpoint"]) is None
+        and type(verdict.get("handed")) is bool
+        and isinstance(verdict.get("text"), str)
+    )
+
+
+def verdict_problem(name: str, verdict: Any) -> str:
+    """Returns the word for why what a verdict file holds must not be shown, or "" when all of it checks out. name is the file's name."""
+    if not isinstance(verdict, dict):
+        return NOT_READ
+    if not storage.known_version(verdict, VERDICT_VERSION):
+        return BAD_VERSION
+    # Rendered with other fixed words than this code writes
+    wording = verdict.get("prompt_version")
+    if type(wording) is not int or wording != report.PROMPT_VERSION:
+        return OTHER_WORDING
+    if not shaped(verdict):
+        return BAD_SHAPE
+    # A file copied or renamed to another session, trace or revision
+    if name != verdict_path(Path(), verdict["session_id"], verdict["trace_uuid"], verdict["revision"]).name:
+        return OTHER_NAME
+    # The text must be one the renderer could have written, with the link these ids give. Nothing else may stand in it
+    url = report.link(verdict["endpoint"], verdict["session_id"], verdict["conversation_uuid"])
+    if len(verdict["text"]) > report.TOTAL_LIMIT or not report.is_missed_message(verdict["text"], url):
+        return BAD_TEXT
+    at = timestamps.parse(verdict.get("at"))
+    # Also a verdict that names no time
+    if at is None or not -CLOCK_SLACK_S <= pause.clock() - at.timestamp() <= VERDICT_DAYS * 24 * 3600:
+        return BAD_AGE
+    return ""
+
+
+def verdict_bytes(path: Path) -> Tuple[str, bytes]:
+    """Returns the word for why a verdict file is not read, or "", and what it holds. Never raises.
+
+    The file is opened once, and the file that was judged is the one that is read: a plain file with one name, no longer than a verdict.
+    """
+    # Windows has no flag that refuses a link at the open. There this look is the guard, and a file swapped after it is followed
+    if not storage.NOFOLLOW and path.is_symlink():
+        return A_LINK, b""
+    try:
+        fd = os.open(str(path), storage.READ_FLAGS)
+    except (OSError, ValueError):
+        return (A_LINK if path.is_symlink() else NOT_READ), b""
+    try:
+        found = os.fstat(fd)
+        if not stat.S_ISREG(found.st_mode):
+            return NOT_READ, b""
+        # A second name is a hard link to a file from somewhere else
+        if found.st_nlink != 1:
+            return A_LINK, b""
+        if found.st_size > VERDICT_MAX_BYTES:
+            return TOO_LONG, b""
+        data = b""
+        # One byte past the limit: the file can grow after its size was read
+        while len(data) <= VERDICT_MAX_BYTES:
+            chunk = os.read(fd, VERDICT_MAX_BYTES + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+    except OSError:
+        return NOT_READ, b""
+    finally:
+        os.close(fd)
+    return (TOO_LONG if len(data) > VERDICT_MAX_BYTES else ""), data
+
+
+def judged(root: Path, name: str) -> Tuple[str, Any]:
+    """Returns the word for why the file of that name is no verdict to show, or "", and what the file holds once it was read."""
+    folder = verdict_folder(root)
+    if folder is None:
+        return A_LINK, None
+    # The name as given, so that no part of it can lead out of the folder
+    if not VERDICT_NAME.fullmatch(name):
+        return BAD_NAME, None
+    problem, data = verdict_bytes(folder / name)
+    if problem:
+        return problem, None
+    try:
+        verdict = storage.loads(data)
+    except (ValueError, RecursionError):
+        return NOT_READ, None
+    return verdict_problem(name, verdict), verdict
+
+
+def read_verdict(root: Path, name: str) -> Optional[Dict[str, Any]]:
+    """Returns the saved verdict in the file of that name, and only when the whole file checks out. Never raises.
+
+    Its text goes to Claude, and any process of the user can write the file. So a file is a verdict only when it is
+    a plain file under a verdict's name, of a version and a wording this code writes, with every key in the form
+    settle writes it, for the session, trace and revision its name gives, with a text equal to one the renderer
+    writes for the data block it holds and the link its ids give, and saved within the last seven days.
+    The log names why one is not shown by a fixed word, and nothing of the file.
+    """
+    try:
+        problem, verdict = judged(root, name)
+    except Exception as error:  # noqa: BLE001 - a file that cannot be judged is no verdict
+        problem, verdict = f"error {type(error).__name__}", None
+    if problem:
+        storage.log(root, f"verdict not shown, {problem}")
+        return None
+    return verdict if isinstance(verdict, dict) else None
 
 
 def verdicts(root: Path, session_id: str) -> List[Dict[str, Any]]:
-    """Returns the session's saved verdicts that are well formed and still eligible to be shown, in file name order."""
+    """Returns the session's saved verdicts that read_verdict lets through, in file name order."""
     folder = verdict_folder(root)
     if folder is None or not pending.SESSION_ID.fullmatch(session_id):
         return []
-    found = [storage.read_json(path, None) for path in sorted(folder.glob(f"{session_id}.*.json")) if VERDICT_NAME.fullmatch(path.name)]
-    return [verdict for verdict in found if well_formed(verdict, session_id) and not expired(verdict)]
+    found = [read_verdict(root, path.name) for path in sorted(folder.glob(f"{session_id}.*.json"))]
+    return [verdict for verdict in found if verdict is not None]
 
 
 def prune_verdicts(root: Path) -> None:
     """Removes the verdicts of every session that are too old to show, so no report text rests on disk past its use.
 
-    Only a file with a verdict's name that can be read and names a time: anything else is not this module's to remove.
+    Only a file with a verdict's name that can be read, of a version this code knows, and names a time:
+    anything else is not this module's to remove.
     """
     folder = verdict_folder(root)
     if folder is None:
@@ -666,7 +827,7 @@ def prune_verdicts(root: Path) -> None:
         if not VERDICT_NAME.fullmatch(path.name) or path.is_symlink():
             continue
         verdict = storage.read_json(path, None)
-        if isinstance(verdict, dict) and expired(verdict):
+        if isinstance(verdict, dict) and storage.known_version(verdict, VERDICT_VERSION) and expired(verdict):
             with contextlib.suppress(OSError):
                 path.unlink()
     # A write cut short can leave report text under a name the loop above never matches
@@ -692,7 +853,7 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     """Records a report that is ready. Returns the text to wake Claude with, or "" when Claude is not woken.
 
     stop is the session's latest Stop. Text is returned only for a flagged report not yet recorded,
-    under the cap, of the turn that Stop ended, with no newer turn under way, ready within LATE_S
+    of a turn that carried no earlier verdict, under the cap, of the turn that Stop ended, with no newer turn under way, ready within LATE_S
     of the end of that turn, and after it was recorded as handed over.
     """
     session_id = stop.session_id
@@ -712,6 +873,7 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     held = hold_reason(root, config, stop, trace, found)
     link = (config.endpoint, session_id, trace.conversation_uuid)
     verdict = {
+        storage.VERSION_KEY: VERDICT_VERSION,
         "session_id": session_id,
         "trace_uuid": trace.trace_uuid,
         **ids,
@@ -725,7 +887,9 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
         # The rendered text only, never the document
         "text": report.missed_message(document, *link),
     }
-    save_verdict(root, verdict)
+    # A verdict Claude is never told of is not kept: no report text rests on disk without a use
+    if held != SHOWN_TURN:
+        save_verdict(root, verdict)
     # Recorded before Claude is woken, so a crash in between cannot wake it twice
     line = {"handed": not held, **({"held": held} if held else {}), **ids, "prompt_version": report.PROMPT_VERSION}
     if not record(root, session_id, trace.trace_uuid, FLAGGED, line):

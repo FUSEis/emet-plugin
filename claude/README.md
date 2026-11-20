@@ -73,7 +73,7 @@ The other files hold ids, times, counts and HTTP statuses. They hold no text fro
 
 | File | What it holds | Kept until |
 | --- | --- | --- |
-| `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, and for each subagent still followed the path of its transcript, its ids and a position. | The plugin is uninstalled. |
+| `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, for each subagent still followed the path of its transcript, its ids and a position, and the version of the file's own format. | The plugin is uninstalled. |
 | `state/<session>.pending.jsonl` | One line for each turn Emet accepted: Emet's ids of the trace and of its conversation, the time, the address that accepted it, Claude Code's id of the turn and the time the turn ended. Also a line for a turn Emet refused (its id and the HTTP status), for a turn that could not be read (the name of the error's type), and for the end of each run (the time and the number of turns queued). | The plugin is uninstalled. |
 | `pause.json` | The time before which the plugin asks Emet nothing, and the length of the last wait, written after Emet could not be reached. | Emet answers again after the pause has run out. |
 | `status.json` | What `/emet:status` reports: the plugin version, Team ID, capture mode, the email sent, the public start of the key, the result of the key check, counts, the pause time, and for the last five sessions the repository folder name, the time and the report link. | Rewritten at every run. |
@@ -88,7 +88,7 @@ Emet's handling of the data it receives is covered by the [Emet privacy policy](
 
 ## How it works
 
-The plugin registers four hooks (`SessionStart`, `Stop`, `SubagentStop`, `SessionEnd`). Each one returns at once and starts a short-lived background process, which:
+The plugin registers five hooks. Four of them (`SessionStart`, `Stop`, `SubagentStop`, `SessionEnd`) each return at once and start a short-lived background process, which:
 
 1. reads the session transcript from where it last stopped;
 2. groups it into turns (a prompt and everything up to the next prompt), and each turn into model calls, tool calls and subagents;
@@ -96,6 +96,8 @@ The plugin registers four hooks (`SessionStart`, `Stop`, `SubagentStop`, `Sessio
 4. queues the turn if Emet cannot be reached, and retries it on a later run. After a failed send every session on the machine waits before asking Emet again: about 30 seconds at first, twice as long after each further failure, 10 minutes at most, or the time Emet names in `Retry-After`. Turns are still read and queued meanwhile.
 
 A turn still waiting for its answer is read again next time, and a background subagent that finishes later is added to the turn that launched it. When a session starts, is resumed or is forked, `SessionStart` also checks that Emet accepts the key, with one `GET /api/v1/traces/{id}/report/` for an id no trace has. It sends no trace. Unless `emet_email` is set, each run reads the signed-in email from Claude Code's account file (`~/.claude.json`), keeping only `oauthAccount.emailAddress`.
+
+The fifth hook, `UserPromptSubmit`, runs when you send a prompt, and the session waits for it, for 5 seconds at most. It looks in the plugin's folder for a report on an earlier answer of the session that was saved for Claude, and would give it to Claude with your prompt. It makes no request, and it cannot change or hold back a prompt. No hook of this version saves such a report, so it adds nothing to a prompt.
 
 ## Turn it off
 
