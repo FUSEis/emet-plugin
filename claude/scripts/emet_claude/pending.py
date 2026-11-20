@@ -48,7 +48,9 @@ def lines(root: Path, session_id: str) -> List[Dict[str, Any]]:
     if not SESSION_ID.fullmatch(session_id):
         return []
     try:
-        text = path(root, session_id).read_text(encoding="utf-8")
+        # No link is followed, and a pipe in the file's place cannot make the read wait: one with nothing in it reads as None
+        with os.fdopen(os.open(str(path(root, session_id)), storage.READ_FLAGS), "rb") as handle:
+            text = (handle.read() or b"").decode("utf-8")
     except (OSError, ValueError):
         return []
     found = []
@@ -83,10 +85,17 @@ def append(root: Path, session_id: str, item: Dict[str, Union[str, int]], once: 
         with storage.locked(root / "state" / f"{session_id}.pending.lock"):
             if once and once in traces(root, session_id):
                 return
-            written = target.read_bytes() if target.exists() else b""
+            # Windows has no flag that refuses a link at the open, so this look is the guard there
+            if not storage.NOFOLLOW and target.is_symlink():
+                raise OSError("a link")
+            written = b""
+            if target.exists():
+                with os.fdopen(os.open(str(target), storage.READ_FLAGS), "rb") as handle:
+                    written = handle.read() or b""
             # A write cut short by a crash leaves no newline, which would swallow this line too
             start = "" if not written or written.endswith(b"\n") else "\n"
-            fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0), 0o600)
+            # The flags of a read refuse a link and never wait for a pipe. They hold no access mode, which is added here
+            fd = os.open(str(target), storage.READ_FLAGS | os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as handle:
                 handle.write(start + json.dumps(item) + "\n")
     except OSError as error:

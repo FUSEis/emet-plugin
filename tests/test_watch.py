@@ -6,6 +6,7 @@ import re
 import socket
 import stat
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -3090,3 +3091,56 @@ def test_a_command_of_the_plugin_starts_a_turn_that_is_sent_unchanged_and_never_
     assert (held["handed"], held["held"]) == (False, "newer_turn")
     # Only the report of the first answer is saved, for /emet:status to list
     assert [path.name.split(".")[1] for path in (root(environ) / "verdicts").glob("*.json")] == [first]
+
+
+links = pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+pipes = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the platform has no named pipes")
+
+
+@links
+@pytest.mark.parametrize("exists", [True, False])
+def test_a_link_at_the_checks_file_is_not_written_through(tmp_path, environ, link_flag, exists):
+    outside = tmp_path / "outside.jsonl"
+    if exists:
+        outside.write_text("untouched", encoding="utf-8")
+    watch.checks_path(root(environ), SESSION).symlink_to(outside)
+    assert watch.record(root(environ), SESSION, T1, "clear") is False
+    assert outside.read_text(encoding="utf-8") == "untouched" if exists else not outside.exists()
+    assert f"report {T1} -> clear, not recorded OSError" in log(environ)
+    assert not (root(environ) / "status.json").exists()
+
+
+@links
+def test_a_link_at_the_checks_file_is_not_read(tmp_path, environ):
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(json.dumps({"trace_uuid": T1, "outcome": "clear", "final": True}) + "\n", encoding="utf-8")
+    watch.checks_path(root(environ), SESSION).symlink_to(outside)
+    assert watch.checks(root(environ), SESSION) == []
+
+
+@pipes
+@pytest.mark.parametrize("writer", [False, True])
+def test_a_pipe_at_the_checks_file_is_read_as_empty_without_waiting(environ, writer):
+    path = watch.checks_path(root(environ), SESSION)
+    os.mkfifo(path)
+    # A pipe takes a writer only while it has a reader. With one that writes nothing, a read that does not wait has no answer
+    ends = [os.open(path, os.O_RDONLY | os.O_NONBLOCK), os.open(path, os.O_WRONLY | os.O_NONBLOCK)] if writer else []
+    found = []
+    # On another thread, so an open that waits for a writer fails the test and does not hang it
+    waiter = threading.Thread(target=lambda: found.append(watch.checks(root(environ), SESSION)), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    for end in ends:
+        os.close(end)
+    assert found == [[]]
+
+
+@pipes
+def test_a_pipe_at_the_checks_file_is_not_written_and_nothing_waits(environ):
+    os.mkfifo(watch.checks_path(root(environ), SESSION))
+    recorded = []
+    waiter = threading.Thread(target=lambda: recorded.append(watch.record(root(environ), SESSION, T1, "clear")), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    assert recorded == [False]
+    assert f"report {T1} -> clear, not recorded OSError" in log(environ)

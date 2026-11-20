@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 from datetime import datetime, timezone
@@ -541,3 +542,60 @@ def test_the_mark_of_a_command_turn_is_kept_when_another_session_delivers_it_fro
     assert marks(environ, "session-0") == [(emet.trace_uuids[command["uuid"]], "own_command")]
     assert marks(environ, "session-1") == [(emet.trace_uuids[prompt["uuid"]], None)]
     assert "own_command" not in json.dumps(emet.envelopes)
+
+
+links = pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+pipes = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the platform has no named pipes")
+
+
+@links
+@pytest.mark.parametrize("exists", [True, False])
+@pytest.mark.parametrize("has_flag", [True, False])
+def test_a_link_at_the_pending_file_is_not_written_through(tmp_path, environ, monkeypatch, exists, has_flag):
+    if not has_flag:
+        # As on Windows, where no flag refuses a link
+        monkeypatch.setattr(storage, "READ_FLAGS", storage.READ_FLAGS & ~storage.NOFOLLOW)
+        monkeypatch.setattr(storage, "NOFOLLOW", 0)
+    outside = tmp_path / "outside.jsonl"
+    if exists:
+        outside.write_text("untouched", encoding="utf-8")
+    pending.path(root(environ), "session-1").symlink_to(outside)
+    pending.note(root(environ), "session-1", TRACE, "")
+    assert outside.read_text(encoding="utf-8") == "untouched" if exists else not outside.exists()
+    log = (root(environ) / "emet.log").read_text(encoding="utf-8")
+    assert "pending not written: OSError" in log and TRACE not in log
+
+
+@links
+def test_a_link_at_the_pending_file_is_not_read(tmp_path, environ):
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(json.dumps({"trace_uuid": TRACE, "at": "t"}) + "\n", encoding="utf-8")
+    pending.path(root(environ), "session-1").symlink_to(outside)
+    assert pending.lines(root(environ), "session-1") == []
+
+
+@pipes
+@pytest.mark.parametrize("writer", [False, True])
+def test_a_pipe_at_the_pending_file_is_read_as_empty_without_waiting(environ, writer):
+    path = pending.path(root(environ), "session-1")
+    os.mkfifo(path)
+    # A pipe takes a writer only while it has a reader. With one that writes nothing, a read that does not wait has no answer
+    ends = [os.open(path, os.O_RDONLY | os.O_NONBLOCK), os.open(path, os.O_WRONLY | os.O_NONBLOCK)] if writer else []
+    found = []
+    # On another thread, so an open that waits for a writer fails the test and does not hang it
+    waiter = threading.Thread(target=lambda: found.append(pending.lines(root(environ), "session-1")), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    for end in ends:
+        os.close(end)
+    assert found == [[]]
+
+
+@pipes
+def test_a_pipe_at_the_pending_file_is_not_written_and_nothing_waits(environ):
+    os.mkfifo(pending.path(root(environ), "session-1"))
+    waiter = threading.Thread(target=pending.note, args=(root(environ), "session-1", TRACE, ""), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    assert not waiter.is_alive()
+    assert "pending not written: OSError" in (root(environ) / "emet.log").read_text(encoding="utf-8")
