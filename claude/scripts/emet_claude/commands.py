@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar
 from urllib.parse import urlencode
 
-from . import VERSION, envelope, pause, pending, storage, transcript, transport, watch
+from . import VERSION, envelope, pause, pending, storage, timestamps, transcript, transport, watch
 from .config import FROM_CLAUDE_ACCOUNT, Config, load
 from .spans import Builder, Capture
 
@@ -32,6 +32,10 @@ TURN_END_MODES = ("stop", "session-end")
 RECENT_DELIVERIES = 5
 # SessionStart sources where the key cannot have changed since the last check
 SAME_KEY_SOURCES = ("clear", "compact")
+# The SessionStart source of a session that starts as a copy of another: --fork-session, /fork, /branch
+FORK_SOURCE = "fork"
+# A turn that began this long before a fork's SessionStart worker did, or later, is not taken for a copy
+FORK_MARGIN_S = 5.0
 # The format of state/<session>.json. A file that names no version is read as 1
 STATE_VERSION = 1
 Made = TypeVar("Made")
@@ -204,16 +208,28 @@ def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
         agents.pop(next(iter(agents)))
 
 
+def own_turn(turn: List[Tuple[int, transcript.Entry]], forked: float) -> bool:
+    """Says whether the last turn in a new fork's file can be the fork's own: it has no answer yet, or it began when the fork did or later.
+
+    A turn with no time that can be read is taken for the fork's own, so a new turn is never lost.
+    """
+    start = timestamps.parse(turn[0][1].get("timestamp"))
+    return not transcript.answered(turn) or start is None or start.timestamp() >= forked - FORK_MARGIN_S
+
+
 def process(
     hook_input: Mapping[str, Any],
     environ: Mapping[str, str] = os.environ,
     wait: float = FLUSH_WAIT_S,
     turn_ended: bool = True,
+    forked: Optional[float] = None,
 ) -> None:
     """Sends every finished turn and subagent update since the last run of this session.
 
     turn_ended says the hook fired because the current turn ended (Stop, SessionEnd). Otherwise
     (SubagentStop, SessionStart) the last turn may still be running and is left for a later run.
+    forked is the time the worker began, at the SessionStart of a forked session only. A fork's file starts as
+    a copy of another session's turns, which are not sent again.
     """
     config = load_with_sign_in(environ)
     root = storage.data_dir(environ)
@@ -254,6 +270,9 @@ def process(
         entries, end = transcript.read_entries(path, int(state.get("offset") or 0))
         head, turns = transcript.split_turns(entries)
         offset = end
+        if forked is not None and "offset" not in state:
+            # All of the file is the copy so far, but the fork's first prompt can already be in it
+            head, turns = [], [turn for turn in turns[-1:] if own_turn(turn, forked)]
         # The last turn may still be running, or its prompt still waiting for an answer; read it again next time
         if turns and (not turn_ended or not transcript.answered(turns[-1])):
             offset = turns[-1][0][0]
@@ -320,13 +339,16 @@ def process(
 
 def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -> None:
     root = storage.data_dir(environ)
+    # Read before the key check and the wait, which give the fork's first prompt time to be answered
+    began = time.time()
     try:
         hook_input = storage.loads(raw or b"{}")
         if not isinstance(hook_input, dict):
             hook_input = {}
         if mode == "session-start" and hook_input.get("source") not in SAME_KEY_SOURCES:
             check_key(root, load_with_sign_in(environ))
-        process(hook_input, environ, turn_ended=mode in TURN_END_MODES)
+        forked = began if mode == "session-start" and hook_input.get("source") == FORK_SOURCE else None
+        process(hook_input, environ, turn_ended=mode in TURN_END_MODES, forked=forked)
     except Exception as error:  # noqa: BLE001 - an exporter failure must never reach the session
         storage.log(root, f"worker error {type(error).__name__}")
 

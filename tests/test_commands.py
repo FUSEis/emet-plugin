@@ -8,13 +8,15 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from conftest import API_KEY
-from emet_claude import commands, config, envelope, pause, pending, storage, transport
+from emet_claude import commands, config, envelope, pause, pending, storage, timestamps, transport
 from helpers import NOT_FOUND, FakeEmet, Transcript
 
 
@@ -119,8 +121,8 @@ def kept(environ):
     return pending.traces(storage.data_dir(environ), "session-1")
 
 
-def state(environ):
-    return json.loads((Path(environ["CLAUDE_PLUGIN_DATA"]) / "state" / "session-1.json").read_text(encoding="utf-8"))
+def state(environ, session_id="session-1"):
+    return json.loads((Path(environ["CLAUDE_PLUGIN_DATA"]) / "state" / f"{session_id}.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("code", [400, 413])
@@ -726,6 +728,130 @@ def test_the_key_is_not_checked_after_clear_or_compaction(transcript, environ, e
 def test_a_session_start_with_input_that_is_no_object_still_checks_the_key(environ, emet, no_wait):
     commands.run_worker("session-start", b"[]", environ)
     assert len(emet.reads) == 1
+
+
+def fork_of(transcript, session_id="session-2", **changed):
+    """Writes the session's entries to a new session file, as Claude Code 2.1.326 does for a fork: each as it was, with forkedFrom added."""
+    fork = Transcript(transcript.path.parent, session_id)
+    with open(transcript.path, encoding="utf-8") as source, open(fork.path, "w", encoding="utf-8", newline="\n") as target:
+        for line in source:
+            entry = json.loads(line)
+            entry.update(sessionId=session_id, forkedFrom={"sessionId": transcript.session_id, "messageUuid": entry["uuid"]}, **changed)
+            target.write(json.dumps(entry) + "\n")
+    return fork
+
+
+def as_claude_code_writes(at):
+    return timestamps.text(datetime.fromtimestamp(at, timezone.utc))
+
+
+def log_of(environ):
+    return (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+
+
+def sent(emet):
+    return [env["trace_id"] for env in emet.envelopes]
+
+
+@pytest.fixture
+def forked(transcript, environ, emet):
+    """A fork of a session of two finished turns, both sent. Returns (the fork, the ids of the two turns)."""
+    turns = [finished_turn(transcript)["uuid"], finished_turn(transcript, "And 3 + 3?", "6")["uuid"]]
+    run(transcript, environ)
+    assert sent(emet) == turns
+    return fork_of(transcript), turns
+
+
+def test_a_fork_sends_none_of_the_turns_it_copied_and_then_its_own(forked, environ, emet, no_wait):
+    fork, turns = forked
+    session_start(fork, environ, source="fork")
+    assert state(environ, "session-2")["offset"] == fork.path.stat().st_size
+    own = finished_turn(fork, "And 4 + 4?", "8")
+    run(fork, environ)
+    run(fork, environ)
+    assert sent(emet) == [*turns, own["uuid"]]
+    # No line for a copied turn, so no report of one is ever read
+    assert pending.traces(storage.data_dir(environ), "session-2") == [emet.trace_uuids[own["uuid"]]]
+    assert "worker error" not in log_of(environ)
+
+
+@pytest.mark.parametrize("source", ["startup", "resume", "clear", "compact", "Fork", None])
+def test_any_other_session_start_sends_what_the_file_holds_as_before(forked, environ, emet, no_wait, source):
+    fork, turns = forked
+    session_start(fork, environ, **({"source": source} if source else {}))
+    assert sent(emet) == [*turns, turns[0]]
+    run(fork, environ)
+    assert sent(emet) == [*turns, *turns]
+
+
+def test_a_fork_start_of_a_session_that_was_sent_before_skips_nothing(transcript, environ, emet, no_wait):
+    finished_turn(transcript)
+    run(transcript, environ)
+    second = finished_turn(transcript, "And 3 + 3?", "6")
+    finished_turn(transcript, "latest", "maybe still running")
+    session_start(transcript, environ, source="fork")
+    assert sent(emet)[1:] == [second["uuid"]]
+
+
+@pytest.mark.parametrize("found", ["missing", "empty"])
+def test_a_fork_whose_file_is_not_written_yet_at_its_start_is_sent_whole_as_before(forked, environ, emet, no_wait, found):
+    fork, turns = forked
+    copied = fork.path.read_bytes()
+    fork.path.unlink() if found == "missing" else fork.path.write_bytes(b"")
+    session_start(fork, environ, source="fork")
+    assert sent(emet) == turns
+    assert "worker error" not in log_of(environ)
+    # Claude Code writes the copy with the first prompt. Nothing tells the copied turns from the new one then
+    fork.path.write_bytes(copied)
+    own = finished_turn(fork, "And 4 + 4?", "8")
+    run(fork, environ)
+    assert sent(emet) == [*turns, *turns, own["uuid"]]
+
+
+def test_the_first_prompt_of_a_fork_written_before_its_start_is_read_is_not_skipped(forked, environ, emet, no_wait):
+    fork, turns = forked
+    own = fork.prompt("And 4 + 4?")
+    session_start(fork, environ, source="fork")
+    assert state(environ, "session-2")["offset"] < fork.path.stat().st_size
+    fork.text("msg_own", "8")
+    run(fork, environ)
+    assert sent(emet) == [*turns, own["uuid"]]
+
+
+@pytest.mark.parametrize("stamp", ["now", "unreadable"])
+def test_the_first_turn_of_a_fork_answered_before_its_start_is_read_is_not_skipped(forked, environ, emet, no_wait, stamp):
+    fork, turns = forked
+    own = fork.prompt("And 4 + 4?", timestamp=as_claude_code_writes(time.time()) if stamp == "now" else "a moment ago")
+    fork.text("msg_own", "8")
+    session_start(fork, environ, source="fork")
+    assert sent(emet) == turns
+    commands.run_worker("stop", json.dumps(fork.hook_input()).encode(), environ)
+    assert sent(emet) == [*turns, own["uuid"]]
+
+
+@pytest.mark.parametrize(("seconds_before", "taken_for"), [(4.0, "own"), (5.0, "own"), (5.5, "copied"), (86400.0, "copied")])
+def test_an_answered_last_turn_is_the_forks_own_when_it_began_no_more_than_five_seconds_before_the_fork(
+    transcript, environ, emet, seconds_before, taken_for
+):
+    began = 1_800_000_000.0
+    finished_turn(transcript)
+    last = transcript.prompt("And 3 + 3?", timestamp=as_claude_code_writes(began - seconds_before))
+    transcript.text("msg_last", "6")
+    commands.process(transcript.hook_input(), environ, wait=0, turn_ended=False, forked=began)
+    run(transcript, environ)
+    assert sent(emet) == ([last["uuid"]] if taken_for == "own" else [])
+
+
+def test_only_the_last_turn_in_a_forks_file_can_be_its_own(transcript, environ, emet, no_wait):
+    # A Claude Code that stamped the copies anew would make every turn look new. Only one is sent again then
+    now = as_claude_code_writes(time.time())
+    for text in ("first", "second", "third"):
+        finished_turn(transcript, text)
+    fork = fork_of(transcript, timestamp=now)
+    last = json.loads(fork.path.read_text(encoding="utf-8").splitlines()[-2])
+    session_start(fork, environ, source="fork")
+    run(fork, environ)
+    assert sent(emet) == [last["uuid"]]
 
 
 def test_subagent_stop_does_not_send_the_turn_still_running(transcript, environ, emet):
