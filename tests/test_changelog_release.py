@@ -200,7 +200,7 @@ def test_a_release_is_the_same_whatever_order_the_folder_lists_its_files_in(repo
     ("text", "written"),
     [
         ("One paragraph.\n", "- One paragraph."),
-        ("\n\nOne paragraph,\nover two lines.  \n\n", "- One paragraph,\n  over two lines."),
+        ("\n\nOne paragraph,  \nover two lines.\n\n", "- One paragraph,\n  over two lines."),
         ("First paragraph.\n\nSecond paragraph.\n", "- First paragraph.\n- Second paragraph."),
         ("- First item.\n- Second item.\n", "- First item.\n- Second item."),
         ("* A star item.\n", "- A star item."),

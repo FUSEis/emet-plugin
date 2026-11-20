@@ -348,6 +348,8 @@ def test_a_fragment_that_was_there_before_is_no_entry(monkeypatch, tmp_path, cap
 def test_the_folders_readme_and_a_fragment_folder_elsewhere_are_no_entry(monkeypatch, tmp_path):
     assert checked(monkeypatch, tmp_path, [CODE_FILE], added={"changelog.d/README.md": "# Fragments\n"}) == 1
     assert checked(monkeypatch, tmp_path / "second", [CODE_FILE], added={"docs/changelog.d/skip-turn.fixed.md": "Text.\n"}) == 1
+    # The README is not held to the rules of a fragment
+    assert checked(monkeypatch, tmp_path / "third", ["README.md"], edited={"changelog.d/README.md": "# Fragments\n"}) == 0
 
 
 BAD_FRAGMENTS = [

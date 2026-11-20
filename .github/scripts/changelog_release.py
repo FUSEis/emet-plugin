@@ -120,7 +120,7 @@ def build(text: str, fragments: Sequence[Tuple[str, str]], version: str, date: s
     above, entries = sections(body)
     blocks = [above] if above else []
     for name in KINDS:
-        texts = [entries.get(title(name), "")] + [bullets(entry) for file, entry in sorted(fragments) if kind(file) == name]
+        texts = [entries.get(title(name), "")] + [bullets(entry) for file, entry in fragments if kind(file) == name]
         texts = [entry for entry in texts if entry]
         if texts:
             blocks.append(f"{SECTION}{title(name)}\n\n" + "\n".join(texts))
