@@ -24,8 +24,8 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The eval harness in evals/ is imported by its tests
-pythonpath = ["."]
+# The eval harness in evals/ and the changelog scripts are imported by their tests
+pythonpath = [".", ".github/scripts"]
 addopts = "-ra --strict-markers"
 # A socket or file left open fails the test. One freed by the garbage collector reaches pytest as the second warning
 filterwarnings = [
