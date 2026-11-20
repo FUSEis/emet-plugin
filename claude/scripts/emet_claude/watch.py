@@ -658,7 +658,7 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
         written = b""
         if target.exists():
             with os.fdopen(os.open(str(target), storage.READ_FLAGS), "rb") as handle:
-                written = handle.read() or b""
+                written = handle.read()
         # A write cut short by a crash leaves no newline, which would swallow this line too
         start = "" if not written or written.endswith(b"\n") else "\n"
         # The flags of a read refuse a link and never wait for a pipe. They hold no access mode, which is added here
