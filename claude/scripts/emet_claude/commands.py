@@ -204,16 +204,30 @@ def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
         agents.pop(next(iter(agents)))
 
 
+def started_later(turns: Sequence[Sequence[Tuple[int, transcript.Entry]]], ended_turn: Any) -> int:
+    """Returns the index of the first turn started after the one a Stop ended, or 0 when none is or no turn has the Stop's id."""
+    ids = [turn[0][1].get("promptId") for turn in turns]
+    if not (isinstance(ended_turn, str) and ended_turn and ended_turn in ids):
+        return 0
+    # A start that names no id of its own is not known to be another turn
+    later = (
+        index for index in range(ids.index(ended_turn) + 1, len(ids)) if isinstance(ids[index], str) and ids[index] not in ("", ended_turn)
+    )
+    return next(later, 0)
+
+
 def process(
     hook_input: Mapping[str, Any],
     environ: Mapping[str, str] = os.environ,
     wait: float = FLUSH_WAIT_S,
     turn_ended: bool = True,
+    ended_turn: Any = None,
 ) -> None:
     """Sends every finished turn and subagent update since the last run of this session.
 
     turn_ended says the hook fired because the current turn ended (Stop, SessionEnd). Otherwise
     (SubagentStop, SessionStart) the last turn may still be running and is left for a later run.
+    ended_turn is Claude Code's id of the turn a Stop ended. A turn started after that one is left for its own Stop.
     """
     config = load_with_sign_in(environ)
     root = storage.data_dir(environ)
@@ -254,8 +268,13 @@ def process(
         entries, end = transcript.read_entries(path, int(state.get("offset") or 0))
         head, turns = transcript.split_turns(entries)
         offset = end
+        later = started_later(turns, ended_turn)
+        if later:
+            # The next turn can hold an answer already while it still runs; read it again at its own Stop
+            offset = turns[later][0][0]
+            turns = turns[:later]
         # The last turn may still be running, or its prompt still waiting for an answer; read it again next time
-        if turns and (not turn_ended or not transcript.answered(turns[-1])):
+        elif turns and (not turn_ended or not transcript.answered(turns[-1])):
             offset = turns[-1][0][0]
             turns = turns[:-1]
 
@@ -326,7 +345,9 @@ def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -
             hook_input = {}
         if mode == "session-start" and hook_input.get("source") not in SAME_KEY_SOURCES:
             check_key(root, load_with_sign_in(environ))
-        process(hook_input, environ, turn_ended=mode in TURN_END_MODES)
+        # Only a Stop names the turn it ended. When a session ends, every turn in the file is over
+        ended_turn = hook_input.get("prompt_id") if mode == "stop" else None
+        process(hook_input, environ, turn_ended=mode in TURN_END_MODES, ended_turn=ended_turn)
     except Exception as error:  # noqa: BLE001 - an exporter failure must never reach the session
         storage.log(root, f"worker error {type(error).__name__}")
 
