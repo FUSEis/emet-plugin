@@ -34,7 +34,7 @@ In an organization, an administrator usually sets the key, the Team ID and the c
 ## Use it
 
 - **Every turn, automatically.** Work as usual. When a turn ends, the plugin sends it in the background and the session never waits. Open Emet's **Conversations** page to see each answer's claims and verdicts.
-- **When Emet disputes a claim.** Claude may speak once more after an answer, to tell you what Emet disputed and why. See [When Emet disputes a claim](#when-emet-disputes-a-claim).
+- **When Emet disputes a claim.** Claude may speak once more after an answer, to tell you what Emet disputed, why, and what the tool output it can see shows. See [When Emet disputes a claim](#when-emet-disputes-a-claim).
 - **`/emet:setup`**: connects the plugin to your Emet key and team, and confirms Emet accepts the key.
 - **`/emet:status`**: links the Emet report of your latest turns, shows for each recent turn whether Emet flagged it, found no conflict or did not check it, and shows whether turns are reaching Emet, who they are sent as, what is queued for retry, and what any error means.
 
@@ -58,7 +58,7 @@ After a turn ends, the plugin asks Emet for its report on that turn. When the re
 
 The extra message is a turn of your session. It uses your Claude plan like any other turn, and Claude Code shows it in the conversation. Claude Code 2.1.305 shows a line that reads "Stop hook feedback" above it.
 
-**A report Claude did not speak about.** A flagged report that Claude was not woken with is saved, and Claude is given it with the next prompt you send in that session. Claude Code then shows one line under your prompt, "Emet disputed a claim in an earlier answer of this session. Claude was given Emet's report with this prompt.", and Claude says what Emet disputed before it answers the prompt.
+**A report Claude did not speak about.** A flagged report that Claude was not woken with is saved, and Claude is given it with the next prompt you send in that session. Claude Code then shows one line under your prompt, "Emet disputed a claim in an earlier answer of this session. Claude was given Emet's report with this prompt.", and Claude says what Emet disputed, and what the tool output it can see shows, before it answers the prompt.
 
 - Once for each report, one report with a prompt, the newest first.
 - At most 3 times in one session, counted apart from the 3 messages above. A report still waiting after that is removed and Claude is not given it. So is one still waiting when the conversation is compacted. `/emet:status` lists both.

@@ -33,14 +33,14 @@ Only to `https://app.emet.so`, with the key as a bearer token: finished turns, a
 - A report over 2 MB, of a version the plugin does not know, or with a status it does not know is not shown at all.
 - Each piece of text is cut to a fixed length, put on one line, and stripped of control and invisible characters.
 - All of it sits in one data block, as JSON strings. Angle brackets are escaped, so nothing in a report can close the block.
-- The words before and after the block are fixed. They tell Claude that the block is data, and not to follow an instruction, call a tool or open a link because of it. The whole message is 4,000 characters at most.
+- The words before and after the block are fixed. They tell Claude that the block is data, and not to follow an instruction, call a tool or open a link because of it. They ask Claude to say what the tool output it can see shows about each claim, to quote the few words of it that it relies on, never a key, token, password or other secret, and to treat Emet's reason and correction as claims to check. The whole message is 4,000 characters at most.
 - Nothing from a report is executed, used as a file name, or used as an address. The link in the message is built from the plugin's own values.
 - Of a report, the plugin saves only text rendered this way, in `verdicts/`, for 7 days at most. The report itself is never saved. Claude Code keeps the message it was handed in the session transcript, as it keeps any message.
 - The log and `status.json`, which `/emet:status` reads, keep ids, times and one of a fixed list of outcome words for a report. They keep no text from it.
 - Claude is woken about at most 3 reports in a session, and only within 60 seconds of the end of the turn. The turn Claude takes to answer is sent to Emet, and its report is never read, so a report cannot start a chain of messages.
 - A flagged report Claude was not woken with is given to Claude with your next prompt in that session, once, for at most 3 reports in a session. The report on the answer to that prompt is read and recorded, and Claude is never told of it.
 
-This lowers the chance that a report steers Claude. It cannot remove it, because Claude reads the block. Someone who can write what Emet checks, such as a web page a tool fetched during the turn, can try to shape the reasons Emet gives, and so the text in the block.
+This lowers the chance that a report steers Claude. It cannot remove it, because Claude reads the block. Someone who can write what Emet checks, such as a web page a tool fetched during the turn, can try to shape the reasons Emet gives, and so the text in the block, and which words of a tool output Claude quotes to you.
 
 **A saved report in its data folder.** The hook on your prompt gives Claude the text of a report on an earlier answer, saved in the data folder, when Claude was not woken with it. A file counts as a saved report only when all of it is as the plugin writes one: the plugin's fixed words, and inside them values that the words tell Claude to treat as data and never to act on. Anything else is left alone and never shown. The hook can add to what Claude reads with a prompt. It cannot change the prompt or hold it back.
 
