@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -258,15 +259,25 @@ OLD_RELEASE_EDITED = BASE_CHANGELOG.replace("- Released.", "- Released. And a ne
 BLANK_LINES_ONLY = BASE_CHANGELOG.replace("### Fixed\n", "### Fixed\n\n\n")
 
 
-def checked(monkeypatch, tmp_path, paths, labels="[]", head=BASE_CHANGELOG):
-    """Runs the check as CI does: the changed paths on stdin, the base changelog in a file, the labels in the environment."""
+def checked(monkeypatch, tmp_path, paths, labels="[]", head=BASE_CHANGELOG, added=None, edited=None):
+    """Runs the check as CI does: the changed paths on stdin, two files as arguments, the labels in the environment.
+
+    The files hold the base changelog and the paths of the added fragments. added and edited map a path
+    in the checkout to its content. Both are changed paths, and only the added ones are in the second file.
+    """
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
+    checkout.mkdir(parents=True)
     if head is not None:
         (checkout / "CHANGELOG.md").write_text(head, encoding="utf-8")
+    added, edited = added or {}, edited or {}
+    for path, content in {**added, **edited}.items():
+        (checkout / path).parent.mkdir(parents=True, exist_ok=True)
+        (checkout / path).write_bytes(content if isinstance(content, bytes) else content.encode())
     (tmp_path / "base-changelog").write_text(BASE_CHANGELOG, encoding="utf-8")
+    (tmp_path / "added").write_bytes(b"".join(path.encode() + b"\0" for path in added))
+    paths = [*paths, *added, *edited]
     monkeypatch.chdir(checkout)
-    monkeypatch.setattr(sys, "argv", ["changelog_check.py", str(tmp_path / "base-changelog")])
+    monkeypatch.setattr(sys, "argv", ["changelog_check.py", str(tmp_path / "base-changelog"), str(tmp_path / "added")])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO("\0".join(paths).encode() + b"\0")))
     monkeypatch.setenv("PR_LABELS", labels)
     return changelog_check().main()
@@ -339,6 +350,145 @@ def test_the_label_stands_in_for_an_entry(monkeypatch, tmp_path, labels, code):
     assert checked(monkeypatch, tmp_path, [CODE_FILE], labels) == code
 
 
+@pytest.mark.parametrize("kind", ["added", "changed", "deprecated", "removed", "fixed", "security"])
+def test_a_new_fragment_file_is_the_entry(monkeypatch, tmp_path, kind):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE], added={f"changelog.d/skip-turn-2.{kind}.md": "A turn is skipped.\n"}) == 0
+
+
+def test_a_fragment_that_was_there_before_is_no_entry(monkeypatch, tmp_path, capsys):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE], edited={"changelog.d/skip-turn.fixed.md": "Reworded.\n"}) == 1
+    out = capsys.readouterr().out
+    assert "adds no changelog fragment in changelog.d/" in out and f"  {CODE_FILE}\n" in out
+    assert "added, changed, deprecated, removed, fixed, security" in out and "no-changelog label" in out
+
+
+def test_the_folders_readme_and_a_fragment_folder_elsewhere_are_no_entry(monkeypatch, tmp_path):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE], added={"changelog.d/README.md": "# Fragments\n"}) == 1
+    assert checked(monkeypatch, tmp_path / "second", [CODE_FILE], added={"docs/changelog.d/skip-turn.fixed.md": "Text.\n"}) == 1
+    # The README is not held to the rules of a fragment
+    assert checked(monkeypatch, tmp_path / "third", ["README.md"], edited={"changelog.d/README.md": "# Fragments\n"}) == 0
+
+
+BAD_FRAGMENTS = [
+    # Unknown kind, no kind, wrong ending
+    ("changelog.d/skip-turn.fix.md", "Text.\n", "its name is not"),
+    ("changelog.d/skip-turn.md", "Text.\n", "its name is not"),
+    ("changelog.d/skip-turn.fixed.txt", "Text.\n", "its name is not"),
+    ("changelog.d/skip-turn.fixed", "Text.\n", "its name is not"),
+    ("changelog.d/fixed.md", "Text.\n", "its name is not"),
+    # Two names that differ by case are one file on macOS and Windows
+    ("changelog.d/Skip-Turn.fixed.md", "Text.\n", "its name is not"),
+    ("changelog.d/skip_turn.fixed.md", "Text.\n", "its name is not"),
+    ("changelog.d/skip turn.fixed.md", "Text.\n", "its name is not"),
+    ("changelog.d/-skip.fixed.md", "Text.\n", "its name is not"),
+    ("changelog.d/0.1.5/skip-turn.fixed.md", "Text.\n", "its name is not"),
+    ("changelog.d/skip-turn.fixed.md", "", "it is empty"),
+    ("changelog.d/skip-turn.fixed.md", " \n\n", "it is empty"),
+    ("changelog.d/skip-turn.fixed.md", b"\xff\xfe text", "it is not a readable UTF-8 text file"),
+    # A heading would end the section the release notes are cut from
+    ("changelog.d/skip-turn.fixed.md", "Text.\n\n## [9.9.9] - 2027-01-01\n", "a line starts with #"),
+    ("changelog.d/skip-turn.fixed.md", "### Fixed\n\n- Text.\n", "a line starts with #"),
+    # Markdown reads a heading after up to three spaces too
+    ("changelog.d/skip-turn.fixed.md", "Text.\n\n ## [9.9.9]\n", "a line starts with #"),
+    ("changelog.d/skip-turn.fixed.md", "Text.\n\n   # A heading\n", "a line starts with #"),
+    # Windows cannot check these out
+    ("changelog.d/con.fixed.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/prn.added.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/aux.changed.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/nul.removed.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/com1.security.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/lpt9.deprecated.md", "Text.\n", "its slug is a device name on Windows"),
+]
+# The device names are tried on a file system that takes them
+if os.name == "nt":
+    BAD_FRAGMENTS = [bad for bad in BAD_FRAGMENTS if "device name" not in bad[2]]
+
+
+@pytest.mark.parametrize(("path", "content", "reason"), BAD_FRAGMENTS)
+@pytest.mark.parametrize("how", ["added", "edited"])
+def test_a_malformed_fragment_fails_and_is_named_with_the_allowed_kinds(monkeypatch, tmp_path, capsys, path, content, reason, how):
+    # Neither the label nor a pull request that ships nothing lets one through
+    for number, paths in enumerate(([CODE_FILE], ["README.md"])):
+        assert checked(monkeypatch, tmp_path / str(number), paths, '["no-changelog"]', **{how: {path: content}}) == 1
+        out = capsys.readouterr().out
+        assert f"  {path}: {reason}" in out
+        assert "the kind one of added, changed, deprecated, removed, fixed, security" in out
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("console.fixed.md", "Text.\n"),
+        ("com10.fixed.md", "Text.\n"),
+        ("aux-port.fixed.md", "Text.\n"),
+        # Four spaces make code, not a heading
+        ("skip-turn.fixed.md", "- Text:\n\n      # a comment in code\n"),
+        ("skip-turn.fixed.md", "Issue #12 is fixed.\n"),
+    ],
+)
+def test_a_name_or_a_line_that_only_looks_like_a_refused_one_is_accepted(monkeypatch, tmp_path, name, content):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE], added={f"changelog.d/{name}": content}) == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("target", ["a-file-outside", "nothing-there"])
+def test_a_fragment_that_is_a_link_fails_whether_or_not_it_leads_anywhere(monkeypatch, tmp_path, capsys, target):
+    (tmp_path / "a-file-outside").write_text("Not for the changelog.\n", encoding="utf-8")
+    folder = tmp_path / "checkout" / "changelog.d"
+    folder.mkdir(parents=True)
+    (folder / "skip-turn.fixed.md").symlink_to(tmp_path / target)
+    (tmp_path / "base-changelog").write_text(BASE_CHANGELOG, encoding="utf-8")
+    (tmp_path / "added").write_bytes(b"changelog.d/skip-turn.fixed.md\0")
+    monkeypatch.chdir(tmp_path / "checkout")
+    monkeypatch.setattr(sys, "argv", ["changelog_check.py", str(tmp_path / "base-changelog"), str(tmp_path / "added")])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(f"{CODE_FILE}\0changelog.d/skip-turn.fixed.md\0".encode())))
+    monkeypatch.setenv("PR_LABELS", "[]")
+    assert changelog_check().main() == 1
+    assert "  changelog.d/skip-turn.fixed.md: it is a symbolic link or no regular file" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_a_fragment_is_never_opened_through_a_link_even_when_the_first_look_missed_it(monkeypatch, tmp_path):
+    check = changelog_check()
+    (tmp_path / "outside").write_text("Not for the changelog.\n", encoding="utf-8")
+    link = tmp_path / "skip-turn.fixed.md"
+    link.symlink_to(tmp_path / "outside")
+    monkeypatch.setattr(check.stat, "S_ISREG", lambda mode: True)
+    assert check.load(link.name, link) == ("it is not a readable UTF-8 text file", "")
+
+
+def test_the_pull_request_template_asks_for_a_fragment_and_not_for_a_line_in_the_changelog():
+    template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+    assert "A new file in `changelog.d/` holds the changelog entry" in template
+    assert "Unreleased" not in template
+    for path in (ROOT / ".github" / "ISSUE_TEMPLATE").iterdir():
+        assert "Unreleased" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_a_fragment_a_release_deleted_is_not_checked(monkeypatch, tmp_path):
+    assert checked(monkeypatch, tmp_path, ["changelog.d/Gone.fix.txt", "README.md"]) == 0
+    assert checked(monkeypatch, tmp_path / "second", [CODE_FILE, "changelog.d/gone.fixed.md"]) == 1
+
+
+def test_every_file_in_the_fragment_folder_of_this_repository_is_a_well_formed_fragment():
+    check = changelog_check()
+    folder = ROOT / check.FRAGMENTS
+    # The README keeps the folder in git when a release has emptied it
+    assert (folder / check.README).is_file()
+    for path in folder.iterdir():
+        if path.name != check.README:
+            assert check.problem(path.name, path) == "", path.name
+
+
+def test_the_guides_name_the_kinds_the_check_accepts_and_the_headings_the_changelog_uses():
+    check = changelog_check()
+    kinds = ", ".join(f"`{kind}`" for kind in check.KINDS)
+    assert kinds in (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    assert kinds in (ROOT / check.FRAGMENTS / check.README).read_text(encoding="utf-8")
+    headings = set(re.findall(r"^### (.+)$", (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"), re.M))
+    assert headings <= {kind.capitalize() for kind in check.KINDS}
+
+
 def test_the_check_reads_this_repositorys_own_changelog():
     check = changelog_check()
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -366,7 +516,9 @@ def test_the_required_check_waits_for_the_changelog_job_and_runs_again_when_a_la
     assert "fetch-depth: 2" in job
     assert 'git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"' in job
     assert 'git show HEAD^1:CHANGELOG.md > "$RUNNER_TEMP/base-changelog"' in job
-    assert 'python3 .github/scripts/changelog_check.py "$RUNNER_TEMP/base-changelog" < "$RUNNER_TEMP/changed"' in job
+    # Only a fragment the pull request adds counts. With -M a renamed one is no added file
+    assert 'git diff --name-only -M --diff-filter=A -z HEAD^1 HEAD -- changelog.d > "$RUNNER_TEMP/added"' in job
+    assert 'python3 .github/scripts/changelog_check.py "$RUNNER_TEMP/base-changelog" "$RUNNER_TEMP/added" < "$RUNNER_TEMP/changed"' in job
     assert "PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in job
     assert "if: github.event_name == 'pull_request'" in job
     assert "pull_request_target" not in workflow

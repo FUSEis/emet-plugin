@@ -6,4 +6,4 @@
 
 - [ ] `uv run pytest`, `ruff`, `mypy` and `claude plugin validate --strict` pass
 - [ ] Tried in a real Claude Code session (if hooks, parsing or sending changed)
-- [ ] `CHANGELOG.md` updated under Unreleased (if behavior or sent data changed)
+- [ ] A new file in `changelog.d/` holds the changelog entry (if behavior or sent data changed). `CHANGELOG.md` itself is not edited; see CONTRIBUTING.md

@@ -32,8 +32,20 @@ To keep that session apart from the Claude Code you use every day, with its own 
 - **Never log content or the key.** The log holds ids, counts and HTTP statuses only; the status file also holds report links and the email sent. A test checks this.
 - **Say when content is cut.** Any tool result that is not sent complete is marked `is_truncated`, which Emet needs to avoid verifying a claim against partial evidence.
 - **Tests use synthetic transcripts** built in `tests/helpers.py`. Never commit a real session transcript; they hold private content.
-- A change to what is sent, to the transcript parsing, or to what a user sees needs a test and a `CHANGELOG.md` entry under **Unreleased**. CI holds part of this: a pull request that changes anything under `claude/scripts/`, `claude/hooks/`, `claude/skills/` or `claude/.claude-plugin/` and adds no line under **Unreleased** in the `CHANGELOG.md` at the root fails the `changelog` job. A release passes too, because it adds a version heading. The job does not read what the entry says, and it does not look at `claude/README.md`, `docs/` or the tests. When the change alters nothing a user sees and nothing Emet receives, such as a refactor, a comment or a type, add the `no-changelog` label in place of an entry. The job runs again when a label is added or removed.
+- A change to what is sent, to the transcript parsing, or to what a user sees needs a test and a changelog entry, written as a new file in `changelog.d/` (see [Changelog entries](#changelog-entries)). CI holds part of this: a pull request that changes anything under `claude/scripts/`, `claude/hooks/`, `claude/skills/` or `claude/.claude-plugin/` and adds no such file fails the `changelog` job. A release passes too, because it adds a version heading. The job does not read what the entry says, and it does not look at `claude/README.md`, `docs/` or the tests. When the change alters nothing a user sees and nothing Emet receives, such as a refactor, a comment or a type, add the `no-changelog` label in place of an entry. The job runs again when a label is added or removed.
 - A change to the words Claude reads about a report (`report.py`) posts its before and after eval table in the pull request. Both are made from the branch, the before one with `--plugin-scripts` naming a checkout of `main`. See [evals/README.md](evals/README.md).
+
+## Changelog entries
+
+Do not edit `CHANGELOG.md` in a pull request. Add one new file in `changelog.d/` in its place. Every pull request used to add a line under **Unreleased**, so open pull requests conflicted with each other after each merge. Two new files never conflict.
+
+Name the file `<slug>.<kind>.md`. The slug is a few words for the change, in lower case with hyphens. The kind is one of `added`, `changed`, `deprecated`, `removed`, `fixed`, `security`, and it names the heading the entry goes under. The file holds the entry's text. For example, `changelog.d/skip-unreadable-turn.fixed.md`:
+
+```markdown
+A turn that cannot be read no longer stops the session from being sent. It is skipped and written to the log as `turn skipped`.
+```
+
+A plain paragraph becomes one list item; start lines with `- ` to write several. The `changelog` job fails on a file in `changelog.d/` with another kind, another ending, a heading or no text. A pull request opened before this rule that adds its line under **Unreleased** still passes. The release folds the files into `CHANGELOG.md` and deletes them. [changelog.d/README.md](changelog.d/README.md) has the details.
 
 ## Wake-up rules
 
@@ -202,6 +214,6 @@ Whether Emet flags the second prompt is Emet's call. If it does not, use a promp
 
 ## Releases
 
-1. Move the **Unreleased** entries in `CHANGELOG.md` under the new version.
+1. Run `uv run python .github/scripts/changelog_release.py X.Y.Z` from the root. It moves the **Unreleased** entries in `CHANGELOG.md` and the entry of every file in `changelog.d/` under the new version with today's date, updates the links at the end of the file and deletes the files it moved. Add `--check` to print the new section without writing anything. A date after the version, as in `2026-12-01`, replaces today's.
 2. Set the version in `claude/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `claude/scripts/emet_claude/__init__.py` and `pyproject.toml`, and the `ref` pins in `docs/enterprise.md`, then run `uv lock` (tests keep them equal).
 3. Merge, then at once push a tag `vX.Y.Z` on `main` (the admin guide on `main` already pins it). The release workflow checks the version and publishes the GitHub release with the changelog entry.
