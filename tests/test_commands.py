@@ -784,12 +784,14 @@ def test_a_later_start_that_names_no_other_turn_is_sent_with_the_turn_the_stop_e
     assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
 
 
-def test_a_turn_before_the_one_the_stop_ended_is_still_sent(transcript, environ, emet, no_wait):
-    earlier = transcript.prompt("What is 1 + 1?", promptId="prompt-0")
-    transcript.text("msg_0", "2")
+def test_turns_before_the_one_the_stop_ended_are_still_sent(transcript, environ, emet, no_wait):
+    earlier = []
+    for number in (1, 2):
+        earlier.append(transcript.prompt(f"What is {number} + 1?", promptId=f"prompt-0{number}")["uuid"])
+        transcript.text(f"msg_0{number}", str(number + 1))
     first, _ = turn_then_the_start_of_the_next(transcript)
     stop_worker(transcript, environ, prompt_id="prompt-1")
-    assert [env["trace_id"] for env in emet.envelopes] == [earlier["uuid"], first["uuid"]]
+    assert [env["trace_id"] for env in emet.envelopes] == [*earlier, first["uuid"]]
 
 
 def test_the_end_of_a_session_sends_every_answered_turn_whatever_turn_it_names(transcript, environ, emet, no_wait):
