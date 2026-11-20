@@ -333,6 +333,7 @@ def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no
     assert "give it as the meaning of the word and add nothing to it: no label Emet shows on its pages" in text
     assert "keep every word and value you quote exactly as it is written there" in text
     assert "Every time in both files is in UTC and ends in `Z`" in text and "say UTC with each time you show" in text
+    assert "convert it to UTC before you show it, so `03:00:00-0500` is 08:00:00 UTC" in text
     # The example entry is in the form the rule asks for, with a word the plugin records
     example = re.search(r"For example: [0-9:]{8} UTC, trace [0-9a-f]{8}, `([a-z_]+)`: ([^.]+\.)", text)
     rows = check_rows()
