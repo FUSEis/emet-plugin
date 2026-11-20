@@ -1,5 +1,6 @@
 """The release script that folds the fragments in changelog.d/ into CHANGELOG.md."""
 
+import os
 import re
 import subprocess
 import sys
@@ -249,6 +250,18 @@ def test_a_version_that_already_has_a_heading_is_refused_and_nothing_is_touched(
         (["v0.1.5", "2026-12-01"], "'v0.1.5' is no version of the form 1.2.3"),
         (["0.1", "2026-12-01"], "'0.1' is no version of the form 1.2.3"),
         (["Unreleased", "2026-12-01"], "is no version"),
+        # A leading zero, and digits that are not ASCII
+        (["01.1.5", "2026-12-01"], "'01.1.5' is no version of the form 1.2.3"),
+        (["0.1.05", "2026-12-01"], "is no version"),
+        (["0.00.5", "2026-12-01"], "is no version"),
+        (["0.1.\u0665", "2026-12-01"], "is no version"),
+        (["0.1.5\n", "2026-12-01"], "is no version"),
+        # A real date that is not padded with zeros
+        (["0.1.5", "2026-12-1"], "'2026-12-1' is no date of the form 2026-01-31"),
+        (["0.1.5", "2026-1-01"], "is no date"),
+        (["0.1.5", "26-12-01"], "is no date"),
+        (["0.1.5", "2026-12-0\u0661"], "is no date"),
+        (["0.1.5", "2026-12-01\n"], "is no date"),
         (["0.1.5", "01/12/2026"], "'01/12/2026' is no date of the form 2026-01-31"),
         (["0.1.5", "2026-02-30"], "is no date"),
     ],
@@ -270,6 +283,97 @@ def test_a_version_or_a_date_of_another_form_is_refused(repo, capsys, arguments,
 def test_a_malformed_fragment_stops_the_release_and_is_named(repo, capsys, name, text, reason):
     fragments(repo, {**FRAGMENTS, name: text})
     refused(repo, capsys, ["0.1.5", "2026-12-01"], reason)
+
+
+@pytest.mark.parametrize("version", ["0.0.0", "10.20.30", "1.0.100"])
+def test_a_version_with_a_zero_part_or_long_parts_is_released(repo, version):
+    assert changelog_release.main([version, "2026-12-01"]) == 0
+    assert f"\n## [{version}] - 2026-12-01\n" in changelog(repo)
+
+
+links = pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+
+
+@links
+@pytest.mark.parametrize("target", ["outside", "nothing-there"])
+def test_a_fragment_that_is_a_link_stops_the_release_and_its_target_is_never_read(repo, capsys, tmp_path_factory, target):
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "outside").write_text("Not for the changelog.\n", encoding="utf-8")
+    fragments(repo, FRAGMENTS)
+    (repo / "changelog.d" / "linked.fixed.md").symlink_to(outside / target)
+    refused(repo, capsys, ["0.1.5", "2026-12-01"], "changelog.d/linked.fixed.md is not a well-formed fragment: it is a symbolic link")
+    assert changelog_release.main(["--check", "0.1.5", "2026-12-01"]) == 1
+    assert "Not for the changelog" not in capsys.readouterr().out
+
+
+@links
+def test_a_fragment_folder_that_is_a_link_stops_the_release(repo, capsys, tmp_path_factory):
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    (elsewhere / "apple.fixed.md").write_text("From another folder.\n", encoding="utf-8")
+    (repo / "changelog.d" / "README.md").unlink()
+    (repo / "changelog.d").rmdir()
+    (repo / "changelog.d").symlink_to(elsewhere, target_is_directory=True)
+    refused(repo, capsys, ["0.1.5", "2026-12-01"], "changelog.d/ is a symbolic link")
+    assert (elsewhere / "apple.fixed.md").exists()
+
+
+def test_a_write_that_fails_leaves_the_changelog_and_the_fragments_as_they_were(repo, capsys, monkeypatch):
+    fragments(repo, FRAGMENTS)
+    before, files, folder = changelog(repo), left(repo), sorted(path.name for path in repo.iterdir())
+
+    def fail(source, target):
+        # The new text is whole in a file beside the changelog by now, and the changelog is untouched
+        assert Path(source).parent == repo and "## [0.1.5] - 2026-12-01" in Path(source).read_text(encoding="utf-8")
+        assert changelog(repo) == before
+        raise PermissionError("no")
+
+    monkeypatch.setattr(changelog_release.os, "replace", fail)
+    assert changelog_release.main(["0.1.5", "2026-12-01"]) == 1
+    assert "No release written: CHANGELOG.md could not be replaced (PermissionError). It is as it was." in capsys.readouterr().err
+    assert changelog(repo) == before and left(repo) == files
+    # The temporary file is gone too
+    assert sorted(path.name for path in repo.iterdir()) == folder
+
+
+def test_the_changelog_is_never_opened_for_writing_in_place(repo, monkeypatch):
+    fragments(repo, FRAGMENTS)
+    opened = []
+    real = changelog_release.os.fdopen
+    monkeypatch.setattr("builtins.open", lambda *args, **kwargs: opened.append(args) or pytest.fail("opened in place"))
+    monkeypatch.setattr(changelog_release.os, "fdopen", lambda fd, *args, **kwargs: opened.append(fd) or real(fd, *args, **kwargs))
+    assert changelog_release.main(["0.1.5", "2026-12-01"]) == 0
+    monkeypatch.undo()
+    assert len(opened) > 1 and "\n## [0.1.5] - 2026-12-01\n" in changelog(repo)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows keeps no such access bits")
+def test_the_new_changelog_keeps_the_access_bits_of_the_old_one(repo):
+    os.chmod(repo / "CHANGELOG.md", 0o644)
+    assert changelog_release.main(["0.1.5", "2026-12-01"]) == 0
+    assert (repo / "CHANGELOG.md").stat().st_mode & 0o777 == 0o644
+
+
+def test_a_fragment_that_cannot_be_deleted_is_named_and_the_rest_are_deleted(repo, capsys, monkeypatch):
+    fragments(repo, FRAGMENTS)
+    real = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self.name in ("apple.fixed.md", "quiet.changed.md"):
+            raise PermissionError("no")
+        real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert changelog_release.main(["0.1.5", "2026-12-01"]) == 1
+    monkeypatch.undo()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "CHANGELOG.md has 0.1.5, and these fragments could not be deleted:\n  changelog.d/apple.fixed.md\n  changelog.d/quiet.changed.md\n"
+        in captured.err
+    )
+    assert "Delete them by hand to finish the release. Do not run the release again." in captured.err
+    assert "- A fix, named first.\n" in changelog(repo)
+    assert left(repo) == ["README.md", "apple.fixed.md", "quiet.changed.md"]
 
 
 def test_a_release_of_nothing_is_refused(repo, capsys):

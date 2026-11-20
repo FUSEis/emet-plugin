@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -387,7 +388,20 @@ BAD_FRAGMENTS = [
     # A heading would end the section the release notes are cut from
     ("changelog.d/skip-turn.fixed.md", "Text.\n\n## [9.9.9] - 2027-01-01\n", "a line starts with #"),
     ("changelog.d/skip-turn.fixed.md", "### Fixed\n\n- Text.\n", "a line starts with #"),
+    # Markdown reads a heading after up to three spaces too
+    ("changelog.d/skip-turn.fixed.md", "Text.\n\n ## [9.9.9]\n", "a line starts with #"),
+    ("changelog.d/skip-turn.fixed.md", "Text.\n\n   # A heading\n", "a line starts with #"),
+    # Windows cannot check these out
+    ("changelog.d/con.fixed.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/prn.added.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/aux.changed.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/nul.removed.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/com1.security.md", "Text.\n", "its slug is a device name on Windows"),
+    ("changelog.d/lpt9.deprecated.md", "Text.\n", "its slug is a device name on Windows"),
 ]
+# The device names are tried on a file system that takes them
+if os.name == "nt":
+    BAD_FRAGMENTS = [bad for bad in BAD_FRAGMENTS if "device name" not in bad[2]]
 
 
 @pytest.mark.parametrize(("path", "content", "reason"), BAD_FRAGMENTS)
@@ -399,6 +413,56 @@ def test_a_malformed_fragment_fails_and_is_named_with_the_allowed_kinds(monkeypa
         out = capsys.readouterr().out
         assert f"  {path}: {reason}" in out
         assert "the kind one of added, changed, deprecated, removed, fixed, security" in out
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("console.fixed.md", "Text.\n"),
+        ("com10.fixed.md", "Text.\n"),
+        ("aux-port.fixed.md", "Text.\n"),
+        # Four spaces make code, not a heading
+        ("skip-turn.fixed.md", "- Text:\n\n      # a comment in code\n"),
+        ("skip-turn.fixed.md", "Issue #12 is fixed.\n"),
+    ],
+)
+def test_a_name_or_a_line_that_only_looks_like_a_refused_one_is_accepted(monkeypatch, tmp_path, name, content):
+    assert checked(monkeypatch, tmp_path, [CODE_FILE], added={f"changelog.d/{name}": content}) == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("target", ["a-file-outside", "nothing-there"])
+def test_a_fragment_that_is_a_link_fails_whether_or_not_it_leads_anywhere(monkeypatch, tmp_path, capsys, target):
+    (tmp_path / "a-file-outside").write_text("Not for the changelog.\n", encoding="utf-8")
+    folder = tmp_path / "checkout" / "changelog.d"
+    folder.mkdir(parents=True)
+    (folder / "skip-turn.fixed.md").symlink_to(tmp_path / target)
+    (tmp_path / "base-changelog").write_text(BASE_CHANGELOG, encoding="utf-8")
+    (tmp_path / "added").write_bytes(b"changelog.d/skip-turn.fixed.md\0")
+    monkeypatch.chdir(tmp_path / "checkout")
+    monkeypatch.setattr(sys, "argv", ["changelog_check.py", str(tmp_path / "base-changelog"), str(tmp_path / "added")])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(f"{CODE_FILE}\0changelog.d/skip-turn.fixed.md\0".encode())))
+    monkeypatch.setenv("PR_LABELS", "[]")
+    assert changelog_check().main() == 1
+    assert "  changelog.d/skip-turn.fixed.md: it is a symbolic link or no regular file" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_a_fragment_is_never_opened_through_a_link_even_when_the_first_look_missed_it(monkeypatch, tmp_path):
+    check = changelog_check()
+    (tmp_path / "outside").write_text("Not for the changelog.\n", encoding="utf-8")
+    link = tmp_path / "skip-turn.fixed.md"
+    link.symlink_to(tmp_path / "outside")
+    monkeypatch.setattr(check.stat, "S_ISREG", lambda mode: True)
+    assert check.load(link.name, link) == ("it is not a readable UTF-8 text file", "")
+
+
+def test_the_pull_request_template_asks_for_a_fragment_and_not_for_a_line_in_the_changelog():
+    template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+    assert "A new file in `changelog.d/` holds the changelog entry" in template
+    assert "Unreleased" not in template
+    for path in (ROOT / ".github" / "ISSUE_TEMPLATE").iterdir():
+        assert "Unreleased" not in path.read_text(encoding="utf-8"), path.name
 
 
 def test_a_fragment_a_release_deleted_is_not_checked(monkeypatch, tmp_path):

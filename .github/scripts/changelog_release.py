@@ -13,18 +13,23 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-from changelog_check import CHANGELOG, FRAGMENTS, KINDS, README, UNRELEASED, VERSION, kind, problem
+from changelog_check import CHANGELOG, FRAGMENTS, KINDS, README, UNRELEASED, VERSION, kind, load
 
 SECTION = "### "
 # The link definitions that end the file
 LINK = re.compile(r"\[[^\]]+\]: ")
 COMPARE = re.compile(r"\[Unreleased\]: (\S+)/compare/v(\S+)\.\.\.HEAD")
-NUMBER = re.compile(r"\d+\.\d+\.\d+")
+# ASCII digits, and no leading zero, as Semantic Versioning writes a version
+PART = r"(?:0|[1-9][0-9]*)"
+NUMBER = re.compile(rf"{PART}\.{PART}\.{PART}")
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 class Refused(Exception):
@@ -55,15 +60,17 @@ def bullets(text: str) -> str:
 def collect(folder: Path) -> List[Tuple[str, str]]:
     """Returns the name and the text of every fragment, sorted by name."""
     found: List[Tuple[str, str]] = []
+    if folder.is_symlink():
+        raise Refused(f"{FRAGMENTS} is a symbolic link")
     if not folder.is_dir():
         return found
     for path in sorted(folder.iterdir(), key=lambda path: path.name):
         if path.name == README:
             continue
-        wrong = problem(path.name, path)
+        wrong, text = load(path.name, path)
         if wrong:
             raise Refused(f"{FRAGMENTS}{path.name} is not a well-formed fragment: {wrong}")
-        found.append((path.name, path.read_text(encoding="utf-8")))
+        found.append((path.name, text))
     return found
 
 
@@ -131,6 +138,20 @@ def build(text: str, fragments: Sequence[Tuple[str, str]], version: str, date: s
     return "\n".join(out) + "".join(f"{line}\n" for line in ["", *linked(rest, version)] if rest), section
 
 
+def replace(name: str, text: str) -> None:
+    """Writes the file whole or not at all: a write that fails leaves the one that was there."""
+    fd, temp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(name)), prefix=f".{name}.", suffix=".tmp")
+    try:
+        # newline: the file keeps its line feeds on Windows
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:
+            file.write(text)
+        os.chmod(temp, os.stat(name).st_mode & 0o777)
+        os.replace(temp, name)
+    except BaseException:
+        os.unlink(temp)
+        raise
+
+
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description="Folds the changelog fragments into CHANGELOG.md under a new version.")
     parser.add_argument("version", help="the new version, as in 0.1.5")
@@ -141,6 +162,8 @@ def main(argv: Sequence[str]) -> int:
         if not NUMBER.fullmatch(args.version):
             raise Refused(f"'{args.version}' is no version of the form 1.2.3")
         try:
+            if not DATE.fullmatch(args.date):
+                raise ValueError
             datetime.datetime.strptime(args.date, "%Y-%m-%d")
         except ValueError:
             raise Refused(f"'{args.date}' is no date of the form 2026-01-31") from None
@@ -156,11 +179,22 @@ def main(argv: Sequence[str]) -> int:
     if args.check:
         sys.stdout.write(section)
         return 0
-    # newline: the file keeps its line feeds on Windows
-    with open(CHANGELOG, "w", encoding="utf-8", newline="\n") as file:
-        file.write(changelog)
+    try:
+        replace(CHANGELOG, changelog)
+    except OSError as error:
+        print(f"No release written: {CHANGELOG} could not be replaced ({type(error).__name__}). It is as it was.", file=sys.stderr)
+        return 1
+    remain: List[str] = []
     for name, _ in fragments:
-        (Path(FRAGMENTS) / name).unlink()
+        try:
+            (Path(FRAGMENTS) / name).unlink()
+        except OSError:
+            remain.append(f"{FRAGMENTS}{name}")
+    if remain:
+        print(f"{CHANGELOG} has {args.version}, and these fragments could not be deleted:", file=sys.stderr)
+        print("\n".join(f"  {path}" for path in remain), file=sys.stderr)
+        print("Delete them by hand to finish the release. Do not run the release again.", file=sys.stderr)
+        return 1
     print(f"{CHANGELOG} has {args.version} with {len(fragments)} fragment(s) folded in. Their files are deleted.")
     return 0
 

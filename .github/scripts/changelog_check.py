@@ -16,9 +16,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, Tuple
 
 # What Claude Code installs and runs: the hook script, the hooks, the skills and the manifest. Not the plugin's README
 SHIPPED = ("claude/scripts/", "claude/hooks/", "claude/skills/", "claude/.claude-plugin/")
@@ -34,6 +35,10 @@ README = "README.md"
 KINDS = ("added", "changed", "deprecated", "removed", "fixed", "security")
 # Lower case only: two names that differ by case are one file on macOS and Windows
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\.([a-z]+)\.md")
+# Windows cannot check out a file of these names, whatever follows the first dot
+DEVICES = {"con", "prn", "aux", "nul", *(f"{port}{number}" for port in ("com", "lpt") for number in range(1, 10))}
+# An ATX heading may stand after up to three spaces
+HEADING = re.compile(r" {0,3}#")
 NAMING = f"<slug>.<kind>.md, the slug in lower case letters, digits and hyphens, the kind one of {', '.join(KINDS)}"
 
 
@@ -69,20 +74,32 @@ def kind(name: str) -> Optional[str]:
     return match.group(1) if match and match.group(1) in KINDS else None
 
 
+def load(name: str, path: Path) -> Tuple[str, str]:
+    """Returns what is wrong with the fragment at path, "" when it is well formed, and the text that was judged."""
+    if kind(name) is None:
+        return f"its name is not {NAMING}", ""
+    if name.split(".")[0] in DEVICES:
+        return "its slug is a device name on Windows (con, prn, aux, nul, com1 to com9, lpt1 to lpt9) and cannot be checked out there", ""
+    try:
+        # A link could name any file on the machine of whoever runs the release, so none is followed
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return "it is a symbolic link or no regular file, and a fragment is a regular file", ""
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        with os.fdopen(fd, "rb") as file:
+            text = file.read().decode("utf-8").replace("\r\n", "\n")
+    except (OSError, ValueError):
+        return "it is not a readable UTF-8 text file", ""
+    if not text.strip():
+        return "it is empty", ""
+    # A heading in an entry would end the version's section where the release notes are cut
+    if any(HEADING.match(line) for line in text.splitlines()):
+        return "a line starts with #, and an entry holds no heading", ""
+    return "", text
+
+
 def problem(name: str, path: Path) -> str:
     """Says what is wrong with the fragment at path, or "" when it is well formed."""
-    if kind(name) is None:
-        return f"its name is not {NAMING}"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, ValueError):
-        return "it is not a readable UTF-8 text file"
-    if not text.strip():
-        return "it is empty"
-    # A heading in an entry would end the version's section where the release notes are cut
-    if any(line.startswith("#") for line in text.splitlines()):
-        return "a line starts with #, and an entry holds no heading"
-    return ""
+    return load(name, path)[0]
 
 
 def fragments(paths: Iterable[str]) -> List[str]:
@@ -94,8 +111,8 @@ def malformed(paths: Iterable[str]) -> List[str]:
     """Returns one line for each fragment among the paths that is there and is not well formed."""
     found: List[str] = []
     for path in fragments(paths):
-        # A fragment a release deleted is gone, and nothing is left to check
-        if Path(path).exists():
+        # A fragment a release deleted is gone, and nothing is left to check. A link to nothing is still there
+        if os.path.lexists(path):
             wrong = problem(path[len(FRAGMENTS) :], Path(path))
             if wrong:
                 found.append(f"  {path}: {wrong}")
