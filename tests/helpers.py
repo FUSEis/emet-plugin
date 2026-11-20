@@ -54,6 +54,24 @@ class Transcript:
         fields = {"turnOrigin": "task_notification", "origin": {"kind": "task-notification"}, "promptId": str(uuid.uuid4())}
         return self.prompt(text, source=None, **{"promptSource": "system", **fields, **extra})
 
+    def command(self, name: str, args: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
+        """Starts a turn a skill's slash command started, with the two entries Claude Code 2.1.305 writes. Returns the first."""
+        text = f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>"
+        if args is not None:
+            text += f"\n<command-args>{args}</command-args>"
+        fields = {"turnOrigin": "human", "origin": {"kind": "human"}, "promptId": str(uuid.uuid4())}
+        entry = self.prompt(text, source=None, **{**fields, **extra})
+        skill = f"Base directory for this skill: /plugin/skills/{name.rpartition(':')[2]}\n\n# The skill's text"
+        self.write(
+            {
+                "type": "user",
+                "isMeta": True,
+                "message": {"role": "user", "content": [{"type": "text", "text": skill}]},
+                "promptId": entry["promptId"],
+            }
+        )
+        return entry
+
     def assistant(
         self,
         message_id: str,

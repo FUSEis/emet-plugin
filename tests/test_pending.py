@@ -504,3 +504,40 @@ def test_a_turn_id_that_is_not_a_plain_name_never_reaches_the_queue(transcript, 
     run(transcript, environ)
     (queued,) = [storage.read_json(path, {}) for path in transport.queued(root(environ))]
     assert list(queued[envelope.LOCAL]) == ["ended"]
+
+
+def command_turn(transcript, name="emet:status", answer="Turns are reaching Emet."):
+    prompt = transcript.command(name)
+    transcript.text(f"msg_{prompt['uuid'][:8]}", answer)
+    return prompt
+
+
+def test_the_line_of_a_turn_a_command_of_the_plugin_started_carries_its_own_mark(transcript, environ, emet, clock):
+    first = finished_turn(transcript)
+    command = command_turn(transcript)
+    other = command_turn(transcript, "other:status")
+    run(transcript, environ)
+    assert marks(environ) == [
+        (emet.trace_uuids[first["uuid"]], None),
+        (emet.trace_uuids[command["uuid"]], "own_command"),
+        (emet.trace_uuids[other["uuid"]], None),
+    ]
+    (line,) = [item for item in pending.lines(root(environ), "session-1") if "started_by" in item]
+    assert set(line) == {"trace_uuid", "at", "endpoint", "conversation_uuid", "started_by", "prompt_id", "ended"}
+    # The mark stays on this machine
+    sent = json.dumps(emet.envelopes)
+    assert "own_command" not in sent and "started_by" not in sent and envelope.LOCAL not in sent
+
+
+def test_the_mark_of_a_command_turn_is_kept_when_another_session_delivers_it_from_the_queue(tmp_path, environ, emet, clock):
+    queued, current = Transcript(tmp_path, "session-0"), Transcript(tmp_path, "session-1")
+    emet.statuses = [503]
+    command = command_turn(queued)
+    run(queued, environ)
+    assert marks(environ, "session-0") == []
+    clock.advance(60)
+    prompt = finished_turn(current)
+    run(current, environ)
+    assert marks(environ, "session-0") == [(emet.trace_uuids[command["uuid"]], "own_command")]
+    assert marks(environ, "session-1") == [(emet.trace_uuids[prompt["uuid"]], None)]
+    assert "own_command" not in json.dumps(emet.envelopes)

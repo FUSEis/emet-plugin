@@ -1,9 +1,10 @@
-"""Runs the poller the way Claude Code does: `python emet_hook.py watch` as a process, with real pipes and a real exit code."""
+"""Runs the poller the way Claude Code does: the command of the shipped hook as a process, with real pipes and a real exit code."""
 
 from __future__ import annotations
 
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -21,6 +22,9 @@ from test_report import claim, document
 
 SCRIPTS = Path(commands.__file__).resolve().parent.parent
 SCRIPT = SCRIPTS / "emet_hook.py"
+PLUGIN = SCRIPTS.parent
+# What Claude Code puts the plugin's folder in for, in a hook's command
+PLUGIN_ROOT = "${CLAUDE_PLUGIN_ROOT}"
 SESSION = "session-1"
 T1 = "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
 CONVERSATION = "7d3c1c52-0d0a-4a52-8d0e-0c7e3a1b2c3d"
@@ -58,11 +62,29 @@ def waits(folder: Path, **seconds: float) -> Path:
     return folder
 
 
+def shipped_hook() -> Dict[str, Any]:
+    """Returns the one hook of the shipped hooks.json that can wake Claude."""
+    hooks = storage.loads((PLUGIN / "hooks" / "hooks.json").read_bytes())["hooks"]
+    waking = [(event, hook) for event, groups in hooks.items() for group in groups for hook in group["hooks"] if hook.get("asyncRewake")]
+    ((event, found),) = waking
+    assert event == "Stop", "the tests below hand the process the input of a Stop"
+    assert isinstance(found, dict)
+    return found
+
+
+def shipped_command() -> List[str]:
+    """Returns the command of the shipped hook, word for word, with this Python for `python3` and the plugin's folder filled in."""
+    program, *arguments = shlex.split(shipped_hook()["command"])
+    assert program == "python3", "the hook names the interpreter by the one name every supported system has"
+    assert any(PLUGIN_ROOT in argument for argument in arguments), "the hook finds its script through the folder Claude Code names"
+    return [sys.executable, *(argument.replace(PLUGIN_ROOT, str(PLUGIN)) for argument in arguments)]
+
+
 def hook(environ: Dict[str, str], stdin: bytes, startup: Optional[Path] = None) -> Result:
-    """Runs `python emet_hook.py watch` to its end and returns (exit code, stdout, stderr)."""
+    """Runs the command of the shipped hook to its end and returns (exit code, stdout, stderr)."""
     inherited = {name: value for name, value in os.environ.items() if not name.startswith(INHERITED)}
     env = {**inherited, **environ, **({"PYTHONPATH": str(startup)} if startup else {})}
-    result = subprocess.run([sys.executable, str(SCRIPT), "watch"], input=stdin, capture_output=True, env=env, timeout=PROCESS_TIMEOUT_S)
+    result = subprocess.run(shipped_command(), input=stdin, capture_output=True, env=env, timeout=PROCESS_TIMEOUT_S)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -148,6 +170,13 @@ def test_a_flagged_report_ends_the_process_with_exit_2_and_the_wake_text_on_stde
     assert out == b"", "stdout of a background hook is not shown to Claude: nothing is written there"
     assert emet.polled(T1) == 1, "one read is enough for a report that is ready"
     assert outcomes(environ) == [(T1, "flagged")], "the wake is recorded before the process exits, so it is never handed over twice"
+
+
+def test_the_command_under_test_is_the_one_the_shipped_hook_names() -> None:
+    program, script, *modes = shipped_command()
+    assert program == sys.executable
+    assert Path(script).resolve() == SCRIPT.resolve(), "the hook runs the entry script of this checkout"
+    assert modes == [commands.WATCH_MODE], "the hook runs the script in the one mode that can exit with code 2"
 
 
 def test_the_unchanged_command_wakes_claude_after_its_real_first_wait(

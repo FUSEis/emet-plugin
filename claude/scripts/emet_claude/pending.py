@@ -8,8 +8,8 @@ can still add an id here. A skipped line marks a turn or a later addition that c
 and was never sent, with the error's type as its reason. A refused line names a turn Emet refused
 for good, by the id the plugin sent it under, with the HTTP status and the endpoint that refused it.
 It holds no trace_uuid, so it is never read as a report to fetch. A trace line with started_by
-names a turn that a hook of this plugin started, such as the turn after a wake. Its report is
-never read. A trace line also names the turn itself when the sender could: prompt_id is Claude
+names a turn that this plugin started or was asked for: the turn after a wake, or a turn one of
+its own commands started. Its report is never read. A trace line also names the turn itself when the sender could: prompt_id is Claude
 Code's id of the turn, and ended is the time of the turn's last entry, in UTC with milliseconds.
 Both stay on this machine. The poller tells by them which turn a report is about.
 """
@@ -30,6 +30,8 @@ from . import storage
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 # The key that marks a trace line as a turn a hook of this plugin started
 STARTED_BY = "started_by"
+# Its value for a turn one of the plugin's own commands started, such as /emet:status
+OWN_COMMAND = "own_command"
 
 
 def plain(value: Any) -> str:
@@ -103,7 +105,7 @@ def note(
 ) -> None:
     """Keeps the id of a turn Emet accepted, with Emet's id of its conversation when the reply gave one.
 
-    started_by names the hook of this plugin that started the turn, and marks the line as one whose report is never read.
+    started_by names what of this plugin started the turn, a hook or a command, and marks the line as one whose report is never read.
     prompt_id and ended name the turn itself: Claude Code's id of it and the time of its last entry.
     """
     item: Dict[str, Union[str, int]] = {"trace_uuid": trace_uuid, "at": storage.now(), "endpoint": endpoint}

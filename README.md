@@ -76,6 +76,10 @@ An administrator can install and configure the plugin for every developer at onc
 
 Each finished turn becomes one trace in Emet: the prompt, every model call with its token counts, every tool call with its arguments and result, and every subagent the turn launched. Secrets are redacted before anything leaves the machine, and images are replaced by a placeholder. [claude/README.md](claude/README.md) lists exactly what is sent, the three capture modes, and how to turn it off.
 
+## What you see
+
+You work as usual, and each answer's claims and verdicts are in Emet. With the plugin from `main`, when Emet disputes a claim in an answer Claude just gave, Claude also tells you in the session, once, shortly after the answer: [When Emet disputes a claim](claude/README.md#when-emet-disputes-a-claim). This is in the plugin on `main`. Release 0.1.4 does not have it.
+
 ## Repository layout
 
 ```text
