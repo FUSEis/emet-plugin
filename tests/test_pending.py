@@ -101,6 +101,27 @@ def test_a_peer_message_right_after_a_notice_with_no_answer_yet_is_sent_as_one_t
     assert "The agent finished and the deploy is up." in json.dumps(emet.envelopes[1])
 
 
+def test_a_peer_message_after_a_record_only_notice_is_its_own_trace_under_its_own_id_and_the_notice_sends_nothing(
+    transcript, environ, emet
+):
+    first = transcript.meta_turn("the first agent's result", "peer")
+    transcript.text("msg_first", "Noted.")
+    run(transcript, environ)
+    transcript.record_notice("<task-notification>the first agent finished</task-notification>")
+    run(transcript, environ)
+    assert len(emet.envelopes) == 1
+    second = transcript.meta_turn("the second agent's result", "peer")
+    transcript.text("msg_second", "Noted too.")
+    transcript.record_notice("<task-notification>the second agent finished</task-notification>")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (second["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["prompt_id"] for item in lines] == [first["promptId"], second["promptId"]]
+    # The notice written after the answer does not move the end of the turn
+    assert lines[1]["ended"] == emet.envelopes[1]["spans"][0]["ended_at"] == "2026-10-20T10:00:05.000Z"
+    assert "agent finished" not in json.dumps(emet.envelopes) and "skipped_turns" not in status(environ)
+
+
 def test_peer_messages_with_no_answer_between_them_are_sent_as_one_turn(transcript, environ, emet):
     first = transcript.meta_turn("check the deploy", "peer")
     transcript.meta_turn("and the queue", "peer")

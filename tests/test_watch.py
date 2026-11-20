@@ -1417,6 +1417,20 @@ def test_a_turn_a_meta_entry_started_before_the_poller_started_is_told_apart_by_
     assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
 
 
+def test_a_notice_kept_as_a_record_only_is_no_newer_turn_and_one_a_model_call_answers_is(session, environ, emet, clock, sleeper):
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    sleeper.at(1, lambda: session.record_notice())
+    assert stop(session, environ) == 2
+    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+    stopped = watch.Stop(SESSION, str(session.path), "", session.path.stat().st_size, clock.now)
+    session.record_notice()
+    assert watch.newer_turn(stopped) is False
+    session.notice("<task-notification>Background command finished</task-notification>")
+    assert watch.newer_turn(stopped) is True
+
+
 def test_a_persons_prompt_after_a_start_with_no_answer_in_the_file_is_still_a_newer_turn(transcript, environ, emet, clock):
     transcript.prompt("What is 2 + 2?", promptId="prompt-1")
     transcript.prompt("And 3 + 3?", source="queued", promptId="prompt-2")

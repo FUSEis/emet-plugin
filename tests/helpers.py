@@ -54,6 +54,11 @@ class Transcript:
         fields = {"turnOrigin": "task_notification", "origin": {"kind": "task-notification"}, "promptId": str(uuid.uuid4())}
         return self.prompt(text, source=None, **{"promptSource": "system", **fields, **extra})
 
+    def record_notice(self, text: str = "<task-notification>agent finished</task-notification>", **extra: Any) -> Dict[str, Any]:
+        """Writes the notice Claude Code 2.1.305 keeps as a record a second after a background subagent's message was answered."""
+        fields = {"origin": {"kind": "task-notification"}, "queueTranscriptOnly": True, "queueSkipAttachments": True}
+        return self.prompt(text, source=None, **{"promptSource": "system", "promptId": str(uuid.uuid4()), **fields, **extra})
+
     def meta_turn(self, text: str, kind: str = "scheduled", **extra: Any) -> Dict[str, Any]:
         """Starts a turn with a meta entry, as Claude Code 2.1.3xx does for a scheduled fire and a message from another session (peer)."""
         fields: Dict[str, Any] = {"isMeta": True, "promptSource": "system", "turnOrigin": kind, "promptId": str(uuid.uuid4())}

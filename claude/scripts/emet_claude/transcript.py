@@ -111,9 +111,14 @@ def starts_meta_turn(entry: Entry) -> bool:
     return isinstance(entry.get("promptId"), str) and bool(entry["promptId"])
 
 
+def record_only(entry: Entry) -> bool:
+    """Says whether the entry is a record only, as Claude Code writes after a background subagent's message. No model call answers it."""
+    return entry.get("queueTranscriptOnly") is True
+
+
 def starts_turn(entry: Entry) -> bool:
     """True for a user entry that a model call answers: a prompt, a notice, a compaction summary or a meta entry that starts a turn."""
-    if entry.get("type") != "user" or (entry.get("isMeta") and not starts_meta_turn(entry)):
+    if entry.get("type") != "user" or record_only(entry) or (entry.get("isMeta") and not starts_meta_turn(entry)):
         return False
     parts = content_parts(entry)
     if any(part.get("type") == "tool_result" for part in parts):
@@ -209,6 +214,9 @@ def split_turns(entries: List[Tuple[int, Entry]]) -> Tuple[List[Tuple[int, Entry
     head: List[Tuple[int, Entry]] = []
     turns: List[List[Tuple[int, Entry]]] = []
     for item in entries:
+        # Part of no turn: its time must not move the end of the turn before it
+        if record_only(item[1]):
+            continue
         # One model call answers a start with no answer yet and the meta start that follows it, so they are one turn
         joins = bool(item[1].get("isMeta")) and bool(turns) and not answered(turns[-1])
         if starts_turn(item[1]) and not joins:
