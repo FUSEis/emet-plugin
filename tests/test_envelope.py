@@ -389,6 +389,22 @@ def test_another_task_notification_is_sent_as_before(transcript):
     assert model["is_truncated"] is False
 
 
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_the_prompt_of_a_turn_a_meta_entry_starts_is_sent_by_the_capture_mode_and_names_no_title(transcript, kind):
+    fired = transcript.meta_turn(f"check the deploy with {CONFIG.emet_key}", kind)
+    transcript.text("msg_1", "The deploy is up.")
+    for mode in ("sanitized", "full"):
+        ((trace_id, envelopes, _),) = build(transcript, mode)
+        assert trace_id == fired["uuid"] and "conversation_title" not in envelopes[0]
+        assert envelopes[0]["spans"][0]["attributes"] == {"claude_code.prompt_source": "system", "emet.redactions": 1}
+        (model,) = by_kind(envelopes[0]["spans"], "model")
+        assert model["payload"]["input_messages"][0]["parts"][0]["content"].startswith("check the deploy with ")
+        assert CONFIG.emet_key not in json.dumps(envelopes)
+    ((_, envelopes, _),) = build(transcript, "metadata")
+    assert all(not span.get("payload") for span in envelopes[0]["spans"])
+    assert "check the deploy" not in json.dumps(envelopes) and "conversation_title" not in envelopes[0]
+
+
 def test_a_person_who_pastes_the_wake_gets_an_ordinary_turn(transcript):
     transcript.prompt(f"Explain this.\n{WAKE}", turnOrigin="human")
     transcript.text("msg_1", "It lists one disputed claim.")

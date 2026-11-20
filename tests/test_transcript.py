@@ -70,6 +70,44 @@ def test_meta_entries_do_not_start_turns(transcript):
     assert turns == [] and len(head) == 1
 
 
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_meta_entry_of_a_scheduled_fire_or_of_a_message_from_another_session_starts_a_turn(transcript, kind):
+    transcript.prompt("one")
+    transcript.text("msg_1", "done")
+    fired = transcript.meta_turn("check the deploy", kind)
+    transcript.text("msg_2", "The deploy is up.")
+    head, turns = tr.split_turns(tr.read_entries(transcript.path, 0)[0])
+    assert head == [] and [len(turn) for turn in turns] == [2, 2]
+    assert turns[1][0][1]["uuid"] == fired["uuid"] and tr.answered(turns[1])
+    # No person typed it, no command of the plugin started it, and it is no wake
+    assert not tr.by_person(fired) and tr.own_command(fired) == "" and not woke(fired)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"turnOrigin": None},
+        {"turnOrigin": "human"},
+        {"turnOrigin": "task_notification"},
+        {"turnOrigin": "sdk"},
+        {"turnOrigin": "Scheduled"},
+        {"turnOrigin": ["scheduled"]},
+        {"turnOrigin": None, "origin": {"kind": "peer"}},
+        {"promptSource": None},
+        {"promptSource": "typed"},
+        {"promptId": None},
+        {"promptId": ""},
+        {"promptId": 5},
+        {"message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "x"}]}},
+        {"message": {"role": "user", "content": []}},
+    ],
+)
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_meta_entry_that_is_not_wholly_one_of_the_two_known_shapes_starts_no_turn(transcript, kind, fields):
+    assert tr.starts_turn(transcript.meta_turn("check the deploy", kind))
+    assert not tr.starts_turn(transcript.meta_turn("check the deploy", kind, **fields))
+
+
 def test_prompt_text_shows_slash_commands_as_typed(transcript):
     entry = transcript.prompt(
         "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>123</command-args>", source=None

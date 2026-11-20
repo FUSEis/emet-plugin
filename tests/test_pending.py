@@ -72,6 +72,30 @@ def test_a_trace_that_gets_more_spans_later_is_written_once(transcript, environ,
     assert written == [emet.trace_uuids[prompt["uuid"]]]
 
 
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_starts_is_sent_as_its_own_trace_and_gets_its_own_line(transcript, environ, emet, kind):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    fired = transcript.meta_turn("check the deploy", kind)
+    transcript.text("msg_fired", "The deploy is up.")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (fired["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["trace_uuid"] for item in lines] == [emet.trace_uuids[first["uuid"]], emet.trace_uuids[fired["uuid"]]]
+    # Polled as any turn no part of the plugin started, and known by Claude Code's id of it
+    assert "started_by" not in lines[1] and lines[1]["prompt_id"] == fired["promptId"]
+
+
+def test_an_ordinary_meta_entry_with_an_answer_still_joins_the_turn_before_it(transcript, environ, emet):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    transcript.prompt("context", source=None, isMeta=True)
+    transcript.text("msg_late", "one more thing")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], first["uuid"]]
+    assert kept(environ) == [emet.trace_uuids[first["uuid"]]]
+
+
 def test_a_reply_that_names_no_trace_keeps_nothing_and_still_counts_as_delivered(transcript, environ, emet):
     emet.names_trace = False
     finished_turn(transcript)

@@ -1391,6 +1391,51 @@ def test_a_turn_that_started_while_the_report_was_awaited_keeps_claude_asleep(
     assert bool(capfdbinary.readouterr()[1]) is woken
 
 
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_started_while_the_report_was_awaited_keeps_claude_asleep(
+    session, environ, emet, clock, sleeper, capfdbinary, kind
+):
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    sleeper.at(4, lambda: session.meta_turn("check the deploy", kind))
+    assert stop(session, environ) == 0
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
+    assert capfdbinary.readouterr() == (b"", b"")
+
+
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_started_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, kind):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    transcript.meta_turn("check the deploy", kind)
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_the_report_of_a_turn_a_meta_entry_started_is_read_at_its_stop_and_can_wake_claude(
+    session, environ, emet, clock, capfdbinary, sender_on_the_clock, kind
+):
+    send(session, environ)
+    (first,) = pending.traces(root(environ), SESSION)
+    emet.report(first, 200, document(status="clear"))
+    assert stop(session, environ) == 0
+    clock.advance(600)
+    fired = session.meta_turn("check the deploy", kind)
+    session.text("msg_2", "Spend rose 12% in March.")
+    send(session, environ)
+    first, second = pending.traces(root(environ), SESSION)
+    emet.report(second, 200, document())
+    assert stop(session, environ, prompt_id=fired["promptId"]) == 2
+    assert outcomes(environ) == [(first, "clear", True), (second, "flagged", True)]
+    assert watch.checks(root(environ), SESSION)[-1]["handed"] is True and capfdbinary.readouterr()[1]
+
+
 def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, capfdbinary):
     transcript.prompt("What is 2 + 2?", promptId="prompt-1")
     transcript.text("msg_1", "4")

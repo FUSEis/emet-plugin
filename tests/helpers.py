@@ -54,6 +54,12 @@ class Transcript:
         fields = {"turnOrigin": "task_notification", "origin": {"kind": "task-notification"}, "promptId": str(uuid.uuid4())}
         return self.prompt(text, source=None, **{"promptSource": "system", **fields, **extra})
 
+    def meta_turn(self, text: str, kind: str = "scheduled", **extra: Any) -> Dict[str, Any]:
+        """Starts a turn with a meta entry, as Claude Code 2.1.3xx does for a scheduled fire and a message from another session (peer)."""
+        fields: Dict[str, Any] = {"isMeta": True, "promptSource": "system", "turnOrigin": kind, "promptId": str(uuid.uuid4())}
+        fields.update({"origin": {"kind": "peer"}} if kind == "peer" else {"scheduledTaskId": "task-1"})
+        return self.prompt(text, source=None, **{**fields, **extra})
+
     def command(self, name: str, args: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
         """Starts a turn a skill's slash command started, with the two entries Claude Code 2.1.305 writes. Returns the first."""
         text = f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>"

@@ -42,6 +42,8 @@ COMMAND_PROMPT = re.compile(
 )
 # How Claude Code names a turn a person started, in turnOrigin and in origin.kind
 PERSON_ORIGIN = "human"
+# How Claude Code 2.1.3xx names, in turnOrigin, a turn it starts with a meta entry: a scheduled fire, a message from another session
+META_TURN_ORIGINS = ("scheduled", "peer")
 
 
 def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List[Tuple[int, Entry]], int]:
@@ -102,9 +104,16 @@ def has_binary(entry: Entry) -> bool:
     return any(part.get("type") in BINARY_PARTS for part in content_parts(entry))
 
 
+def starts_meta_turn(entry: Entry) -> bool:
+    """Says whether a meta entry starts a turn of its own. Most meta entries are context inside a turn, such as a skill's text."""
+    if entry.get("turnOrigin") not in META_TURN_ORIGINS or entry.get("promptSource") != "system":
+        return False
+    return isinstance(entry.get("promptId"), str) and bool(entry["promptId"])
+
+
 def starts_turn(entry: Entry) -> bool:
-    """True for a user entry that a model call answers: a prompt, a background-task notice or a compaction summary."""
-    if entry.get("type") != "user" or entry.get("isMeta"):
+    """True for a user entry that a model call answers: a prompt, a notice, a compaction summary or a meta entry that starts a turn."""
+    if entry.get("type") != "user" or (entry.get("isMeta") and not starts_meta_turn(entry)):
         return False
     parts = content_parts(entry)
     if any(part.get("type") == "tool_result" for part in parts):
