@@ -34,6 +34,17 @@ def test_changelog_has_the_current_version():
     assert f"## [{VERSION}]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
+def test_the_readme_requires_the_claude_code_the_report_check_needs():
+    from emet_claude import watch
+
+    needed = ".".join(map(str, watch.MIN_CLAUDE_CODE))
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+    assert f"Requirements: Claude Code {needed} or later" in readme
+    assert f"older than {needed}" in watch.__doc__
+    # No other Claude Code version is named as a requirement
+    assert re.findall(r"Claude Code ([0-9.]+[0-9]) or later", readme) == [needed]
+
+
 def test_marketplace_points_at_the_plugin():
     marketplace = load(ROOT / ".claude-plugin" / "marketplace.json")
     (entry,) = marketplace["plugins"]
