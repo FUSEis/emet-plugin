@@ -357,3 +357,11 @@ def test_a_deeply_nested_input_to_the_report_check_is_never_parsed(environ, tmp_
     assert watch.run(deep.encode(), environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
     assert log_lines(root)[-1].endswith(" watch error ValueError"), "the hook input was refused for its depth, before the parser"
+
+
+@pytest.mark.parametrize(
+    ("saved", "known"),
+    [({}, True), ({"v": 1}, True), ({"v": 2}, True), ({"v": 3}, False), ({"v": 0}, False), ({"v": True}, False), ({"v": "1"}, False)],
+)
+def test_a_saved_object_is_readable_when_it_names_no_version_or_one_up_to_the_newest(saved, known):
+    assert storage.known_version(saved, 2) is known
