@@ -83,6 +83,19 @@ def test_a_meta_entry_of_a_scheduled_fire_or_of_a_message_from_another_session_s
     assert not tr.by_person(fired) and tr.own_command(fired) == "" and not woke(fired)
 
 
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_meta_start_right_after_a_start_with_no_answer_yet_joins_that_turn(transcript, kind):
+    notice = transcript.notice("<task-notification>agent finished</task-notification>")
+    transcript.meta_turn("check the deploy", kind)
+    transcript.meta_turn("and the queue", kind)
+    transcript.text("msg_1", "Both are fine.")
+    own = transcript.meta_turn("check again", kind)
+    transcript.meta_turn("and once more", kind)
+    head, turns = tr.split_turns(tr.read_entries(transcript.path, 0)[0])
+    assert head == [] and [len(turn) for turn in turns] == [4, 2]
+    assert [turn[0][1]["uuid"] for turn in turns] == [notice["uuid"], own["uuid"]]
+
+
 @pytest.mark.parametrize(
     "fields",
     [

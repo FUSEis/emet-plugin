@@ -1417,6 +1417,32 @@ def test_a_turn_a_meta_entry_started_before_the_poller_started_is_told_apart_by_
     assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
 
 
+def test_a_persons_prompt_after_a_start_with_no_answer_in_the_file_is_still_a_newer_turn(transcript, environ, emet, clock):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.prompt("And 3 + 3?", source="queued", promptId="prompt-2")
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+@pytest.mark.parametrize("named", ["notice", "peer", ""])
+def test_a_peer_message_that_joined_a_notice_with_no_answer_yet_is_not_taken_for_a_newer_turn(transcript, environ, emet, clock, named):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    ids = {"notice": transcript.notice("<task-notification>agent finished</task-notification>")["promptId"]}
+    ids["peer"] = transcript.meta_turn("check the deploy", "peer")["promptId"]
+    transcript.text("msg_2", "The agent finished and the deploy is up.")
+    deliver(environ, clock, prompt_id=ids["notice"])
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id=ids.get(named, "")) == (0 if named == "peer" else 2)
+    # Known limit: the trace carries the notice's id, so a Stop that names the peer message's holds the report back
+    assert watch.checks(root(environ), SESSION)[0].get("held") == ("newer_turn" if named == "peer" else None)
+    stopped = watch.Stop(SESSION, str(transcript.path), ids.get(named, ""), transcript.path.stat().st_size, clock.now)
+    assert watch.newer_turn(stopped) is False
+
+
 @pytest.mark.parametrize("kind", ["scheduled", "peer"])
 def test_the_report_of_a_turn_a_meta_entry_started_is_read_at_its_stop_and_can_wake_claude(
     session, environ, emet, clock, capfdbinary, sender_on_the_clock, kind

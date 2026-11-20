@@ -333,14 +333,23 @@ def claude_code_version(found: List[Tuple[int, Dict[str, Any]]]) -> Tuple[int, .
 def newer_turn(stop: Stop) -> bool:
     """Says whether the session file shows a turn started after the one this Stop ended."""
     found, _ = session_entries(stop.transcript_path, stop.size)
-    starts = [
-        (offset, entry)
-        for offset, entry in found
-        if transcript.starts_turn(entry)
-        and not entry.get("isSidechain")
+    starts: List[Tuple[int, Dict[str, Any]]] = []
+    answered = True
+    for offset, entry in found:
+        if entry.get("isSidechain"):
+            continue
+        if entry.get("type") == "assistant":
+            answered = True
+        if not transcript.starts_turn(entry):
+            continue
         # A command of the plugin is in the same wrapper as a local command, and a model call answers it
-        and (not transcript.LOCAL_COMMAND.match(transcript.text_of(entry)) or transcript.own_command(entry))
-    ]
+        if transcript.LOCAL_COMMAND.match(transcript.text_of(entry)) and not transcript.own_command(entry):
+            continue
+        # As the sender groups turns: a meta start joins the start before it that has no answer yet
+        if entry.get("isMeta") and starts and not answered:
+            continue
+        starts.append((offset, entry))
+        answered = False
     if any(offset >= stop.size for offset, _ in starts):
         return True
     if not starts:

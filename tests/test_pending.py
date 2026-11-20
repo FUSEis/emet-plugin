@@ -86,6 +86,31 @@ def test_a_turn_a_meta_entry_starts_is_sent_as_its_own_trace_and_gets_its_own_li
     assert "started_by" not in lines[1] and lines[1]["prompt_id"] == fired["promptId"]
 
 
+def test_a_peer_message_right_after_a_notice_with_no_answer_yet_is_sent_as_one_turn_under_the_notices_ids(transcript, environ, emet):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    notice = transcript.notice("<task-notification>agent finished</task-notification>")
+    transcript.meta_turn("check the deploy", "peer")
+    transcript.text("msg_both", "The agent finished and the deploy is up.")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (notice["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["trace_uuid"] for item in lines] == [emet.trace_uuids[first["uuid"]], emet.trace_uuids[notice["uuid"]]]
+    assert lines[1]["prompt_id"] == notice["promptId"]
+    assert "skipped_turns" not in status(environ) and not [item for item in pending.lines(root(environ), "session-1") if "skipped" in item]
+    assert "The agent finished and the deploy is up." in json.dumps(emet.envelopes[1])
+
+
+def test_peer_messages_with_no_answer_between_them_are_sent_as_one_turn(transcript, environ, emet):
+    first = transcript.meta_turn("check the deploy", "peer")
+    transcript.meta_turn("and the queue", "peer")
+    transcript.text("msg_both", "Both are fine.")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"]]
+    (line,) = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert line["prompt_id"] == first["promptId"]
+
+
 def test_an_ordinary_meta_entry_with_an_answer_still_joins_the_turn_before_it(transcript, environ, emet):
     first = finished_turn(transcript)
     run(transcript, environ)

@@ -209,7 +209,9 @@ def split_turns(entries: List[Tuple[int, Entry]]) -> Tuple[List[Tuple[int, Entry
     head: List[Tuple[int, Entry]] = []
     turns: List[List[Tuple[int, Entry]]] = []
     for item in entries:
-        if starts_turn(item[1]):
+        # One model call answers a start with no answer yet and the meta start that follows it, so they are one turn
+        joins = bool(item[1].get("isMeta")) and bool(turns) and not answered(turns[-1])
+        if starts_turn(item[1]) and not joins:
             turns.append([item])
         elif turns:
             turns[-1].append(item)
