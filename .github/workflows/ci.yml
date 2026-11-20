@@ -78,7 +78,9 @@ jobs:
         run: |
           git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"
           git show HEAD^1:CHANGELOG.md > "$RUNNER_TEMP/base-changelog"
-          python3 .github/scripts/changelog_check.py "$RUNNER_TEMP/base-changelog" < "$RUNNER_TEMP/changed"
+          # Only a fragment the pull request adds is its entry. A renamed or edited one is not
+          git diff --name-only -M --diff-filter=A -z HEAD^1 HEAD -- changelog.d > "$RUNNER_TEMP/added"
+          python3 .github/scripts/changelog_check.py "$RUNNER_TEMP/base-changelog" "$RUNNER_TEMP/added" < "$RUNNER_TEMP/changed"
 
   # The one check branch protection requires, so the matrix can change without touching the rules
   ci:
