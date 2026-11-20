@@ -255,6 +255,7 @@ def test_a_version_that_already_has_a_heading_is_refused_and_nothing_is_touched(
         (["0.1.05", "2026-12-01"], "is no version"),
         (["0.00.5", "2026-12-01"], "is no version"),
         (["0.1.\u0665", "2026-12-01"], "is no version"),
+        (["0.1.1\u0665", "2026-12-01"], "is no version"),
         (["0.1.5\n", "2026-12-01"], "is no version"),
         # A real date that is not padded with zeros
         (["0.1.5", "2026-12-1"], "'2026-12-1' is no date of the form 2026-01-31"),
