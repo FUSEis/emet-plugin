@@ -33,5 +33,6 @@ description: Link the Emet reports of the latest turns, and report whether the p
 | `turn skipped ...` | One turn could not be read from the session file, for example because it had no usable time. It was left out and the rest of the session was sent | Report it at https://github.com/FUSEis/emet-plugin/issues with the log line, the plugin version and the Claude Code version |
 | `subagent skipped, its file is outside the session's folder or is a link` | The path the plugin kept for a subagent no longer names a file of the session's own `subagents` folder. That subagent's later work is not sent; the rest of the session is | Nothing to do if the session's files were moved. If they were not, something else changed the plugin's state file: report it with the log line and the plugin version |
 | `worker error ...` | The plugin hit an unexpected error | Report it with the log line and the plugin version |
+| `prompt hook error ...` | The hook that runs when a prompt is sent hit an unexpected error. The prompt went through unchanged | Report it with the log line and the plugin version |
 
 Do not print the contents of the `queue` folder: it holds session content waiting to be sent.

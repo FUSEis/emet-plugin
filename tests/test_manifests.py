@@ -42,17 +42,28 @@ def test_marketplace_points_at_the_plugin():
 
 
 def test_every_hook_runs_a_known_mode_of_the_shipped_script():
-    from emet_claude.commands import HOOK_MODES
+    from emet_claude.commands import HOOK_MODES, PROMPT_MODE
 
     hooks = load(PLUGIN / "hooks" / "hooks.json")["hooks"]
-    assert set(hooks) == {"SessionStart", "Stop", "SubagentStop", "SessionEnd"}
-    for groups in hooks.values():
+    assert set(hooks) == {"SessionStart", "Stop", "SubagentStop", "SessionEnd", "UserPromptSubmit"}
+    assert PROMPT_MODE not in HOOK_MODES
+    for event, groups in hooks.items():
         for group in groups:
             for hook in group["hooks"]:
                 match = re.fullmatch(r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/(scripts/emet_hook\.py)" ([a-z-]+)', hook["command"])
                 assert match, hook["command"]
                 assert (PLUGIN / match.group(1)).is_file()
-                assert match.group(2) in HOOK_MODES
+                # Only the user's prompt runs the prompt hook, and it runs nothing else
+                assert (match.group(2) == PROMPT_MODE) is (event == "UserPromptSubmit"), hook["command"]
+                assert match.group(2) in (*HOOK_MODES, PROMPT_MODE)
+
+
+def test_the_prompt_hook_runs_in_the_foreground_with_a_short_limit_and_cannot_be_made_to_block():
+    (group,) = load(PLUGIN / "hooks" / "hooks.json")["hooks"]["UserPromptSubmit"]
+    (hook,) = group["hooks"]
+    # No matcher, no "async" (its output would come too late for the prompt) and no "onFailure" (a failure must never block)
+    assert set(group) == {"hooks"} and set(hook) == {"type", "command", "timeout"}
+    assert hook["type"] == "command" and hook["timeout"] == 5
 
 
 def test_capture_mode_choices_match_the_code():
@@ -416,6 +427,25 @@ def test_the_security_policy_covers_what_an_installed_plugin_does():
     assert "no text from one is shown to Claude" in policy
     # The plugin sets no access rules on Windows
     assert "On Windows the plugin sets no access rules" in policy
+
+
+def test_the_documents_say_the_prompt_hook_adds_nothing_while_no_hook_saves_a_verdict():
+    # True while no hook starts the report check, which is what saves a verdict. Wiring it changes these sentences
+    assert "watch" not in shipped_hook_modes()
+    works = section("claude/README.md", "## How it works")
+    assert "The plugin registers five hooks." in works and "`UserPromptSubmit`" in works
+    assert "for 5 seconds at most" in works and "it cannot change or hold back a prompt" in works
+    assert "No hook of this version saves such a report, so it adds nothing to a prompt." in works
+    policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    assert "No hook of this version saves one, so it gives Claude nothing." in policy
+    assert "It cannot change the prompt or hold it back." in policy
+    (hook,) = load(PLUGIN / "hooks" / "hooks.json")["hooks"]["UserPromptSubmit"][0]["hooks"]
+    assert hook["timeout"] == 5
+
+
+def test_the_status_skill_explains_the_log_line_of_a_prompt_hook_that_failed():
+    assert "| `prompt hook error ...` |" in (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
+    assert 'f"prompt hook error {type(error).__name__}"' in (PLUGIN / "scripts" / "emet_claude" / "missed.py").read_text(encoding="utf-8")
 
 
 def test_contributing_names_only_tests_that_exist():
