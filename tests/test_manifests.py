@@ -41,6 +41,11 @@ def test_the_readme_requires_the_claude_code_the_report_check_needs():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     assert f"Requirements: Claude Code {needed} or later" in readme
     assert f"older than {needed}" in watch.__doc__
+    # Both ways to install name it, and the agent is told to check it before installing
+    install = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"needs Claude Code {needed} or later" in install
+    assert f"If it is older than {needed}, stop" in install
+    assert f"In Claude Code, version {needed} or later:" in install
     # No other Claude Code version is named as a requirement
     assert re.findall(r"Claude Code ([0-9.]+[0-9]) or later", readme) == [needed]
 

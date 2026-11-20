@@ -12,7 +12,7 @@ The plugin needs an Emet account for your organization: it sends to your team in
 
 ## Install with your agent
 
-If your organization rolls Emet out through managed settings, there is nothing to install: the plugin arrives configured at your next session. Otherwise, paste this into Claude Code:
+If your organization rolls Emet out through managed settings, there is nothing to install: the plugin arrives configured at your next session. Otherwise, paste this into Claude Code. The plugin needs Claude Code 2.1.287 or later; `claude --version` prints yours, and the [plugin README](claude/README.md#install) says why.
 
 ```text
 Install the Emet plugin for Claude Code from https://github.com/FUSEis/emet-plugin
@@ -28,6 +28,9 @@ What it needs:
 
 Rules: never ask me for the key, and never read, print or store it. Do not edit
 settings.json files.
+
+First run `claude --version`. If it is older than 2.1.287, stop and tell me to
+run `claude update` and start again.
 
 1. Run `claude plugin list`. If `emet@emet-plugin` is installed, note its
    version, run `claude plugin marketplace update emet-plugin` and
@@ -55,7 +58,7 @@ The key is typed only into Claude Code's own configuration dialog, which keeps i
 
 ## Install by hand
 
-In Claude Code:
+In Claude Code, version 2.1.287 or later:
 
 ```text
 /plugin marketplace add FUSEis/emet-plugin
