@@ -332,8 +332,9 @@ def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no
     assert "The word always comes first and is never left out, translated or replaced by another word." in text
     assert "give it as the meaning of the word and add nothing to it: no label Emet shows on its pages" in text
     assert "keep every word and value you quote exactly as it is written there" in text
+    assert "Every time in both files is in UTC and ends in `Z`" in text and "say UTC with each time you show" in text
     # The example entry is in the form the rule asks for, with a word the plugin records
-    example = re.search(r"For example: [0-9:]{8}, trace [0-9a-f]{8}, `([a-z_]+)`: ([^.]+\.)", text)
+    example = re.search(r"For example: [0-9:]{8} UTC, trace [0-9a-f]{8}, `([a-z_]+)`: ([^.]+\.)", text)
     rows = check_rows()
     assert example is not None and example.group(1) in watch.OUTCOMES
     assert rows[example.group(1)][1] == example.group(2)

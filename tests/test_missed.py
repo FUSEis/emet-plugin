@@ -19,7 +19,7 @@ import pytest
 
 from emet_claude import commands, config, missed, pending, report, storage, timestamps, watch
 from emet_claude.transcript import WAKE_WINDOW_S
-from helpers import WAKE_WRAPPER, Transcript
+from helpers import WAKE_WRAPPER, Transcript, old_form
 from test_report import claim, document
 
 SCRIPTS = Path(commands.__file__).resolve().parent.parent
@@ -77,9 +77,9 @@ def save(environ, at, trace=T2, session=SESSION, name=None, **changed):
     return verdict
 
 
-def check(environ, at, trace=T2, outcome="flagged", session=SESSION, **fields):
+def check(environ, at, trace=T2, outcome="flagged", session=SESSION, form=storage.now, **fields):
     """Writes one line of the session's checks file, as the poller does, recorded at that time."""
-    line = {"trace_uuid": trace, "outcome": outcome, "final": True, "at": storage.now(at), "report_uuid": REPORT, "revision": 1, **fields}
+    line = {"trace_uuid": trace, "outcome": outcome, "final": True, "at": form(at), "report_uuid": REPORT, "revision": 1, **fields}
     with open(watch.checks_path(root(environ), session), "a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(line) + "\n")
 
@@ -525,9 +525,9 @@ def test_a_compaction_before_the_verdict_does_not_hold_it_back(session, environ,
     assert run(session, environ, capfdbinary) == expected(verdict)
 
 
-def handed(environ, clock, trace=T2):
+def handed(environ, clock, trace=T2, form=storage.now):
     """A flagged report the poller handed to Claude Code now: its line, and its file as the poller leaves it."""
-    check(environ, clock.now, trace, handed=True)
+    check(environ, clock.now, trace, form=form, handed=True)
     return save(environ, clock.now, trace, handed=True)
 
 
@@ -799,7 +799,7 @@ def enqueue(transcript, entry):
 def test_a_wake_claude_code_took_into_its_queue_is_not_shown_again_whatever_became_of_it(session, environ, clock, capfdbinary):
     clock.advance(20)
     verdict = handed(environ, clock)
-    # The same second as the hand-over, which is recorded in whole seconds
+    # The same second as the hand-over
     entry = queued(verdict, clock.now + 0.442)
     assert set(entry) == {"type", "operation", "timestamp", "sessionId", "content"} and entry["timestamp"].endswith(".442Z")
     enqueue(session, entry)
@@ -845,6 +845,16 @@ def another_kind_of_entry(verdict, at):
 NOT_ENQUEUED = [a_dequeue, an_enqueue_without_content, an_enqueue_whose_content_is_no_text, a_prompt_a_person_queued_with_the_wake_in_it]
 NOT_ENQUEUED += [a_notice_with_the_opening_sentence_alone, an_enqueue_before_the_hand_over, an_enqueue_long_after_the_hand_over]
 NOT_ENQUEUED += [another_kind_of_entry]
+
+
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+def test_a_wake_taken_in_the_second_of_its_hand_over_is_found_wherever_in_that_second_both_fell(session, environ, clock, capfdbinary, form):
+    clock.advance(20.6)
+    verdict = handed(environ, clock, form=form)
+    enqueue(session, queued(verdict, clock.now + 0.3))
+    clock.advance(60)
+    assert run(session, environ, capfdbinary) == b""
+    assert files(environ) == [] and f"verdict {T2} removed, Claude was woken with it" in log(environ)
 
 
 @pytest.mark.parametrize("entry", NOT_ENQUEUED)

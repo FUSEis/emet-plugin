@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -144,6 +146,15 @@ class Transcript:
 
     def hook_input(self) -> Dict[str, Any]:
         return {"session_id": self.session_id, "transcript_path": str(self.path), "cwd": "/work/acme-app", "hook_event_name": "Stop"}
+
+
+# The one form the plugin writes a time in: UTC, milliseconds, Z
+WRITTEN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
+
+
+def old_form(at: float) -> str:
+    """A time as 0.1.4 wrote it in its files, which stay on disk: local time, whole seconds, a numeric offset."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(at))
 
 
 class Clock:
