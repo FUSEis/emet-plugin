@@ -793,6 +793,12 @@ def test_a_fork_start_of_a_session_that_was_sent_before_skips_nothing(transcript
     assert sent(emet)[1:] == [second["uuid"]]
 
 
+def test_only_a_session_start_skips_what_a_forks_file_holds(forked, environ, emet, no_wait):
+    fork, turns = forked
+    commands.run_worker("stop", json.dumps(dict(fork.hook_input(), source="fork")).encode(), environ)
+    assert sent(emet) == [*turns, *turns]
+
+
 @pytest.mark.parametrize("found", ["missing", "empty"])
 def test_a_fork_whose_file_is_not_written_yet_at_its_start_is_sent_whole_as_before(forked, environ, emet, no_wait, found):
     fork, turns = forked

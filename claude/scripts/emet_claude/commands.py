@@ -272,7 +272,7 @@ def process(
         offset = end
         if forked is not None and "offset" not in state:
             # All of the file is the copy so far, but the fork's first prompt can already be in it
-            head, turns = [], [turn for turn in turns[-1:] if own_turn(turn, forked)]
+            turns = [turn for turn in turns[-1:] if own_turn(turn, forked)]
         # The last turn may still be running, or its prompt still waiting for an answer; read it again next time
         if turns and (not turn_ended or not transcript.answered(turns[-1])):
             offset = turns[-1][0][0]
