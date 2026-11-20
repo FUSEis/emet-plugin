@@ -54,7 +54,7 @@ After a turn ends, the plugin asks Emet for its report on that turn. When the re
 - Once for each report: the same report never makes Claude speak twice. Claude's extra message is sent to Emet like any turn, marked as started by the plugin, and its report is never read. So one message from Claude never leads to another.
 - Never about the plugin's own commands. The answer to `/emet:status` or `/emet:setup` is sent to Emet like any turn, and its report is never read, so Claude does not speak about it. Running one of them counts as your next turn: a report on the answer before it is recorded and does not interrupt you.
 - Only in a session with a person at it. Under `claude -p` or the SDK, and on a Claude Code older than 2.1.287, no report is read.
-- The plugin asks for 5 minutes after a turn ends. A report that was not ready by then is asked for again when a later turn of the session ends, for a day at most. It is then recorded only, since it is late.
+- The plugin asks for 5 minutes after a turn ends. A report that was not ready by then is asked for again when a later turn of the session ends, for a day at most. It then never interrupts you, since it is late: a flagged one comes with your next prompt.
 
 The extra message is a turn of your session. It uses your Claude plan like any other turn, and Claude Code shows it in the conversation. Claude Code 2.1.305 shows a line that reads "Stop hook feedback" above it.
 

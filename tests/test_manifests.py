@@ -278,7 +278,8 @@ def test_the_status_skill_puts_every_outcome_of_a_report_check_under_one_of_thre
     # A showing is recorded only for a report that was recorded as flagged
     assert {watch.FLAGGED, watch.SHOWN} == UNDER_FLAGGED
     shown = rows[watch.SHOWN][1]
-    assert "together with a later prompt of the session" in shown and "An earlier `flagged` entry holds the same `trace_uuid`." in shown
+    assert "together with a later prompt of the session" in shown
+    assert "It took the place of the `flagged` entry with the same `trace_uuid`, so the turn is listed once." in shown
     assert "That does not prove the user saw Claude's message." in shown
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     assert "**Flagged**, **Checked, not flagged**, **Not checked**" in text
@@ -1008,7 +1009,8 @@ def test_contributing_tells_a_maintainer_to_try_the_missed_verdict_and_an_unsupp
     # Every row of the table sits in the list item, or the table breaks in two
     rows = [line for line in live.splitlines() if line.lstrip().startswith("|")]
     assert len(rows) == 6 and all(line.startswith("   | ") for line in rows)
-    assert f"as `{watch.FLAGGED}` and not told to Claude, with the reason `{watch.NEWER_TURN}`, and as `{watch.SHOWN}`" in live
+    assert f"is under Flagged once, as `{watch.SHOWN}`" in live
+    assert f"The checks file keeps both lines, `{watch.FLAGGED}` with the reason `{watch.NEWER_TURN}` and `{watch.SHOWN}`." in live
     # The version the plugin needs is the oldest it supports, so an older one is tried only to see the plugin stay quiet
     assert "the oldest version the plugin supports" not in live
     assert "The plugin does not support one; this checks that it stays quiet there." in live
