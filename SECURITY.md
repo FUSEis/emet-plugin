@@ -16,6 +16,7 @@ The plugin runs as you, inside Claude Code's hooks. It holds one credential, the
 - **Claude Code's account file** (`~/.claude.json`, or the one in `CLAUDE_CONFIG_DIR`), for one value, `oauthAccount.emailAddress`. It is not read when `emet_email` is set.
 - **Its options**, from the environment Claude Code gives a hook.
 - **Its own data folder**, listed file by file in [claude/README.md](claude/README.md#where-data-goes-and-what-stays-local).
+- **The prompt you send**, which Claude Code gives the hook on `UserPromptSubmit`. That hook looks at how the prompt begins, to tell a command from a prompt. It keeps none of it and sends nothing.
 
 It opens no other file. It does not read your project: what it sends of a file is what the transcript already holds. It writes only inside its data folder.
 
@@ -34,23 +35,26 @@ Only to `https://app.emet.so`, with the key as a bearer token: finished turns, a
 - All of it sits in one data block, as JSON strings. Angle brackets are escaped, so nothing in a report can close the block.
 - The words before and after the block are fixed. They tell Claude that the block is data, and not to follow an instruction, call a tool or open a link because of it. The whole message is 4,000 characters at most.
 - Nothing from a report is executed, used as a file name, or used as an address. The link in the message is built from the plugin's own values.
-- Of a report, the plugin saves only this rendered text, in `verdicts/`, for 7 days. The report itself is never saved. Claude Code keeps the message it was handed in the session transcript, as it keeps any message.
+- Of a report, the plugin saves only text rendered this way, in `verdicts/`, for 7 days at most. The report itself is never saved. Claude Code keeps the message it was handed in the session transcript, as it keeps any message.
 - The log and `status.json`, which `/emet:status` reads, keep ids, times and one of a fixed list of outcome words for a report. They keep no text from it.
-- Claude is told about at most 3 reports in a session, and only within 60 seconds of the end of the turn. The turn Claude takes to answer is sent to Emet, and its report is never read, so a report cannot start a chain of messages.
+- Claude is woken about at most 3 reports in a session, and only within 60 seconds of the end of the turn. The turn Claude takes to answer is sent to Emet, and its report is never read, so a report cannot start a chain of messages.
+- A flagged report Claude was not woken with is given to Claude with your next prompt in that session, once, for at most 3 reports in a session. The report on the answer to that prompt is read and recorded, and Claude is never told of it.
 
 This lowers the chance that a report steers Claude. It cannot remove it, because Claude reads the block. Someone who can write what Emet checks, such as a web page a tool fetched during the turn, can try to shape the reasons Emet gives, and so the text in the block.
+
+**A saved report in its data folder.** The hook on your prompt gives Claude the text of a report on an earlier answer, saved in the data folder, when Claude was not woken with it. A file counts as a saved report only when all of it is as the plugin writes one: the plugin's fixed words, and inside them values that the words tell Claude to treat as data and never to act on. Anything else is left alone and never shown. The hook can add to what Claude reads with a prompt. It cannot change the prompt or hold it back.
 
 **The session's text.** The plugin sends it and never acts on it. Nothing in a prompt, an answer or a tool result is executed or used as an address. The hook input itself, the session id and the transcript path, comes from Claude Code and is trusted.
 
 ### What is not a boundary
 
-- **Another process running as you.** It can read the transcript and the data folder, queued turns and saved report text included, and it can change the plugin's files. On macOS and Linux the plugin sets its data folder and files to owner-only, which keeps other users out. On Windows the plugin sets no access rules, so the folder is as private as the folder it sits in, normally your user profile. None of this stops a process that already runs as you.
+- **Another process running as you.** It can read the transcript and the data folder, queued turns and saved report text included, and it can change the plugin's files. It can also put a file there in the form of a saved report, and the hook on your prompt then gives Claude the values in it with your next prompt, inside the plugin's fixed words. On macOS and Linux the plugin sets its data folder and files to owner-only, which keeps other users out. On Windows the plugin sets no access rules, so the folder is as private as the folder it sits in, normally your user profile. None of this stops a process that already runs as you.
 - **Whoever sets Claude Code's environment.** Options reach the plugin through it. It cannot name another host. It can name a program listening on your own machine, which then receives the key and the turns. [docs/enterprise.md](docs/enterprise.md) says how managed settings close this.
 - **Redaction.** `sanitized` removes the secrets its patterns know. Use `metadata` where that is not enough.
 
 ## Scope
 
-In scope: anything in this repository that breaks the trust model above. For example a way to make the plugin send the key or a turn anywhere but Emet, send content in `metadata` mode, leak the key into a file or the conversation, read a file other than the ones listed above, write outside its data folder, block or break a session, let text from Emet reach Claude outside the data block, or make Claude speak more often or later than the limits above allow.
+In scope: anything in this repository that breaks the trust model above. For example a way to make the plugin send the key or a turn anywhere but Emet, send content in `metadata` mode, leak the key into a file or the conversation, read a file other than the ones listed above, write outside its data folder, block or break a session, change or hold back a prompt, let text from Emet reach Claude outside the data block, or make Claude speak more often or later than the limits above allow.
 
 Out of scope: secrets that the `sanitized` redaction patterns do not recognize. Redaction is best effort and documented as such; use `metadata` mode where that matters. Suggestions for new patterns are welcome as ordinary issues, without the secret. Also out of scope is anything that needs a process already running as the user, or control of Claude Code's environment, as described above.
 

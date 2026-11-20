@@ -36,6 +36,22 @@ def test_changelog_has_the_current_version():
     assert f"## [{VERSION}]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
+def test_the_readme_requires_the_claude_code_the_report_check_needs():
+    from emet_claude import watch
+
+    needed = ".".join(map(str, watch.MIN_CLAUDE_CODE))
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+    assert f"Requirements: Claude Code {needed} or later" in readme
+    assert f"older than {needed}" in watch.__doc__
+    # Both ways to install name it, and the agent is told to check it before installing
+    install = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"needs Claude Code {needed} or later" in install
+    assert f"If it is older than {needed}, stop" in install
+    assert f"In Claude Code, version {needed} or later:" in install
+    # No other Claude Code version is named as a requirement
+    assert re.findall(r"Claude Code ([0-9.]+[0-9]) or later", readme) == [needed]
+
+
 def test_marketplace_points_at_the_plugin():
     marketplace = load(ROOT / ".claude-plugin" / "marketplace.json")
     (entry,) = marketplace["plugins"]
@@ -59,11 +75,11 @@ def shipped_hooks():
 
 
 def test_every_hook_runs_a_known_mode_of_the_shipped_script():
-    from emet_claude.commands import HOOK_MODES, WATCH_MODE
+    from emet_claude import missed, watch
+    from emet_claude.commands import HOOK_MODES, PROMPT_MODE, WATCH_MODE
 
     hooks = shipped_hooks()
-    assert {event for event, _, _ in hooks} == {"SessionStart", "Stop", "SubagentStop", "SessionEnd"}
-    # Each event starts the sender in the mode named after it, and Stop also starts the report check
+    # Each event starts the sender in the mode named after it. Stop also starts the report check, and only the user's prompt the prompt hook
     assert sorted((event, mode) for event, mode, _ in hooks) == sorted(
         [
             ("SessionStart", "session-start"),
@@ -71,14 +87,26 @@ def test_every_hook_runs_a_known_mode_of_the_shipped_script():
             ("SubagentStop", "subagent-stop"),
             ("SessionEnd", "session-end"),
             ("Stop", WATCH_MODE),
+            (missed.EVENT, PROMPT_MODE),
         ]
     )
-    assert WATCH_MODE not in HOOK_MODES
+    assert WATCH_MODE not in HOOK_MODES and PROMPT_MODE not in HOOK_MODES and WATCH_MODE != PROMPT_MODE
     for _, mode, hook in hooks:
         assert hook["type"] == "command"
-        if mode in HOOK_MODES:
+        if mode == WATCH_MODE:
+            # In the background, with both flags and the time the poller needs
+            assert set(hook) == {"type", "command", "async", "asyncRewake", "timeout"}, mode
+            assert hook["async"] is True and hook["asyncRewake"] is True and hook["timeout"] == watch.HOOK_TIMEOUT_S
+        elif mode == PROMPT_MODE:
+            # In the foreground, with a short limit
+            assert set(hook) == {"type", "command", "timeout"} and hook["timeout"] == PROMPT_TIMEOUT_S, mode
+        else:
             # The sender returns at once, in the foreground
-            assert set(hook) == {"type", "command", "timeout"} and hook["timeout"] == 10, mode
+            assert mode in HOOK_MODES and set(hook) == {"type", "command", "timeout"} and hook["timeout"] == 10, mode
+
+
+# The seconds a session waits for the prompt hook at most. The documents name the number
+PROMPT_TIMEOUT_S = 5
 
 
 def test_the_report_check_runs_only_at_stop_in_the_background_with_the_time_the_poller_needs():
@@ -91,6 +119,14 @@ def test_the_report_check_runs_only_at_stop_in_the_background_with_the_time_the_
     assert hook["async"] is True and hook["asyncRewake"] is True
     assert hook["timeout"] == watch.HOOK_TIMEOUT_S > watch.HARD_STOP_S
     assert set(hook) == {"type", "command", "async", "asyncRewake", "timeout"}
+
+
+def test_the_prompt_hook_runs_in_the_foreground_with_a_short_limit_and_cannot_be_made_to_block():
+    (group,) = load(PLUGIN / "hooks" / "hooks.json")["hooks"]["UserPromptSubmit"]
+    (hook,) = group["hooks"]
+    # No matcher, no "async" (its output would come too late for the prompt) and no "onFailure" (a failure must never block)
+    assert set(group) == {"hooks"} and set(hook) == {"type", "command", "timeout"}
+    assert hook["type"] == "command" and hook["timeout"] == PROMPT_TIMEOUT_S
 
 
 def test_capture_mode_choices_match_the_code():
@@ -224,6 +260,8 @@ def check_rows():
 
 # The only outcomes of a report check that the status skill may show as a turn Emet checked and did not flag
 CHECKED_NOT_FLAGGED = {"clear", "clarified"}
+# The only outcomes it lists as flagged: the report check's own word, and the showing of such a report with a later prompt
+UNDER_FLAGGED = {"flagged", "shown"}
 
 
 def test_the_status_skill_puts_every_outcome_of_a_report_check_under_one_of_three_headings():
@@ -234,8 +272,13 @@ def test_the_status_skill_puts_every_outcome_of_a_report_check_under_one_of_thre
     assert set(report.STATUS_WORDS) > CHECKED_NOT_FLAGGED, "only a report Emet finished can count as checked"
     for word, (heading, _) in rows.items():
         # Anything not named above is not checked: a held, failed, late or unread report must never look clean
-        expected = "Flagged" if word == watch.FLAGGED else "Checked, not flagged" if word in CHECKED_NOT_FLAGGED else "Not checked"
+        expected = "Flagged" if word in UNDER_FLAGGED else "Checked, not flagged" if word in CHECKED_NOT_FLAGGED else "Not checked"
         assert heading == expected, word
+    # A showing is recorded only for a report that was recorded as flagged
+    assert {watch.FLAGGED, watch.SHOWN} == UNDER_FLAGGED
+    shown = rows[watch.SHOWN][1]
+    assert "together with a later prompt of the session" in shown and "An earlier `flagged` entry holds the same `trace_uuid`." in shown
+    assert "That does not prove the user saw Claude's message." in shown
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     assert "**Flagged**, **Checked, not flagged**, **Not checked**" in text
     assert "not in the table, or with none, goes under **Not checked**" in text
@@ -265,14 +308,19 @@ def test_the_status_skill_says_once_what_the_check_cannot_do_and_shows_no_text_o
     # The backstop for a report Claude was not woken for
     assert "List every flagged entry, also one Claude already told the user about." in text
     held = check_rows()[watch.FLAGGED][1]
-    for reason in (watch.CAPPED, watch.NEWER_TURN, watch.LATE):
+    for reason in (watch.SHOWN_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE):
         assert f"`{reason}`" in held, reason
+    assert f"`{watch.SHOWN_TURN}` (the turn's own prompt carried the notice about an earlier report" in held
+    assert f"Unless `held` is `{watch.SHOWN_TURN}`, the plugin gives the notice to Claude with a later prompt of that session" in held
+    from emet_claude import missed
+
+    assert f"is given to Claude with the user's next prompt, for at most {missed.SHOW_CAP} reports in a session" in text
     assert f"already had {watch.WAKE_CAP} notices" in held and f"more than {watch.LATE_S} seconds after the turn ended" in held
     assert f"holds the last {NUMBER_WORDS[watch.RECENT_CHECKS]} outcomes, newest first" in text
     assert "Do not print the contents of the `verdicts` folder" in text
 
 
-NUMBER_WORDS = {3: "three", 5: "five", 7: "seven"}
+NUMBER_WORDS = {3: "three", 5: "five", 6: "six", 7: "seven"}
 
 
 def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no_label_of_emets():
@@ -295,11 +343,9 @@ def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no
         assert not [label for label in labels if label in meaning], word
 
 
-def watch_log_lines():
-    """Returns each log line watch.py can write, as a pattern: its fixed words, with any text where a value goes."""
-    from emet_claude import watch
-
-    tree = ast.parse(Path(watch.__file__).read_text(encoding="utf-8"))
+def log_lines(module):
+    """Returns each log line the module can write, as a pattern: its fixed words, with any text where a value goes."""
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
 
     def patterns(node, scope):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -337,12 +383,16 @@ def watch_log_lines():
     return sorted(set(lines))
 
 
-def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_can_write():
+def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_and_the_prompt_hook_can_write():
+    from emet_claude import missed, watch
+
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     table = text.partition("| Log shows | Meaning | Fix |\n| --- | --- | --- |\n")[2].partition("\n\n")[0]
     shown = [span for row in table.splitlines() for span in re.findall(r"`([^`]+)`", row.split(" | ")[0])]
-    lines = watch_log_lines()
-    assert len(lines) >= 20, "every storage.log call of watch.py is read, the two forms of an outcome line included"
+    assert len(log_lines(watch)) == 23, "every storage.log call of watch.py is read, the two forms of each outcome line included"
+    assert len(log_lines(missed)) == 7, "every storage.log call of missed.py is read"
+    # A line the two modules share needs one row
+    lines = sorted(set(log_lines(watch) + log_lines(missed)))
     # The most exact line first, so a line with a value in it cannot take the row of one that is all fixed words
     for line in sorted(lines, key=lambda pattern: (-len(pattern.replace(".+", "")), pattern)):
         matching = [span for span in shown if re.fullmatch(line, span)]
@@ -350,12 +400,35 @@ def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_can_writ
         shown.remove(matching[0])
     assert "A line that matches no row of the table is shown as it is" in text
     # One pattern covers the line of every turn that is never polled, so each is held by name
-    from emet_claude import watch
-
     for started in watch.NEVER_POLLED.values():
         assert f"| `turn <id> {started}, not polled` |" in table, started
         assert f"`turn <id> {started}, not polled, not recorded ...`" in table, started
     assert "Quote the log line as it is written, in backticks, before you explain it." in text
+    # The same for the reasons a saved verdict is removed unshown, and for the words that say why a file is no verdict
+    source = Path(missed.__file__).read_text(encoding="utf-8")
+    for why in ("Claude was woken with it", "the conversation was compacted since", f"the session already had {missed.SHOW_CAP} showings"):
+        assert f"`verdict <id> removed, {why}`" in table, why
+        assert f'"{why}"'.replace(str(missed.SHOW_CAP), "{SHOW_CAP}") in source, why
+    assert source.count("remove(root, verdict, ") == 3
+    (unread,) = [row for row in table.splitlines() if row.startswith("| `verdict not shown, <word>` |")]
+    problems = (
+        watch.BAD_NAME,
+        watch.A_LINK,
+        watch.TOO_LONG,
+        watch.NOT_READ,
+        watch.BAD_VERSION,
+        watch.OTHER_WORDING,
+        watch.BAD_SHAPE,
+        watch.OTHER_NAME,
+        watch.BAD_TEXT,
+        watch.BAD_AGE,
+    )
+    assert f"The word names why: {', '.join(f'`{word}`' for word in problems)}, or `error` with the name of an error's type" in unread
+    assert f"`verdict <id> {watch.SHOWN} with a prompt, not recorded ...`" in table
+    assert f"or once it is {watch.VERDICT_DAYS} days old" in table
+    (held,) = [row for row in table.splitlines() if row.startswith("| `report <id> not handed to Claude, ...` |")]
+    for reason in (watch.SHOWN_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE):
+        assert f"(`{reason}`)" in held, reason
 
 
 def test_the_skills_name_the_claude_code_the_report_check_needs():
@@ -588,9 +661,25 @@ def test_the_readme_lists_the_files_an_installed_plugin_keeps_and_no_others():
         assert f"`{name}`" in kept, name
     (verdicts,) = [line for line in kept.splitlines() if line.startswith("| `verdicts/*.json` |")]
     assert f"{report.TOTAL_LIMIT:,} characters at most" in verdicts and "The report itself is never saved." in verdicts
-    assert f"| {watch.VERDICT_DAYS} days. A file older than that is removed" in verdicts
-    # No shipped code hands a saved verdict to Claude
-    assert "The plugin does not read the text back or show it again." in verdicts
+    assert f"{watch.VERDICT_DAYS} days at most: a file older than that is removed" in verdicts
+    # The prompt hook hands a saved verdict to Claude, and removes the file
+    from emet_claude import missed
+    from emet_claude.commands import PROMPT_MODE
+
+    assert PROMPT_MODE in shipped_hook_modes()
+    assert "The plugin does not read the text back" not in kept
+    assert "The plugin reads the text back for one use: to give it to Claude with a later prompt" in verdicts
+    assert (
+        "| A later prompt of that session, at which the file is removed when the session shows Claude was woken with the report, "
+        "when the text is given to Claude with that prompt, "
+        f"when the session already had {missed.SHOW_CAP} reports given that way, or when the conversation was compacted since."
+    ) in verdicts
+    (checks,) = [line for line in kept.splitlines() if line.startswith("| `state/<session>.checks.jsonl` |")]
+    assert f"Also a line with the word `{watch.SHOWN}` when a flagged report was given to Claude with a later prompt" in checks
+    assert "the version of the file's own format" in verdicts
+    for name in ("state/<session>.json", "state/<session>.stop.json"):
+        (row,) = [line for line in kept.splitlines() if line.startswith(f"| `{name}` |")]
+        assert "the version of the file's own format" in row, name
     (status,) = [line for line in kept.splitlines() if line.startswith("| `status.json` |")]
     assert f"the last {NUMBER_WORDS[watch.RECENT_CHECKS]} outcomes of the report check" in status and "the two pause times" in status
     assert (
@@ -627,7 +716,7 @@ def test_the_security_policy_covers_what_an_installed_plugin_does():
         f"A report over {watch.REPORT_MAX_BYTES // 1024**2} MB, of a version the plugin does not know, or with a status it does not know",
         "All of it sits in one data block, as JSON strings. Angle brackets are escaped",
         f"The whole message is {report.TOTAL_LIMIT:,} characters at most.",
-        f"in `{watch.verdict_folder(Path('data')).name}/`, for {watch.VERDICT_DAYS} days. The report itself is never saved.",
+        f"in `{watch.verdict_folder(Path('data')).name}/`, for {watch.VERDICT_DAYS} days at most. The report itself is never saved.",
         f"at most {watch.WAKE_CAP} reports in a session, and only within {watch.LATE_S} seconds of the end of the turn",
         "It cannot remove it, because Claude reads the block.",
     ):
@@ -653,7 +742,8 @@ def test_the_readme_says_when_claude_speaks_about_a_report_and_that_no_setting_t
         f"The first read comes about {watch.FIRST_S} seconds after the turn ends.",
         f"At most {watch.WAKE_CAP} times in one session.",
         "its report is never read",
-        f"Only in a session with a person at it, on Claude Code {needed} or later.",
+        "Only in a session with a person at it.",
+        f"Under `claude -p` or the SDK, and on a Claude Code older than {needed}, no report is read.",
         f"The plugin asks for {watch.BUDGET_S // 60} minutes after a turn ends.",
         "for a day at most" if watch.MAX_AGE_S == 24 * 3600 else "",
         "can miss things or be wrong",
@@ -664,7 +754,9 @@ def test_the_readme_says_when_claude_speaks_about_a_report_and_that_no_setting_t
         assert said and said in told, said
     # No option of the plugin turns the report check off, so the README must not name one
     assert set(load(PLUGIN / ".claude-plugin" / "plugin.json")["userConfig"]) == {"emet_key", "tenant_ref", "emet_email", "capture_mode"}
-    assert f"only on Claude Code {needed} or later" in readme
+    # The minimum is stated once, with the requirements, and the check runs there
+    assert f"Why {needed}: the plugin's check of Emet's report runs as a background hook that can wake Claude." in readme
+    assert "Claude tells you about a disputed claim only on" not in readme
     works = section("claude/README.md", "## How it works")
     waits = ", ".join(str(step) for step in watch.STEPS_S[:-1]) + f" and {watch.STEPS_S[-1]} seconds"
     assert f"then after waits of {waits}, each up to a tenth longer" in works and watch.EXTRA == 0.1
@@ -713,6 +805,65 @@ def test_contributing_tells_a_maintainer_to_try_the_shipped_hook_and_not_to_add_
     assert f"ends itself after {watch.HARD_STOP_S} seconds, below the {watch.HOOK_TIMEOUT_S} its hook is given" in guide
 
 
+def test_the_documents_say_what_the_prompt_hook_gives_claude_now_that_a_hook_saves_a_verdict():
+    from emet_claude import missed, watch
+    from emet_claude.commands import PROMPT_MODE
+
+    # The report check saves a verdict, and the prompt hook shows it
+    assert {WATCH_MODE, PROMPT_MODE} <= shipped_hook_modes()
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+    works = section("claude/README.md", "## How it works")
+    assert f"The plugin registers {NUMBER_WORDS[len(shipped_hooks())]} hooks." in works and f"`{missed.EVENT}`" in works
+    assert f"for {PROMPT_TIMEOUT_S} seconds at most" in works and "it cannot change or hold back a prompt" in works
+    assert "that Claude was not woken with, and gives it to Claude with your prompt" in works
+    told = section("claude/README.md", "## When Emet disputes a claim")
+    assert "**A report Claude did not speak about.**" in told
+    assert f'shows one line under your prompt, "{missed.USER_LINE}"' in told
+    assert "Once for each report, one report with a prompt, the newest first." in told
+    assert f"At most {missed.SHOW_CAP} times in one session, counted apart from the {watch.WAKE_CAP} messages above." in told
+    assert "Never with a slash command" in told and "makes no request, and cannot change or hold back your prompt" in told
+    assert "Claude is never told of it, because that answer quotes the disputed claims" in told
+    policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    assert "The hook on your prompt gives Claude the text of a report on an earlier answer" in policy
+    assert f"with your next prompt in that session, once, for at most {missed.SHOW_CAP} reports in a session" in policy
+    assert "It cannot change the prompt or hold it back." in policy
+    assert "change or hold back a prompt, let text from Emet reach Claude outside the data block" in policy
+    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    # Nothing says any more that the hook finds nothing
+    for name, text in (("claude/README.md", readme), ("SECURITY.md", policy), ("CONTRIBUTING.md", guide)):
+        for gone in ("No hook of this version", "No hook starts", "no hook starts", "is made to run"):
+            assert gone not in text, (name, gone)
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert not [line for line in changelog_check().unreleased(changelog) if "o hook starts" in line or "No hook of this version" in line]
+    setup = (PLUGIN / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
+    assert f"is given to Claude with the user's next prompt, at most {missed.SHOW_CAP} times in a session" in setup
+    assert "with the next prompt" in load(PLUGIN / "hooks" / "hooks.json")["description"]
+
+
+def test_contributing_tells_a_maintainer_to_try_the_missed_verdict_and_an_unsupported_claude_code():
+    from emet_claude import missed, watch
+
+    live = section("CONTRIBUTING.md", "## Live check")
+    assert "Run these four prompts in one session" in live and f"the `{missed.EVENT}` hook shows a missed verdict" in live
+    assert "you typed `What is 2 + 2?` before the report was back, so the report arrives with this prompt, once" in live
+    assert f"`{missed.EVENT} says: {missed.USER_LINE}`" in live
+    assert f'`"held": "{watch.SHOWN_TURN}"`' in live and f"gets `{watch.SHOWN}` for the flagged turn" in live
+    # Every row of the table sits in the list item, or the table breaks in two
+    rows = [line for line in live.splitlines() if line.lstrip().startswith("|")]
+    assert len(rows) == 6 and all(line.startswith("   | ") for line in rows)
+    assert f"as `{watch.FLAGGED}` and not told to Claude, with the reason `{watch.NEWER_TURN}`, and as `{watch.SHOWN}`" in live
+    # The version the plugin needs is the oldest it supports, so an older one is tried only to see the plugin stay quiet
+    assert "the oldest version the plugin supports" not in live
+    assert "The plugin does not support one; this checks that it stays quiet there." in live
+    old = re.search(r"CLAUDE_CODE_VERSION=([0-9.]+)", live)
+    assert old is not None and tuple(int(part) for part in old.group(1).split(".")) < watch.MIN_CLAUDE_CODE
+
+
+def test_the_status_skill_explains_the_log_line_of_a_prompt_hook_that_failed():
+    assert "| `prompt hook error ...` |" in (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
+    assert 'f"prompt hook error {type(error).__name__}"' in (PLUGIN / "scripts" / "emet_claude" / "missed.py").read_text(encoding="utf-8")
+
+
 def test_contributing_names_only_tests_that_exist():
     guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     named = set(re.findall(r"`(test_[a-z0-9_]+)`", guide))
@@ -744,3 +895,10 @@ def test_contributing_lists_every_file_the_plugin_keeps_with_the_module_that_own
         (row,) = [line for line in owners.splitlines() if line.startswith("|") and f"`{name}`" in line]
         assert f"`{owner}`" in row.split("|")[-2], name
         assert (ROOT / "claude" / "scripts" / "emet_claude" / owner).is_file()
+
+
+def test_the_status_skill_explains_the_log_line_of_a_session_left_alone_over_its_state_file():
+    line = "session not sent, its state file is of a version this plugin does not know"
+    assert f"`{line}`" in (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
+    assert f'"{line}"' in (PLUGIN / "scripts" / "emet_claude" / "commands.py").read_text(encoding="utf-8")
+    assert f"`{line}`" in section("CONTRIBUTING.md", "## Files the plugin keeps")
