@@ -96,12 +96,23 @@ def traits(case: Case) -> Set[str]:
         found.add("unseen")
     if "followup" in case:
         found.add("followup")
+    # What the tool output shows about each disputed claim decides how a ruling is graded
+    for trait, words in (("contradicted", ("contradicts",)), ("supported", ("supports",)), ("unsettled", ("none",))):
+        if shown(case, *words):
+            found.add(trait)
+    if shown(case, "contradicts", "supports"):
+        found.add("settled")
     return found
 
 
 def disputed(case: Case, made: bool = False) -> List[Dict[str, Any]]:
     """Returns the claims Emet disputed, or only those the assistant's answer holds."""
     return [item for item in case["claims"] if item["verdict"] == "disputed" and (not made or item.get("stated_in"))]
+
+
+def shown(case: Case, *words: str) -> List[Dict[str, Any]]:
+    """Returns the disputed claims of the answer whose "shows" is one of the words: contradicts, supports or none."""
+    return [item for item in disputed(case, made=True) if item["shows"] in words]
 
 
 def document(case: Case) -> Dict[str, Any]:
