@@ -213,6 +213,14 @@ def answered(turn: List[Tuple[int, Entry]]) -> bool:
     return any(entry.get("type") == "assistant" for _, entry in turn)
 
 
+def copied(items: List[Tuple[int, Entry]]) -> bool:
+    """Says whether every entry is one a fork copied from another session: each carries forkedFrom, as Claude Code 2.1.305 writes it.
+
+    One entry without it makes the entries the session's own. The field is not documented.
+    """
+    return bool(items) and all(isinstance(entry.get("forkedFrom"), dict) for _, entry in items)
+
+
 def session_folder(transcript: Path) -> Path:
     """Claude Code keeps saved tool outputs and subagent transcripts beside the session file, in a folder named after it."""
     return transcript.with_suffix("")

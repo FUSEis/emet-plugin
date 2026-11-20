@@ -3118,7 +3118,7 @@ def test_a_fork_is_told_nothing_about_the_turns_it_copied_and_its_own_turn_is_ch
     # An Emet that takes a turn sent again for a new one, and flags whatever it is asked about
     emet.trace_uuids.clear()
     emet.read_replies = [(200, "application/json", json.dumps(document()).encode())] * 8
-    commands.process(fork.hook_input(), environ, wait=0, turn_ended=False, forked=clock.now)
+    commands.process(fork.hook_input(), environ, wait=0, turn_ended=False)
 
     def with_the_prompt(prompt_id):
         asked = {**fork.hook_input(), "hook_event_name": "UserPromptSubmit", "prompt": "And April?", "prompt_id": prompt_id}
