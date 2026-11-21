@@ -162,19 +162,22 @@ class ReplayClient:
             graded = json.loads(request["messages"][0]["content"])["reply_to_grade"]
             verdict = {"critique": "Replayed from the hand label.", "verdict": self.labels.get(graded, "pass")}
             return message([{"type": "text", "text": json.dumps(verdict)}])
-        scripted, steps = self.by_request[request["messages"][0]["content"]]
+        first = request["messages"][0]["content"]
+        scripted, steps = self.by_request[first if isinstance(first, str) else first[0]["text"]]
         taken = sum(1 for item in request["messages"] if item["role"] == "assistant")
         step = steps[taken - scripted]
         return message([{"type": "text", "text": step}] if isinstance(step, str) else step)
 
 
 def opening(case: Dict[str, Any]) -> str:
-    """Returns the first user message of the case's conversation."""
-    first: str = (case.get("earlier") or [case])[0]["request"]
+    """Returns the first text the model reads in the case's conversation."""
+    first: str = case["compacted"] if "compacted" in case else (case.get("earlier") or [case])[0]["request"]
     return first
 
 
 def scripted_turns(case: Dict[str, Any]) -> int:
+    if "compacted" in case:
+        return 0
     return SCRIPTED_ASSISTANT_TURNS + EARLIER_WAKE_TURNS * len(case.get("earlier", []))
 
 
