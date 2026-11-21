@@ -48,8 +48,9 @@ def lines(root: Path, session_id: str) -> List[Dict[str, Any]]:
     if not SESSION_ID.fullmatch(session_id):
         return []
     try:
-        # No link is followed, and a pipe in the file's place cannot make the read wait: one with nothing in it reads as None
-        with os.fdopen(os.open(str(path(root, session_id)), storage.READ_FLAGS), "rb") as handle:
+        # No link is followed, and a pipe in the file's place cannot make the read wait: one with nothing in it reads as None.
+        # An opener, so that a folder in the file's place leaves no descriptor open
+        with open(path(root, session_id), "rb", opener=lambda name, _: os.open(name, storage.READ_FLAGS)) as handle:
             text = (handle.read() or b"").decode("utf-8")
     except (OSError, ValueError):
         return []
@@ -85,12 +86,13 @@ def append(root: Path, session_id: str, item: Dict[str, Union[str, int]], once: 
         with storage.locked(root / "state" / f"{session_id}.pending.lock"):
             if once and once in traces(root, session_id):
                 return
-            # Windows has no flag that refuses a link at the open, so this look is the guard there
-            if not storage.NOFOLLOW and target.is_symlink():
-                raise OSError("a link")
+            # A link in the file's place is removed, never written through. The flags below close the gap after this look
+            if target.is_symlink():
+                target.unlink()
+                storage.log(root, "pending file was a link, removed")
             written = b""
             if target.exists():
-                with os.fdopen(os.open(str(target), storage.READ_FLAGS), "rb") as handle:
+                with open(target, "rb", opener=lambda name, _: os.open(name, storage.READ_FLAGS)) as handle:
                     written = handle.read()
             # A write cut short by a crash leaves no newline, which would swallow this line too
             start = "" if not written or written.endswith(b"\n") else "\n"

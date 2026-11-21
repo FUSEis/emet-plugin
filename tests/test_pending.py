@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from emet_claude import commands, envelope, pending, report, storage, timestamps, transport, watch
-from helpers import WAKE_WRAPPER, Transcript
+from helpers import WAKE_WRAPPER, Transcript, links, pipes
 from test_report import document
 
 TRACE = "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
@@ -544,34 +544,47 @@ def test_the_mark_of_a_command_turn_is_kept_when_another_session_delivers_it_fro
     assert "own_command" not in json.dumps(emet.envelopes)
 
 
-links = pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
-pipes = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the platform has no named pipes")
+def log(environ):
+    return (root(environ) / "emet.log").read_text(encoding="utf-8")
 
 
 @links
 @pytest.mark.parametrize("exists", [True, False])
-@pytest.mark.parametrize("has_flag", [True, False])
-def test_a_link_at_the_pending_file_is_not_written_through(tmp_path, environ, monkeypatch, exists, has_flag):
-    if not has_flag:
-        # As on Windows, where no flag refuses a link
-        monkeypatch.setattr(storage, "READ_FLAGS", storage.READ_FLAGS & ~storage.NOFOLLOW)
-        monkeypatch.setattr(storage, "NOFOLLOW", 0)
+def test_a_link_at_the_pending_file_is_removed_and_the_line_is_written_to_a_new_file(tmp_path, environ, link_flag, exists):
     outside = tmp_path / "outside.jsonl"
     if exists:
         outside.write_text("untouched", encoding="utf-8")
-    pending.path(root(environ), "session-1").symlink_to(outside)
+    path = pending.path(root(environ), "session-1")
+    path.symlink_to(outside)
     pending.note(root(environ), "session-1", TRACE, "")
     assert outside.read_text(encoding="utf-8") == "untouched" if exists else not outside.exists()
-    log = (root(environ) / "emet.log").read_text(encoding="utf-8")
-    assert "pending not written: OSError" in log and TRACE not in log
+    assert not path.is_symlink() and path.is_file()
+    assert kept(environ) == [TRACE]
+    assert log(environ).count("pending file was a link, removed") == 1 and TRACE not in log(environ)
+    pending.refuse(root(environ), "session-1", "turn-a", 400, "")
+    assert log(environ).count("pending file was a link, removed") == 1 and len(pending.lines(root(environ), "session-1")) == 2
 
 
 @links
-def test_a_link_at_the_pending_file_is_not_read(tmp_path, environ):
+def test_a_link_put_at_the_pending_file_after_the_look_is_refused_by_the_open(tmp_path, environ, monkeypatch):
+    outside = tmp_path / "outside.jsonl"
+    path = pending.path(root(environ), "session-1")
+    path.symlink_to(outside)
+    # The look sees no link, as when one is planted between the look and the open
+    monkeypatch.setattr(type(path), "is_symlink", lambda self: False)
+    pending.note(root(environ), "session-1", TRACE, "")
+    assert not outside.exists()
+    assert "pending not written: OSError" in log(environ) and TRACE not in log(environ)
+
+
+@links
+def test_a_link_at_the_pending_file_is_not_read_and_reading_leaves_it(tmp_path, environ):
     outside = tmp_path / "outside.jsonl"
     outside.write_text(json.dumps({"trace_uuid": TRACE, "at": "t"}) + "\n", encoding="utf-8")
-    pending.path(root(environ), "session-1").symlink_to(outside)
+    path = pending.path(root(environ), "session-1")
+    path.symlink_to(outside)
     assert pending.lines(root(environ), "session-1") == []
+    assert path.is_symlink()
 
 
 @pipes
@@ -598,4 +611,23 @@ def test_a_pipe_at_the_pending_file_is_not_written_and_nothing_waits(environ):
     waiter.start()
     waiter.join(5)
     assert not waiter.is_alive()
-    assert "pending not written: OSError" in (root(environ) / "emet.log").read_text(encoding="utf-8")
+    assert "pending not written: OSError" in log(environ)
+
+
+def test_a_folder_at_the_pending_file_leaves_no_descriptor_open(environ, monkeypatch):
+    pending.path(root(environ), "session-1").mkdir()
+    opened = []
+    real = os.open
+
+    def recorded(*args, **kwargs):
+        opened.append(real(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(os, "open", recorded)
+    assert pending.lines(root(environ), "session-1") == []
+    pending.refuse(root(environ), "session-1", "turn-a", 400, "")
+    monkeypatch.undo()
+    assert "pending not written" in log(environ)
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
