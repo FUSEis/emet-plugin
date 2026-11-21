@@ -822,7 +822,7 @@ def test_a_copied_turn_of_helper_entries_alone_is_a_copy_and_one_of_the_forks_ow
     assert not tr.copied([helper(**mark), answer]) and not tr.copied([helper(**mark), result])
     assert tr.copied([helper(), (1, {**answer[1], **mark})])
     # Only a user entry is a helper entry
-    assert not tr.copied([helper(**mark), (1, {**answer[1], "isMeta": True})])
+    assert not tr.copied([(1, {**answer[1], **mark}), (2, {**answer[1], "isMeta": True})])
 
 
 def test_the_log_counts_each_copied_turn_once(transcript, original, environ, emet, no_wait):
