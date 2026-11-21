@@ -21,6 +21,8 @@ from .spans import Builder, Capture
 FLUSH_WAIT_S = 1.0
 # Subagent transcripts followed per session, newest kept
 MAX_TRACKED_AGENTS = 200
+# Ids of the turns last sent, kept per session, newest last
+MAX_SENT_TURNS = 100
 HOOK_MODES = ("session-start", "stop", "subagent-stop", "session-end")
 # The mode of the background Stop hook that reads reports. It starts no worker
 WATCH_MODE = "watch"
@@ -204,16 +206,38 @@ def track(state: Dict[str, Any], trace_id: str, built: Any) -> None:
         agents.pop(next(iter(agents)))
 
 
+def sent_turns(state: Mapping[str, Any]) -> List[str]:
+    """Returns Claude Code's ids of the turns this session's workers sent last, oldest first. The state file is not proof of its shape."""
+    saved = state.get("sent_turns")
+    return [item for item in saved if pending.plain(item)] if isinstance(saved, list) else []
+
+
+def started_later(turns: Sequence[Sequence[Tuple[int, transcript.Entry]]], ended_turn: Any, sent: Collection[str]) -> Optional[int]:
+    """Returns the index of the first turn started after the one a Stop ended, or None when none is or the Stop's turn is not known.
+
+    The Stop's turn is known by its id: among the turns given, or in sent when another worker sent it already.
+    """
+    ids = [pending.plain(turn[0][1].get("promptId")) for turn in turns]
+    ended = pending.plain(ended_turn)
+    if not ended or not (ended in ids or ended in sent):
+        return None
+    after = ids.index(ended) + 1 if ended in ids else 0
+    # A start that names no id of its own is not known to be another turn
+    return next((index for index in range(after, len(ids)) if ids[index] not in ("", ended)), None)
+
+
 def process(
     hook_input: Mapping[str, Any],
     environ: Mapping[str, str] = os.environ,
     wait: float = FLUSH_WAIT_S,
     turn_ended: bool = True,
+    ended_turn: Any = None,
 ) -> None:
     """Sends every finished turn and subagent update since the last run of this session.
 
     turn_ended says the hook fired because the current turn ended (Stop, SessionEnd). Otherwise
     (SubagentStop, SessionStart) the last turn may still be running and is left for a later run.
+    ended_turn is Claude Code's id of the turn a Stop ended. A turn started after that one is left for its own Stop.
     """
     config = load_with_sign_in(environ)
     root = storage.data_dir(environ)
@@ -254,8 +278,14 @@ def process(
         entries, end = transcript.read_entries(path, int(state.get("offset") or 0))
         head, turns = transcript.split_turns(entries)
         offset = end
+        sent = sent_turns(state)
+        later = started_later(turns, ended_turn, sent)
+        if later is not None:
+            # The next turn can hold an answer already while it still runs; read it again at its own Stop
+            offset = turns[later][0][0]
+            turns = turns[:later]
         # The last turn may still be running, or its prompt still waiting for an answer; read it again next time
-        if turns and (not turn_ended or not transcript.answered(turns[-1])):
+        elif turns and (not turn_ended or not transcript.answered(turns[-1])):
             offset = turns[-1][0][0]
             turns = turns[:-1]
 
@@ -271,6 +301,10 @@ def process(
             # Slash commands and local shell escapes look like prompts but no model call answers them
             if not transcript.answered(turn):
                 continue
+            # Also one that cannot be built: its Stop has no turn left to send either way
+            named = pending.plain(turn[0][1].get("promptId"))
+            if named:
+                sent = [item for item in sent if item != named] + [named]
             made = attempt(partial(envelope.for_turn, config, builder, session_id, turn, cwd, handed))
             if made is None:
                 # Whatever is added to this turn later must not join the turn before it
@@ -312,6 +346,8 @@ def process(
             agent["offset"] = agent_end
 
         state["offset"] = offset
+        if sent:
+            state["sent_turns"] = sent[-MAX_SENT_TURNS:]
         state[storage.VERSION_KEY] = STATE_VERSION
         forget(state, sender.refused(session_id))
         storage.write_json(state_file, state)
@@ -326,7 +362,9 @@ def run_worker(mode: str, raw: bytes, environ: Mapping[str, str] = os.environ) -
             hook_input = {}
         if mode == "session-start" and hook_input.get("source") not in SAME_KEY_SOURCES:
             check_key(root, load_with_sign_in(environ))
-        process(hook_input, environ, turn_ended=mode in TURN_END_MODES)
+        # Only a Stop names the turn it ended. When a session ends, every turn in the file is over
+        ended_turn = hook_input.get("prompt_id") if mode == "stop" else None
+        process(hook_input, environ, turn_ended=mode in TURN_END_MODES, ended_turn=ended_turn)
     except Exception as error:  # noqa: BLE001 - an exporter failure must never reach the session
         storage.log(root, f"worker error {type(error).__name__}")
 

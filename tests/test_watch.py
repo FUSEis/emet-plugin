@@ -1402,6 +1402,34 @@ def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id
     assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
 
 
+def test_the_report_of_a_turn_that_began_before_the_last_stop_was_sent_is_read_at_its_own_stop(
+    transcript, environ, emet, clock, capfdbinary, sender_on_the_clock, monkeypatch
+):
+    monkeypatch.setattr(commands.time, "sleep", lambda seconds: None)
+
+    def worker(prompt_id):
+        commands.run_worker("stop", json.dumps({**transcript.hook_input(), "prompt_id": prompt_id}).encode(), environ)
+
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    # The queued prompt's first model call is in the file before the worker of the first Stop reads it
+    second = transcript.prompt("How did March go?", source="queued", promptId="prompt-2")
+    transcript.tool_use("msg_2", "toolu_1", "Bash", {"command": "cat march.csv"})
+    worker("prompt-1")
+    (first,) = pending.traces(root(environ), SESSION)
+    emet.report(first, 200, document(status="clear", claims=[]))
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    assert second["uuid"] not in emet.trace_uuids
+    transcript.tool_result("toolu_1", "spend,12")
+    transcript.text("msg_3", "Spend rose 12% in March.")
+    worker("prompt-2")
+    emet.report(emet.trace_uuids[second["uuid"]], 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-2") == 2
+    assert emet.polled(emet.trace_uuids[second["uuid"]]) == 1
+    text = capfdbinary.readouterr()[1].decode("utf-8")
+    assert text.startswith(report.WAKE_OPENING) and "Spend rose 12% in March." in text and "The March export shows a 9% rise." in text
+
+
 @pytest.mark.parametrize("prompt_id", ["", None, "prompt-9"])
 @pytest.mark.parametrize("answered", [None, 3])
 def test_without_the_turns_id_a_queued_prompt_is_told_apart_by_when_it_was_answered(
