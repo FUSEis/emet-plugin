@@ -1426,7 +1426,8 @@ def test_the_report_of_a_turn_that_began_before_the_last_stop_was_sent_is_read_a
     emet.report(emet.trace_uuids[second["uuid"]], 200, document())
     assert stop(transcript, environ, prompt_id="prompt-2") == 2
     assert emet.polled(emet.trace_uuids[second["uuid"]]) == 1
-    assert capfdbinary.readouterr()[1]
+    text = capfdbinary.readouterr()[1].decode("utf-8")
+    assert text.startswith(report.WAKE_OPENING) and "Spend rose 12% in March." in text and "The March export shows a 9% rise." in text
 
 
 @pytest.mark.parametrize("prompt_id", ["", None, "prompt-9"])
