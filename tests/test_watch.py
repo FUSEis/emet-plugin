@@ -14,7 +14,7 @@ import pytest
 
 from conftest import API_KEY
 from emet_claude import commands, config, missed, pause, pending, report, storage, timestamps, transport, watch
-from helpers import WAKE_WRAPPER, Transcript
+from helpers import WAKE_WRAPPER, Transcript, fork_of
 from test_report import claim, document
 
 SESSION = "session-1"
@@ -3109,12 +3109,7 @@ def test_a_fork_is_told_nothing_about_the_turns_it_copied_and_its_own_turn_is_ch
     assert len(emet.envelopes) == 2
     # A day later the session is forked, and Claude Code copies its entries to the new session's file
     clock.advance(86400)
-    fork = Transcript(transcript.path.parent, "session-2")
-    with open(transcript.path, encoding="utf-8") as source, open(fork.path, "w", encoding="utf-8", newline="\n") as target:
-        for line in source:
-            entry = json.loads(line)
-            entry.update(sessionId="session-2", forkedFrom={"sessionId": SESSION, "messageUuid": entry["uuid"]})
-            target.write(json.dumps(entry) + "\n")
+    fork = fork_of(transcript)
     # An Emet that takes a turn sent again for a new one, and flags whatever it is asked about
     emet.trace_uuids.clear()
     emet.read_replies = [(200, "application/json", json.dumps(document()).encode())] * 8

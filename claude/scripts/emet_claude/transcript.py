@@ -214,11 +214,13 @@ def answered(turn: List[Tuple[int, Entry]]) -> bool:
 
 
 def copied(items: List[Tuple[int, Entry]]) -> bool:
-    """Says whether every entry is one a fork copied from another session: each carries forkedFrom, as Claude Code 2.1.305 writes it.
+    """Says whether the entries are ones a fork copied from another session: each carries forkedFrom, as Claude Code 2.1.305 writes it.
 
-    One entry without it makes the entries the session's own. The field is not documented.
+    One entry without it makes them the session's own. A user entry marked isMeta, such as the caveat before a local
+    command, is no continuation by the model and decides nothing, unless no other entry is there. The field is not documented.
     """
-    return bool(items) and all(isinstance(entry.get("forkedFrom"), dict) for _, entry in items)
+    deciding = [entry for _, entry in items if not (entry.get("type") == "user" and entry.get("isMeta"))]
+    return bool(items) and all(isinstance(entry.get("forkedFrom"), dict) for entry in deciding or [entry for _, entry in items])
 
 
 def session_folder(transcript: Path) -> Path:
