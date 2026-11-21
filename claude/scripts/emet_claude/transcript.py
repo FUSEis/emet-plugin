@@ -213,6 +213,16 @@ def answered(turn: List[Tuple[int, Entry]]) -> bool:
     return any(entry.get("type") == "assistant" for _, entry in turn)
 
 
+def copied(items: List[Tuple[int, Entry]]) -> bool:
+    """Says whether the entries are ones a fork copied from another session: each carries forkedFrom, as Claude Code 2.1.305 writes it.
+
+    One entry without it makes them the session's own. A user entry marked isMeta, such as the caveat before a local
+    command, is no continuation by the model and decides nothing, unless no other entry is there. The field is not documented.
+    """
+    deciding = [entry for _, entry in items if not (entry.get("type") == "user" and entry.get("isMeta"))]
+    return bool(items) and all(isinstance(entry.get("forkedFrom"), dict) for entry in deciding or [entry for _, entry in items])
+
+
 def session_folder(transcript: Path) -> Path:
     """Claude Code keeps saved tool outputs and subagent transcripts beside the session file, in a folder named after it."""
     return transcript.with_suffix("")

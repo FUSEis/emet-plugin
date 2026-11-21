@@ -258,6 +258,15 @@ def process(
         if turns and (not turn_ended or not transcript.answered(turns[-1])):
             offset = turns[-1][0][0]
             turns = turns[:-1]
+        elif turns and transcript.copied(turns[-1]):
+            # The session can still add to the last turn of the copy; read it again next time
+            offset = turns[-1][0][0]
+        # A forked session's file starts as a copy of another session's turns, which that session sent
+        # Counted once, when the place moves past them: the last one can be read again
+        passed = sum(1 for turn in turns if transcript.copied(turn) and turn[0][0] < offset)
+        turns = [turn for turn in turns if not transcript.copied(turn)]
+        if transcript.copied(head):
+            head = []
 
         known = set((state.get("agents") or {}).keys())
         # The poller's own record of its wakes, which a turn must follow to be taken for one a wake started
@@ -311,6 +320,8 @@ def process(
                     track(state, agent["trace_id"], late[1])
             agent["offset"] = agent_end
 
+        if passed:
+            storage.log(root, f"fork copy not sent, turns: {passed}")
         state["offset"] = offset
         state[storage.VERSION_KEY] = STATE_VERSION
         forget(state, sender.refused(session_id))
