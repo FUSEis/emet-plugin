@@ -54,6 +54,16 @@ class Transcript:
         fields = {"turnOrigin": "task_notification", "origin": {"kind": "task-notification"}, "promptId": str(uuid.uuid4())}
         return self.prompt(text, source=None, **{"promptSource": "system", **fields, **extra})
 
+    def local_command(self, name: str = "cost", output: str = "Total cost: $0.42", **extra: Any) -> Dict[str, Any]:
+        """Writes a slash command no model call answers and its output, each a user entry. Returns the output's entry."""
+        self.prompt(f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>", source=None, **extra)
+        return self.prompt(f"<local-command-stdout>{output}</local-command-stdout>", source=None, **extra)
+
+    def shell_escape(self, command: str = "ls", output: str = "file.txt", **extra: Any) -> Dict[str, Any]:
+        """Writes a shell escape (! in the prompt) and its output, each a user entry. Returns the output's entry."""
+        self.prompt(f"<bash-input>{command}</bash-input>", source=None, **extra)
+        return self.prompt(f"<bash-stdout>{output}</bash-stdout><bash-stderr></bash-stderr>", source=None, **extra)
+
     def record_notice(self, text: str = "<task-notification>agent finished</task-notification>", **extra: Any) -> Dict[str, Any]:
         """Writes the notice Claude Code 2.1.305 keeps as a record a second after a background subagent's message was answered."""
         fields = {"origin": {"kind": "task-notification"}, "queueTranscriptOnly": True, "queueSkipAttachments": True}

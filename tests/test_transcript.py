@@ -85,18 +85,20 @@ def test_a_meta_entry_of_a_scheduled_fire_or_of_a_message_from_another_session_s
 
 def test_a_notice_kept_as_a_record_only_starts_no_turn_and_is_part_of_none(transcript):
     first = transcript.meta_turn("the first agent's result", "peer")
-    transcript.text("msg_1", "Noted.")
+    answers = [transcript.text("msg_1", "Noted.")]
     record = transcript.record_notice()
     second = transcript.meta_turn("the second agent's result", "peer")
-    transcript.text("msg_2", "Noted too.")
+    answers.append(transcript.text("msg_2", "Noted too."))
     transcript.record_notice()
     assert not tr.starts_turn(record)
+    head, turns = tr.split_turns(tr.read_entries(transcript.path, 0)[0])
+    assert head == [] and [[entry["uuid"] for _, entry in turn] for turn in turns] == [
+        [first["uuid"], answers[0]["uuid"]],
+        [second["uuid"], answers[1]["uuid"]],
+    ]
     assert tr.starts_turn(transcript.record_notice(queueTranscriptOnly=False)) and tr.starts_turn(
         transcript.record_notice(queueTranscriptOnly=1)
     )
-    head, turns = tr.split_turns(tr.read_entries(transcript.path, 0)[0])
-    assert head == [] and [[entry["uuid"] for _, entry in turn[:1]] for turn in turns][:2] == [[first["uuid"]], [second["uuid"]]]
-    assert [len(turn) for turn in turns[:2]] == [2, 2]
     # Alone after a turn already sent, it is nothing to add to that turn
     assert tr.split_turns([(0, record)]) == ([], [])
 

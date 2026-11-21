@@ -8,7 +8,7 @@ import re
 import stat
 import sys
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, List, Optional, Sequence, Tuple
+from typing import Any, BinaryIO, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from . import report, storage, timestamps
 
@@ -209,17 +209,32 @@ def prompt_text(entry: Entry) -> str:
     return text
 
 
+def opens_turn(entries: Iterable[Entry]) -> Iterator[bool]:
+    """Says for each entry of a main conversation, in order, whether it opens a turn. The sender and the poller both group turns by this.
+
+    A scheduled or peer start joins the start before it while no model call has answered that one: one call answers both.
+    It never joins a local command or its output, which no model call answers.
+    """
+    running: Optional[Entry] = None
+    answered = True
+    for entry in entries:
+        if entry.get("type") == "assistant":
+            answered = True
+        joins = bool(entry.get("isMeta")) and running is not None and not answered and not LOCAL_COMMAND.match(text_of(running))
+        opens = starts_turn(entry) and not joins
+        if opens:
+            running, answered = entry, False
+        yield opens
+
+
 def split_turns(entries: List[Tuple[int, Entry]]) -> Tuple[List[Tuple[int, Entry]], List[List[Tuple[int, Entry]]]]:
     """Returns the entries before the first turn start (the tail of a turn already sent) and the turns."""
     head: List[Tuple[int, Entry]] = []
     turns: List[List[Tuple[int, Entry]]] = []
-    for item in entries:
-        # Part of no turn: its time must not move the end of the turn before it
-        if record_only(item[1]):
-            continue
-        # One model call answers a start with no answer yet and the meta start that follows it, so they are one turn
-        joins = bool(item[1].get("isMeta")) and bool(turns) and not answered(turns[-1])
-        if starts_turn(item[1]) and not joins:
+    # Part of no turn: the time of a record must not move the end of the turn before it
+    entries = [item for item in entries if not record_only(item[1])]
+    for item, opens in zip(entries, opens_turn(entry for _, entry in entries)):
+        if opens:
             turns.append([item])
         elif turns:
             turns[-1].append(item)

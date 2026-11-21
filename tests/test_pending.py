@@ -111,15 +111,30 @@ def test_a_peer_message_after_a_record_only_notice_is_its_own_trace_under_its_ow
     run(transcript, environ)
     assert len(emet.envelopes) == 1
     second = transcript.meta_turn("the second agent's result", "peer")
-    transcript.text("msg_second", "Noted too.")
+    answer = transcript.text("msg_second", "Noted too.")
     transcript.record_notice("<task-notification>the second agent finished</task-notification>")
     run(transcript, environ)
     assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (second["uuid"], True)]
     lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
     assert [item["prompt_id"] for item in lines] == [first["promptId"], second["promptId"]]
     # The notice written after the answer does not move the end of the turn
-    assert lines[1]["ended"] == emet.envelopes[1]["spans"][0]["ended_at"] == "2026-10-20T10:00:05.000Z"
+    assert lines[1]["ended"] == emet.envelopes[1]["spans"][0]["ended_at"] == answer["timestamp"]
     assert "agent finished" not in json.dumps(emet.envelopes) and "skipped_turns" not in status(environ)
+
+
+@pytest.mark.parametrize("escape", [False, True])
+def test_a_scheduled_turn_after_a_local_command_is_sent_under_its_own_ids_with_its_own_prompt(transcript, environ, emet, escape):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    transcript.shell_escape() if escape else transcript.local_command()
+    fired = transcript.meta_turn("check the deploy", "scheduled")
+    transcript.text("msg_fired", "The deploy is up.")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], fired["uuid"]]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert lines[1]["prompt_id"] == fired["promptId"]
+    sent = json.dumps(emet.envelopes[1])
+    assert "check the deploy" in sent and "Total cost" not in sent and "file.txt" not in sent
 
 
 def test_peer_messages_with_no_answer_between_them_are_sent_as_one_turn(transcript, environ, emet):

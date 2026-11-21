@@ -88,6 +88,7 @@ For each finished turn, one trace:
 - **Images and other binary content** are never sent in any mode. A placeholder such as `[image content not shown: image/png, 412 KB]` takes their place, and the span is marked truncated so Emet does not treat it as complete.
 - **What Claude saw, not more.** Tool results are sent as Claude received them, except that output Claude Code saved to disk because it was too large is sent in full.
 - **The turn Claude takes to tell you about a report** is sent like any other, with `emet.plugin.turn_started_by` set to `report_wake`. Its prompt is replaced by a fixed placeholder, so Emet's own report text is not sent back to Emet as a person's message. Claude's message is sent as an answer.
+- **A turn Claude Code starts by itself**, on a schedule (a `/loop` iteration, a scheduled wake-up) or for a message from another Claude session such as a background subagent's result, is sent like any turn. Its prompt follows the capture mode as your own prompts do, and no conversation title is taken from it.
 - **Nothing else.** Thinking blocks, system prompts, tool definitions and files Claude did not read are not sent.
 - `metadata` keeps usage and timing reports working, but Emet cannot check claims without content.
 
