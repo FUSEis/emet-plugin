@@ -49,12 +49,12 @@ After a turn ends, the plugin asks Emet for its report on that turn. When the re
 **When it happens, and when it does not.**
 
 - Only for a report Emet marked as flagged. Any other report is recorded and Claude says nothing.
-- Only when the report is ready within 60 seconds of the end of the turn, and you have not started another turn since. The first read comes about 8 seconds after the turn ends. A report that comes later, or after your next prompt, is recorded and never interrupts you. It comes with your next prompt, and `/emet:status` lists it.
+- Only when the report is ready within 60 seconds of the end of the turn, and you have not started another turn since. The first read comes about 8 seconds after the turn ends. A report that comes later, or after your next prompt, is recorded and never interrupts you. It is saved for a later prompt, within the limits below, and `/emet:status` lists it.
 - At most 3 times in one session. Later flagged reports are recorded, come with your next prompt, and are listed by `/emet:status`.
 - Once for each report: the same report never makes Claude speak twice. Claude's extra message is sent to Emet like any turn, marked as started by the plugin, and its report is never read. So one message from Claude never leads to another.
 - Never about the plugin's own commands. The answer to `/emet:status` or `/emet:setup` is sent to Emet like any turn, and its report is never read, so Claude does not speak about it. Running one of them counts as your next turn: a report on the answer before it is recorded and does not interrupt you.
 - Only in a session with a person at it. Under `claude -p` or the SDK, and on a Claude Code older than 2.1.287, no report is read.
-- The plugin asks for 5 minutes after a turn ends. A report that was not ready by then is asked for again when a later turn of the session ends, for a day at most. It then never interrupts you, since it is late: a flagged one comes with your next prompt.
+- The plugin asks for 5 minutes after a turn ends. A report that was not ready by then is asked for again when a later turn of the session ends, for a day at most. It then never interrupts you, since it is late: a flagged one is saved for a later prompt, within the limits below.
 
 The extra message is a turn of your session. It uses your Claude plan like any other turn, and Claude Code shows it in the conversation. Claude Code 2.1.305 shows a line that reads "Stop hook feedback" above it.
 

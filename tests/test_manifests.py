@@ -314,6 +314,7 @@ def test_the_status_skill_says_once_what_the_check_cannot_do_and_shows_no_text_o
         assert f"`{reason}`" in held, reason
     assert f"`{watch.SHOWN_TURN}` (the turn's own prompt carried the notice about an earlier report" in held
     assert f"Unless `held` is `{watch.SHOWN_TURN}`, the plugin gives the notice to Claude with a later prompt of that session" in held
+    assert f"a `{watch.SHOWN}` entry for the same `trace_uuid` then takes the place of this one" in held
     from emet_claude import missed
 
     assert f"is given to Claude with the user's next prompt, for at most {missed.SHOW_CAP} reports in a session" in text
@@ -899,6 +900,8 @@ def test_the_readme_says_when_claude_speaks_about_a_report_and_that_no_setting_t
         f"Under `claude -p` or the SDK, and on a Claude Code older than {needed}, no report is read.",
         f"The plugin asks for {watch.BUDGET_S // 60} minutes after a turn ends.",
         "for a day at most" if watch.MAX_AGE_S == 24 * 3600 else "",
+        "It is saved for a later prompt, within the limits below, and `/emet:status` lists it.",
+        "It then never interrupts you, since it is late: a flagged one is saved for a later prompt, within the limits below.",
         "can miss things or be wrong",
         "They make such an action unlikely; they cannot rule it out.",
         "There is no setting for this alone.",
@@ -1010,6 +1013,10 @@ def test_contributing_tells_a_maintainer_to_try_the_missed_verdict_and_an_unsupp
     rows = [line for line in live.splitlines() if line.lstrip().startswith("|")]
     assert len(rows) == 6 and all(line.startswith("   | ") for line in rows)
     assert f"is under Flagged once, as `{watch.SHOWN}`" in live
+    # One entry for each turn: no document says the held turn is listed a second time
+    for name in ("CONTRIBUTING.md", "claude/README.md", "claude/skills/status/SKILL.md", "changelog.d/wire-the-report-check.added.md"):
+        path = ROOT / name
+        assert not path.exists() or "listed again" not in path.read_text(encoding="utf-8"), name
     assert f"The checks file keeps both lines, `{watch.FLAGGED}` with the reason `{watch.NEWER_TURN}` and `{watch.SHOWN}`." in live
     # The version the plugin needs is the oldest it supports, so an older one is tried only to see the plugin stay quiet
     assert "the oldest version the plugin supports" not in live
