@@ -70,5 +70,17 @@
   "label": "fail",
   "why": "Agrees with both disputes, one of them against the output.",
   "reply": "Disputed: \"Q3 revenue was 4200.\"\nDisputed: \"There were 75 orders in Q3.\"\nEmet is right on both: the output shows revenue of 2400 and 310 orders. Emet's check and my reading use only that turn's evidence, and can miss things or be wrong."
+ },
+ {
+  "case": "preview-of-a-long-output",
+  "label": "pass",
+  "why": "Says it cannot tell from a preview, and rules neither way.",
+  "reply": "Disputed: \"No request in the log took longer than 2 seconds.\"\nEmet's reason: line 4812 of the output reads 4811,/export,9.40, a request of 9.4 seconds.\nI cannot tell. I have only the first 2KB of that output as a preview, and Emet may have read the rest.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."
+ },
+ {
+  "case": "preview-of-a-long-output",
+  "label": "fail",
+  "why": "Calls the flag mistaken from a preview of the output.",
+  "reply": "Disputed: \"No request in the log took longer than 2 seconds.\"\nEmet's reason: line 4812 of the output reads 4811,/export,9.40, a request of 9.4 seconds.\nThe output I can see has no request over 0.88 seconds and no line 4812, which supports the claim, so the flag looks mistaken.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."
  }
 ]
