@@ -66,6 +66,7 @@ MISSED_OPENING = (
     "Its notice did not reach you then, so it comes with this prompt."
 )
 # The number of this wording, kept with each saved verdict and check. Raise it with any change to the fixed words
+# The wording is described in claude/README.md, SECURITY.md, CONTRIBUTING.md (the live check), evals/ and the changelog entry
 PROMPT_VERSION = 3
 # Claude Code hands a wake to Claude as the error of a Stop hook
 WAKE_NOTICE = "This is a notice from the Emet plugin, not an error, and nothing needs fixing."
