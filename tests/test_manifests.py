@@ -390,7 +390,7 @@ def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_and_the_
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     table = text.partition("| Log shows | Meaning | Fix |\n| --- | --- | --- |\n")[2].partition("\n\n")[0]
     shown = [span for row in table.splitlines() for span in re.findall(r"`([^`]+)`", row.split(" | ")[0])]
-    assert len(log_lines(watch)) == 23, "every storage.log call of watch.py is read, the two forms of each outcome line included"
+    assert len(log_lines(watch)) == 24, "every storage.log call of watch.py is read, the two forms of each outcome line included"
     assert len(log_lines(missed)) == 7, "every storage.log call of missed.py is read"
     # A line the two modules share needs one row
     lines = sorted(set(log_lines(watch) + log_lines(missed)))
