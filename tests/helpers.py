@@ -149,12 +149,15 @@ class Transcript:
 
 
 # The one form the plugin writes a time in: UTC, milliseconds, Z
-WRITTEN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
+UTC_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 
 
 def old_form(at: float) -> str:
-    """A time as 0.1.4 wrote it in its files, which stay on disk: local time, whole seconds, a numeric offset."""
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(at))
+    """A time as 0.1.4 wrote it in its files, which stay on disk: local time, whole seconds, a numeric offset.
+
+    Always five hours behind UTC, so the offset is read on a machine in UTC too.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(int(at) - 5 * 3600)) + "-0500"
 
 
 class Clock:

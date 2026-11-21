@@ -5,7 +5,7 @@ import time
 import pytest
 
 from emet_claude import commands, pending, storage, transcript, transport, watch
-from helpers import WRITTEN
+from helpers import UTC_FORM
 
 
 def log_lines(root):
@@ -30,7 +30,7 @@ def test_a_time_is_written_in_utc_with_milliseconds_and_z_whatever_the_zone_of_t
     assert storage.now(1_800_000_000.789) == "2027-01-15T08:00:00.789Z"
     # Cut, not rounded, as the times sent to Emet are
     assert storage.now(1_800_000_000.7896) == "2027-01-15T08:00:00.789Z"
-    assert WRITTEN.fullmatch(storage.now())
+    assert UTC_FORM.fullmatch(storage.now())
 
 
 def test_a_log_line_starts_with_the_time_in_utc(tmp_path, five_hours_behind_utc, monkeypatch):

@@ -848,8 +848,11 @@ NOT_ENQUEUED += [another_kind_of_entry]
 
 
 @pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
-def test_a_wake_taken_in_the_second_of_its_hand_over_is_found_wherever_in_that_second_both_fell(session, environ, clock, capfdbinary, form):
-    clock.advance(20.6)
+@pytest.mark.parametrize("fraction", [0.0, 0.3, 0.6])
+def test_a_wake_taken_in_the_second_of_its_hand_over_is_found_wherever_in_that_second_both_fell(
+    session, environ, clock, capfdbinary, form, fraction
+):
+    clock.advance(20 + fraction)
     verdict = handed(environ, clock, form=form)
     enqueue(session, queued(verdict, clock.now + 0.3))
     clock.advance(60)

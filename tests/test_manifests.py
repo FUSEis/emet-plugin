@@ -332,8 +332,11 @@ def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no
     assert "The word always comes first and is never left out, translated or replaced by another word." in text
     assert "give it as the meaning of the word and add nothing to it: no label Emet shows on its pages" in text
     assert "keep every word and value you quote exactly as it is written there" in text
-    assert "Every time in both files is in UTC and ends in `Z`" in text and "say UTC with each time you show" in text
-    assert "convert it to UTC before you show it, so `03:00:00-0500` is 08:00:00 UTC" in text
+    assert "Every time this version of the plugin writes in both files is in UTC and ends in `Z`" in text
+    assert "was written by version 0.1.4 or earlier, in the machine's local time: convert it to UTC before you show it." in text
+    assert "`2027-01-15T23:30:00+0530` is 18:00:00 UTC the same day, and `2027-01-15T22:00:00-0500` is 03:00:00 UTC on the 16th" in text
+    assert "Say UTC with each time you show, and show its date too when converting changed the date" in text
+    assert "If you do not know the current time, give the pause time and do not say whether it has passed." in text
     # The example entry is in the form the rule asks for, with a word the plugin records
     example = re.search(r"For example: [0-9:]{8} UTC, trace [0-9a-f]{8}, `([a-z_]+)`: ([^.]+\.)", text)
     rows = check_rows()

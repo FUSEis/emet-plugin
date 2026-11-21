@@ -14,7 +14,7 @@ import pytest
 
 from conftest import API_KEY
 from emet_claude import commands, config, pause, pending, report, storage, timestamps, transport, watch
-from helpers import WAKE_WRAPPER, WRITTEN, Transcript, old_form
+from helpers import UTC_FORM, WAKE_WRAPPER, Transcript, old_form
 from test_report import claim, document
 
 SESSION = "session-1"
@@ -213,8 +213,8 @@ def test_every_time_in_the_plugins_own_files_is_utc_with_milliseconds_and_z(tran
         "status.json",
     }
     assert {key for _, key, _ in found} >= {"at", "ended", "finished", "until", "updated_at", "paused_until", "reads_paused_until"}
-    assert [time for time in found if not WRITTEN.fullmatch(time[2])] == []
-    assert [line for line in log(environ).splitlines() if not WRITTEN.fullmatch(line.partition(" ")[0])] == []
+    assert [time for time in found if not UTC_FORM.fullmatch(time[2])] == []
+    assert [line for line in log(environ).splitlines() if not UTC_FORM.fullmatch(line.partition(" ")[0])] == []
     assert any(not text.endswith(".000Z") for _, _, text in found), "the milliseconds are kept"
 
 
@@ -413,12 +413,12 @@ def test_the_poller_keeps_waiting_while_the_queue_holds_envelopes_or_the_stamp_i
 
 
 @pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
-@pytest.mark.parametrize("ago", [0.3, 0.001, 0.0])
-def test_a_run_of_the_sender_that_ended_before_the_poller_started_in_the_same_second_does_not_end_the_wait(
+@pytest.mark.parametrize("ago", [0.3, 0.001, 0.0, -0.3], ids=["0.3 s before", "1 ms before", "at the start", "0.3 s after"])
+def test_a_run_of_the_sender_that_ended_in_the_second_the_poller_started_in_does_not_end_the_wait(
     session, environ, emet, clock, sleeper, form, ago
 ):
     clock.now += 0.5
-    # A run of the sender for an earlier Stop
+    # A run of the sender for an earlier Stop. This Stop's own run ends a second or more after the poller starts
     finish(environ, clock, ago=ago, form=form)
     emet.report(T1, 200, document())
     # The sender of this Stop names the turn two seconds in
@@ -2527,7 +2527,7 @@ def test_a_saved_verdict_is_shown_for_seven_days_and_never_from_a_time_ahead_of_
             assert read_back(environ, verdict) == ((None if problem else verdict), problem)
     no_zone = stamp(clock)[: -len("Z")]
     assert no_zone.endswith(":00.000") and timestamps.parse(no_zone + "Z") is not None
-    for at in ("long ago", None, 1_800_000_000, no_zone, old_form(clock.now)[: -len("+0000")]):
+    for at in ("long ago", None, 1_800_000_000, no_zone, old_form(clock.now)[: -len("-0500")]):
         assert read_back(environ, verdict_of(clock, at=at)) == (None, ["verdict not shown, age"])
     assert read_back(environ, without(verdict_of(clock), "at")) == (None, ["verdict not shown, age"])
 
