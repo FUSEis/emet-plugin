@@ -10,8 +10,11 @@ import sys
 import time
 import unicodedata
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional, Union
+
+from . import timestamps
 
 LOG_MAX_BYTES = 1_000_000
 # No line the plugin writes is near this long, so a longer one holds text from somewhere else
@@ -171,8 +174,8 @@ def try_locked(path: Path) -> Iterator[bool]:
 
 
 def now(at: Optional[float] = None) -> str:
-    """Writes the current time, or the one at seconds since the epoch, the one way the plugin's files hold a time."""
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(at))
+    """Writes the current time, or the one at seconds since the epoch, the one way the plugin's files hold a time: UTC, milliseconds, Z."""
+    return timestamps.text(datetime.fromtimestamp(time.time() if at is None else at, timezone.utc))
 
 
 def one_line(message: str) -> str:

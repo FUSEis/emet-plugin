@@ -6,7 +6,7 @@ from email.utils import formatdate
 import pytest
 
 from emet_claude import commands, pause, pending, storage, timestamps, transport
-from helpers import Transcript
+from helpers import Transcript, old_form
 
 
 def run(transcript, environ):
@@ -336,6 +336,19 @@ def test_a_pause_is_forgotten_under_the_lock_that_starts_one(environ, clock, mon
     assert taken == ["pause.lock"]
     pause.clear(root(environ))
     assert taken == ["pause.lock"]
+
+
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+@pytest.mark.parametrize("fraction", [0.0, 0.4, 0.999])
+def test_only_a_wait_that_ends_in_a_later_second_moves_the_end_of_the_reads_pause(environ, clock, form, fraction):
+    clock.now += fraction
+    until = form(clock.now + 30)
+    storage.write_json(pause.path(root(environ), pause.READS), {"until": until, "delay": 30})
+    for no_longer in (30.0, 29.5, 5.0, None):
+        pause.extend(root(environ), no_longer, pause.READS)
+        assert pause.until(root(environ), pause.READS) == until
+    pause.extend(root(environ), 31.0, pause.READS)
+    assert pause.until(root(environ), pause.READS) == storage.now(clock.now + 31)
 
 
 def test_a_longer_wait_emet_names_for_the_reads_moves_the_end_of_their_pause(environ, clock):
