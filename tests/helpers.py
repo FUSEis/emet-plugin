@@ -54,6 +54,27 @@ class Transcript:
         fields = {"turnOrigin": "task_notification", "origin": {"kind": "task-notification"}, "promptId": str(uuid.uuid4())}
         return self.prompt(text, source=None, **{"promptSource": "system", **fields, **extra})
 
+    def local_command(self, name: str = "cost", output: str = "Total cost: $0.42", **extra: Any) -> Dict[str, Any]:
+        """Writes a slash command no model call answers and its output, each a user entry. Returns the output's entry."""
+        self.prompt(f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>", source=None, **extra)
+        return self.prompt(f"<local-command-stdout>{output}</local-command-stdout>", source=None, **extra)
+
+    def shell_escape(self, command: str = "ls", output: str = "file.txt", **extra: Any) -> Dict[str, Any]:
+        """Writes a shell escape (! in the prompt) and its output, each a user entry. Returns the output's entry."""
+        self.prompt(f"<bash-input>{command}</bash-input>", source=None, **extra)
+        return self.prompt(f"<bash-stdout>{output}</bash-stdout><bash-stderr></bash-stderr>", source=None, **extra)
+
+    def record_notice(self, text: str = "<task-notification>agent finished</task-notification>", **extra: Any) -> Dict[str, Any]:
+        """Writes the notice Claude Code 2.1.305 keeps as a record a second after a background subagent's message was answered."""
+        fields = {"origin": {"kind": "task-notification"}, "queueTranscriptOnly": True, "queueSkipAttachments": True}
+        return self.prompt(text, source=None, **{"promptSource": "system", "promptId": str(uuid.uuid4()), **fields, **extra})
+
+    def meta_turn(self, text: str, kind: str = "scheduled", **extra: Any) -> Dict[str, Any]:
+        """Starts a turn with a meta entry, as Claude Code 2.1.3xx does for a scheduled fire and a message from another session (peer)."""
+        fields: Dict[str, Any] = {"isMeta": True, "promptSource": "system", "turnOrigin": kind, "promptId": str(uuid.uuid4())}
+        fields.update({"origin": {"kind": "peer"}} if kind == "peer" else {"scheduledTaskId": "task-1"})
+        return self.prompt(text, source=None, **{**fields, **extra})
+
     def command(self, name: str, args: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
         """Starts a turn a skill's slash command started, with the two entries Claude Code 2.1.305 writes. Returns the first."""
         text = f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>"

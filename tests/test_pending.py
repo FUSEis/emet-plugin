@@ -72,6 +72,91 @@ def test_a_trace_that_gets_more_spans_later_is_written_once(transcript, environ,
     assert written == [emet.trace_uuids[prompt["uuid"]]]
 
 
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_starts_is_sent_as_its_own_trace_and_gets_its_own_line(transcript, environ, emet, kind):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    fired = transcript.meta_turn("check the deploy", kind)
+    transcript.text("msg_fired", "The deploy is up.")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (fired["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["trace_uuid"] for item in lines] == [emet.trace_uuids[first["uuid"]], emet.trace_uuids[fired["uuid"]]]
+    # Polled as any turn no part of the plugin started, and known by Claude Code's id of it
+    assert "started_by" not in lines[1] and lines[1]["prompt_id"] == fired["promptId"]
+
+
+def test_a_peer_message_right_after_a_notice_with_no_answer_yet_is_sent_as_one_turn_under_the_notices_ids(transcript, environ, emet):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    notice = transcript.notice("<task-notification>agent finished</task-notification>")
+    transcript.meta_turn("check the deploy", "peer")
+    transcript.text("msg_both", "The agent finished and the deploy is up.")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (notice["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["trace_uuid"] for item in lines] == [emet.trace_uuids[first["uuid"]], emet.trace_uuids[notice["uuid"]]]
+    assert lines[1]["prompt_id"] == notice["promptId"]
+    assert "skipped_turns" not in status(environ) and not [item for item in pending.lines(root(environ), "session-1") if "skipped" in item]
+    assert "The agent finished and the deploy is up." in json.dumps(emet.envelopes[1])
+
+
+def test_a_peer_message_after_a_record_only_notice_is_its_own_trace_under_its_own_id_and_the_notice_sends_nothing(
+    transcript, environ, emet
+):
+    first = transcript.meta_turn("the first agent's result", "peer")
+    transcript.text("msg_first", "Noted.")
+    run(transcript, environ)
+    transcript.record_notice("<task-notification>the first agent finished</task-notification>")
+    run(transcript, environ)
+    assert len(emet.envelopes) == 1
+    second = transcript.meta_turn("the second agent's result", "peer")
+    answer = transcript.text("msg_second", "Noted too.")
+    transcript.record_notice("<task-notification>the second agent finished</task-notification>")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (second["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["prompt_id"] for item in lines] == [first["promptId"], second["promptId"]]
+    # The notice written after the answer does not move the end of the turn
+    assert lines[1]["ended"] == emet.envelopes[1]["spans"][0]["ended_at"] == answer["timestamp"]
+    assert "agent finished" not in json.dumps(emet.envelopes) and "skipped_turns" not in status(environ)
+
+
+@pytest.mark.parametrize("escape", [False, True])
+def test_a_scheduled_turn_after_a_local_command_is_sent_under_its_own_ids_with_its_own_prompt(transcript, environ, emet, escape):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    transcript.shell_escape() if escape else transcript.local_command()
+    fired = transcript.meta_turn("check the deploy", "scheduled")
+    transcript.text("msg_fired", "The deploy is up.")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], fired["uuid"]]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert lines[1]["prompt_id"] == fired["promptId"]
+    sent = json.dumps(emet.envelopes[1])
+    assert "check the deploy" in sent and "Total cost" not in sent and "file.txt" not in sent
+
+
+def test_peer_messages_with_no_answer_between_them_are_sent_as_one_turn(transcript, environ, emet):
+    first = transcript.meta_turn("check the deploy", "peer")
+    transcript.meta_turn("and the queue", "peer")
+    transcript.text("msg_both", "Both are fine.")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"]]
+    (line,) = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert line["prompt_id"] == first["promptId"]
+
+
+def test_an_ordinary_meta_entry_with_an_answer_still_joins_the_turn_before_it(transcript, environ, emet):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    transcript.prompt("context", source=None, isMeta=True)
+    transcript.text("msg_late", "one more thing")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], first["uuid"]]
+    assert kept(environ) == [emet.trace_uuids[first["uuid"]]]
+
+
 def test_a_reply_that_names_no_trace_keeps_nothing_and_still_counts_as_delivered(transcript, environ, emet):
     emet.names_trace = False
     finished_turn(transcript)

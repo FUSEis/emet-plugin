@@ -261,7 +261,8 @@ def headless(found: List[Tuple[int, Dict[str, Any]]], environ: Mapping[str, str]
     if environ.get(ENTRYPOINT_NAME, "").startswith("sdk"):
         return True
     entries = [entry for _, entry in found]
-    starts = [entry for entry in entries if transcript.starts_turn(entry)]
+    # A scheduled fire or a message from another session says nothing of who is at the session
+    starts = [entry for entry in entries if transcript.starts_turn(entry) and not entry.get("isMeta")]
     if starts and "sdk" in (starts[-1].get("promptSource"), starts[-1].get("turnOrigin")):
         return True
     named = [entry["entrypoint"] for entry in entries if isinstance(entry.get("entrypoint"), str)]
@@ -330,17 +331,21 @@ def claude_code_version(found: List[Tuple[int, Dict[str, Any]]]) -> Tuple[int, .
     return ()
 
 
+def turn_starts(found: List[Tuple[int, Dict[str, Any]]]) -> List[Tuple[int, Dict[str, Any]]]:
+    """Returns the entries that start a turn a model call answers, grouped as the sender groups them."""
+    main = [item for item in found if not item[1].get("isSidechain")]
+    return [
+        item
+        for item, opens in zip(main, transcript.opens_turn(entry for _, entry in main))
+        # A command of the plugin is in the same wrapper as a local command, and a model call answers it
+        if opens and (not transcript.LOCAL_COMMAND.match(transcript.text_of(item[1])) or transcript.own_command(item[1]))
+    ]
+
+
 def newer_turn(stop: Stop) -> bool:
     """Says whether the session file shows a turn started after the one this Stop ended."""
     found, _ = session_entries(stop.transcript_path, stop.size)
-    starts = [
-        (offset, entry)
-        for offset, entry in found
-        if transcript.starts_turn(entry)
-        and not entry.get("isSidechain")
-        # A command of the plugin is in the same wrapper as a local command, and a model call answers it
-        and (not transcript.LOCAL_COMMAND.match(transcript.text_of(entry)) or transcript.own_command(entry))
-    ]
+    starts = turn_starts(found)
     if any(offset >= stop.size for offset, _ in starts):
         return True
     if not starts:

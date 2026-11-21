@@ -1391,6 +1391,178 @@ def test_a_turn_that_started_while_the_report_was_awaited_keeps_claude_asleep(
     assert bool(capfdbinary.readouterr()[1]) is woken
 
 
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_started_while_the_report_was_awaited_keeps_claude_asleep(
+    session, environ, emet, clock, sleeper, capfdbinary, kind
+):
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    sleeper.at(4, lambda: session.meta_turn("check the deploy", kind))
+    assert stop(session, environ) == 0
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
+    assert capfdbinary.readouterr() == (b"", b"")
+
+
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_started_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, kind):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    transcript.meta_turn("check the deploy", kind)
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+def test_a_notice_kept_as_a_record_only_is_no_newer_turn_and_one_a_model_call_answers_is(session, environ, emet, clock, sleeper):
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    sleeper.at(1, lambda: session.record_notice())
+    assert stop(session, environ) == 2
+    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+    stopped = watch.Stop(SESSION, str(session.path), "", session.path.stat().st_size, clock.now)
+    session.record_notice()
+    assert watch.newer_turn(stopped) is False
+    session.notice("<task-notification>Background command finished</task-notification>")
+    assert watch.newer_turn(stopped) is True
+
+
+def test_a_persons_prompt_after_a_start_with_no_answer_in_the_file_is_still_a_newer_turn(transcript, environ, emet, clock):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.prompt("And 3 + 3?", source="queued", promptId="prompt-2")
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+def joined_turn(transcript, environ, clock):
+    """An answered turn, then a notice and a peer message that one model call answers. Returns their ids. The trace carries the notice's."""
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    ids = {"notice": transcript.notice("<task-notification>agent finished</task-notification>")["promptId"]}
+    ids["peer"] = transcript.meta_turn("check the deploy", "peer")["promptId"]
+    transcript.text("msg_2", "The agent finished and the deploy is up.")
+    deliver(environ, clock, prompt_id=ids["notice"])
+    return ids
+
+
+@pytest.mark.parametrize("named", ["notice", ""])
+def test_a_peer_message_that_joined_a_notice_with_no_answer_yet_is_not_taken_for_a_newer_turn(transcript, environ, emet, clock, named):
+    ids = joined_turn(transcript, environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id=ids.get(named, "")) == 2
+    stopped = watch.Stop(SESSION, str(transcript.path), ids.get(named, ""), transcript.path.stat().st_size, clock.now)
+    assert watch.newer_turn(stopped) is False
+
+
+def test_known_limit_a_stop_that_names_the_joined_messages_id_holds_the_turns_report_back(transcript, environ, emet, clock):
+    ids = joined_turn(transcript, environ, clock)
+    emet.report(T1, 200, document())
+    # The trace carries the notice's id. Which of the two a Stop names for a joined turn is not known
+    assert stop(transcript, environ, prompt_id=ids["peer"]) == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    stopped = watch.Stop(SESSION, str(transcript.path), ids["peer"], transcript.path.stat().st_size, clock.now)
+    assert watch.newer_turn(stopped) is False
+
+
+def after_a_local_command(transcript):
+    transcript.local_command()
+    return [transcript.meta_turn("check the deploy", "scheduled")]
+
+
+def after_a_shell_escape(transcript):
+    transcript.shell_escape()
+    return [transcript.meta_turn("the agent's result", "peer")]
+
+
+def after_a_notice_with_no_answer_but_a_subagents(transcript):
+    notice = transcript.notice("<task-notification>agent finished</task-notification>")
+    transcript.text("msg_side", "A subagent's words", isSidechain=True)
+    transcript.meta_turn("the agent's result", "peer")
+    return [notice]
+
+
+def after_a_persons_prompt_with_no_answer(transcript):
+    prompt = transcript.prompt("And 3 + 3?", promptId="prompt-2")
+    transcript.meta_turn("check the deploy", "scheduled")
+    return [prompt]
+
+
+def after_another_with_no_answer(transcript):
+    first = transcript.meta_turn("the first agent's result", "peer")
+    transcript.meta_turn("the second agent's result", "peer")
+    return [first]
+
+
+def after_a_record_only_notice(transcript):
+    transcript.record_notice()
+    return [transcript.meta_turn("the agent's result", "peer")]
+
+
+def after_an_answered_turn(transcript):
+    return [transcript.meta_turn("check the deploy", "scheduled")]
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        after_a_local_command,
+        after_a_shell_escape,
+        after_a_notice_with_no_answer_but_a_subagents,
+        after_a_persons_prompt_with_no_answer,
+        after_another_with_no_answer,
+        after_a_record_only_notice,
+        after_an_answered_turn,
+    ],
+)
+def test_the_sender_and_the_poller_find_the_same_turns_whatever_a_scheduled_or_peer_start_follows(transcript, write):
+    first = transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    expected = [first["uuid"]] + [entry["uuid"] for entry in write(transcript)]
+    transcript.text("msg_2", "Done.")
+    _, turns = watch.transcript.split_turns(watch.transcript.read_entries(transcript.path, 0)[0])
+    # The sender passes over a turn with no answer, which is how it drops a local command
+    assert [turn[0][1]["uuid"] for turn in turns if watch.transcript.answered(turn)] == expected
+    found, _ = watch.session_entries(str(transcript.path))
+    assert [entry["uuid"] for _, entry in watch.turn_starts(found)] == expected
+
+
+def test_a_scheduled_or_peer_turn_does_not_hide_that_no_person_is_at_the_session(transcript, environ, emet, clock):
+    transcript.prompt("What is 2 + 2?", source="sdk")
+    transcript.text("msg_1", "4")
+    transcript.meta_turn("the agent's result", "peer")
+    transcript.text("msg_2", "Noted.")
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ) == 0
+    assert emet.reads == [] and outcomes(environ) == [(T1, "no_person", False)]
+
+
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_the_report_of_a_turn_a_meta_entry_started_is_read_at_its_stop_and_can_wake_claude(
+    session, environ, emet, clock, capfdbinary, sender_on_the_clock, kind
+):
+    send(session, environ)
+    (first,) = pending.traces(root(environ), SESSION)
+    emet.report(first, 200, document(status="clear"))
+    assert stop(session, environ) == 0
+    clock.advance(600)
+    fired = session.meta_turn("check the deploy", kind)
+    session.text("msg_2", "Spend rose 12% in March.")
+    send(session, environ)
+    first, second = pending.traces(root(environ), SESSION)
+    emet.report(second, 200, document())
+    assert stop(session, environ, prompt_id=fired["promptId"]) == 2
+    assert outcomes(environ) == [(first, "clear", True), (second, "flagged", True)]
+    assert watch.checks(root(environ), SESSION)[-1]["handed"] is True and capfdbinary.readouterr()[1]
+
+
 def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, capfdbinary):
     transcript.prompt("What is 2 + 2?", promptId="prompt-1")
     transcript.text("msg_1", "4")
