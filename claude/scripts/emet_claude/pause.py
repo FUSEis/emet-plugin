@@ -80,6 +80,7 @@ def extend(root: Path, retry_after: Optional[float] = None, name: str = SENDS) -
             if current is not None:
                 # Another worker already recorded this failure. Only a longer wait Emet names for the reads moves the end
                 end = clock() + min(retry_after or 0.0, RETRY_AFTER_MAX_S)
+                # Cut to whole seconds: an older plugin stamps the end so, and the same end must not be written again
                 if name != SENDS and int(end) > current.timestamp():
                     storage.write_json(path(root, name), {"until": storage.now(end), "delay": last})
                     storage.log(root, f"report reads paused {int(end - clock())}s")

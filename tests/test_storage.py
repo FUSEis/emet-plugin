@@ -5,10 +5,38 @@ import time
 import pytest
 
 from emet_claude import commands, pending, storage, transcript, transport, watch
+from helpers import UTC_FORM
 
 
 def log_lines(root):
     return (root / "emet.log").read_text(encoding="utf-8").splitlines()
+
+
+@pytest.fixture
+def five_hours_behind_utc(monkeypatch):
+    """The machine's zone is not UTC, where a process can choose its zone. On Windows it cannot, and the machine's own zone stays."""
+    if not hasattr(time, "tzset"):
+        yield
+        return
+    with monkeypatch.context() as patch:
+        patch.setenv("TZ", "EST5")
+        time.tzset()
+        yield
+    time.tzset()
+
+
+def test_a_time_is_written_in_utc_with_milliseconds_and_z_whatever_the_zone_of_the_machine(five_hours_behind_utc):
+    assert storage.now(1_800_000_000) == "2027-01-15T08:00:00.000Z"
+    assert storage.now(1_800_000_000.789) == "2027-01-15T08:00:00.789Z"
+    # Cut, not rounded, as the times sent to Emet are
+    assert storage.now(1_800_000_000.7896) == "2027-01-15T08:00:00.789Z"
+    assert UTC_FORM.fullmatch(storage.now())
+
+
+def test_a_log_line_starts_with_the_time_in_utc(tmp_path, five_hours_behind_utc, monkeypatch):
+    monkeypatch.setattr(storage.time, "time", lambda: 1_800_000_000.789)
+    storage.log(tmp_path, "paused 30s")
+    assert log_lines(tmp_path) == ["2027-01-15T08:00:00.789Z paused 30s"]
 
 
 @pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x1e", "\x85", " ", " "])

@@ -15,7 +15,7 @@ import pytest
 
 from conftest import API_KEY
 from emet_claude import commands, config, pause, pending, report, storage, timestamps, transport, watch
-from helpers import WAKE_WRAPPER, Transcript, links, pipes
+from helpers import UTC_FORM, WAKE_WRAPPER, Transcript, links, old_form, pipes
 from test_report import claim, document
 
 SESSION = "session-1"
@@ -108,9 +108,9 @@ def deliver(environ, clock, trace_uuid=T1, ago=0.0, **fields):
     pending.append(root(environ), SESSION, line)
 
 
-def finish(environ, clock, queued=0, ago=-1.0):
+def finish(environ, clock, queued=0, ago=-1.0, form=storage.now):
     """Writes the line that ends a run of the sender, by default one second from now, as the run of a Stop that fires now does."""
-    pending.append(root(environ), SESSION, {"finished": storage.now(clock.now - ago), "queued": queued})
+    pending.append(root(environ), SESSION, {"finished": form(clock.now - ago), "queued": queued})
 
 
 def stop(transcript, environ, **fields):
@@ -178,6 +178,45 @@ def test_a_flagged_report_wakes_claude_with_the_rendered_text(session, environ, 
     assert emet.reads[0]["path"] == f"/api/v1/traces/{T1}/report/"
     assert emet.reads[0]["headers"]["Authorization"] == f"Bearer {API_KEY}"
     assert emet.requests == []
+
+
+def times_in(value, key=""):
+    """Returns every text in a saved value that reads as a time, with the key it stands under."""
+    if isinstance(value, dict):
+        return [found for name, held in value.items() for found in times_in(held, name)]
+    if isinstance(value, list):
+        return [found for held in value for found in times_in(held, key)]
+    return [(key, value)] if timestamps.parse(value) is not None else []
+
+
+def test_every_time_in_the_plugins_own_files_is_utc_with_milliseconds_and_z(transcript, environ, emet, clock, sender_on_the_clock):
+    clock.now += 0.789
+    transcript.prompt("What is 2 + 2?", timestamp=stamp(clock))
+    transcript.text("msg_1", "4", timestamp=stamp(clock))
+    send(transcript, environ)
+    (trace,) = pending.traces(root(environ), SESSION)
+    emet.report(trace, 200, document())
+    assert stop(transcript, environ) == 2
+    pause.extend(root(environ))
+    pause.extend(root(environ), None, pause.READS)
+    send(transcript, environ)
+    found = []
+    for path in sorted(root(environ).rglob("*.json*")):
+        if path.parent.name != "queue":
+            found += [(path.name, *time) for line in path.read_text(encoding="utf-8").splitlines() for time in times_in(json.loads(line))]
+    assert {name.replace(SESSION, "session").replace(trace, "trace") for name, _, _ in found} == {
+        "session.pending.jsonl",
+        "session.checks.jsonl",
+        "session.stop.json",
+        "session.trace.1.json",
+        "pause.json",
+        "read-pause.json",
+        "status.json",
+    }
+    assert {key for _, key, _ in found} >= {"at", "ended", "finished", "until", "updated_at", "paused_until", "reads_paused_until"}
+    assert [time for time in found if not UTC_FORM.fullmatch(time[2])] == []
+    assert [line for line in log(environ).splitlines() if not UTC_FORM.fullmatch(line.partition(" ")[0])] == []
+    assert any(not text.endswith(".000Z") for _, _, text in found), "the milliseconds are kept"
 
 
 def test_a_flagged_report_is_recorded_under_emets_ids(session, environ, emet, clock):
@@ -372,6 +411,32 @@ def test_the_poller_keeps_waiting_while_the_queue_holds_envelopes_or_the_stamp_i
     start = clock.now
     assert stop(session, environ) == 0
     assert clock.now - start == 60
+
+
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+@pytest.mark.parametrize("ago", [0.3, 0.001, 0.0, -0.3], ids=["0.3 s before", "1 ms before", "at the start", "0.3 s after"])
+def test_a_run_of_the_sender_that_ended_in_the_second_the_poller_started_in_does_not_end_the_wait(
+    session, environ, emet, clock, sleeper, form, ago
+):
+    clock.now += 0.5
+    # A run of the sender for an earlier Stop. This Stop's own run ends a second or more after the poller starts
+    finish(environ, clock, ago=ago, form=form)
+    emet.report(T1, 200, document())
+    # The sender of this Stop names the turn two seconds in
+    sleeper.at(2, lambda: deliver(environ, clock))
+    assert stop(session, environ) == 2, "the poller left before the sender named the turn"
+
+
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+@pytest.mark.parametrize("fraction", [0.0, 0.5, 0.999])
+def test_the_run_of_the_sender_a_second_after_the_poller_started_ends_the_wait_wherever_in_a_second_it_started(
+    session, environ, emet, clock, form, fraction
+):
+    clock.now += fraction
+    finish(environ, clock, form=form)
+    start = clock.now
+    assert stop(session, environ) == 0
+    assert clock.now == start
 
 
 def test_a_turn_delivered_from_the_queue_during_the_wait_is_polled(session, environ, emet, clock, asked, sleeper):
@@ -973,6 +1038,16 @@ def test_a_turn_delivered_before_the_latest_stop_is_an_earlier_turn_and_keeps_cl
     assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
 
 
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+def test_a_turn_delivered_in_the_second_it_ended_in_is_not_taken_for_an_earlier_one(environ, emet, clock, form):
+    ended = clock.now + 0.2
+    latest = watch.Stop(SESSION, "", "", 0, ended, "own", ended)
+    for delivered_at, earlier in ((ended + 0.3, False), (ended + 2, False), (ended - 0.3, True)):
+        pending.append(root(environ), SESSION, {"trace_uuid": str(uuid.uuid4()), "at": form(delivered_at), "endpoint": emet.url})
+        trace = watch.delivered(pending.lines(root(environ), SESSION), emet.url)[-1]
+        assert watch.earlier_turn(trace, latest) is earlier
+
+
 def test_a_turn_is_not_taken_for_an_earlier_one_when_the_poller_starts_long_after_the_sender(session, environ, emet, clock):
     deliver(environ, clock)
     emet.report(T1, 200, document())
@@ -1213,6 +1288,25 @@ def test_a_stop_file_with_no_version_or_with_a_key_this_version_does_not_know_is
 def test_a_stop_file_of_a_version_this_plugin_does_not_know_is_read_as_a_damaged_one(environ, clock, version):
     read = stop_read_back(environ, clock, v=version)
     assert (read.token, read.prompt_id, read.size) == ("own", "prompt-1", 100)
+
+
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+def test_the_size_of_the_session_file_orders_two_stops_of_one_second_wherever_in_it_they_began(environ, clock, form):
+    own = watch.Stop(SESSION, "", "", 100, clock.now + 0.6, "own")
+
+    def read(at, size):
+        storage.write_json(
+            watch.stop_path(root(environ), SESSION), {"v": 1, "token": "other", "prompt_id": "", "size": size, "at": form(at)}
+        )
+        return watch.latest(root(environ), own).token
+
+    assert read(clock.now + 0.2, 99) == "own"
+    assert read(clock.now + 0.9, 99) == "own"
+    assert read(clock.now + 0.9, 101) == "other"
+    assert read(clock.now + 0.6, 100) == "other"
+    # Stamps are cut, so one of a later Stop can read as earlier. Only one of an earlier second is refused by its time
+    assert read(clock.now + 0.2, 101) == "other"
+    assert read(clock.now - 0.1, 101) == "own"
 
 
 def test_a_stop_of_the_same_second_with_a_shorter_session_file_is_an_earlier_one(session, environ, emet, clock, sleeper):
@@ -1799,6 +1893,11 @@ def test_without_any_end_the_window_is_counted_from_the_second_the_stop_began_in
     read = watch.latest(root(environ), own)
     assert read.token == "later"
     assert watch.turn_end(watch.Trace(T1, began, ""), own) == watch.turn_end(watch.Trace(T1, began, ""), read) == clock.now
+    # And from a Stop file an older plugin stamped
+    storage.write_json(watch.stop_path(root(environ), SESSION), {"token": "older", "size": 0, "at": old_form(began)})
+    read = watch.latest(root(environ), own)
+    assert read.token == "older"
+    assert watch.turn_end(watch.Trace(T1, began, ""), read) == clock.now
 
 
 @pytest.mark.parametrize(
@@ -2452,9 +2551,12 @@ def test_a_lone_surrogate_in_a_saved_text_is_never_shown(environ, clock):
 def test_a_saved_verdict_is_shown_for_seven_days_and_never_from_a_time_ahead_of_the_clock(environ, clock):
     week = watch.VERDICT_DAYS * 24 * 3600
     for ago, problem in ((week - 60, []), (week + 60, ["verdict not shown, age"]), (-240, []), (-360, ["verdict not shown, age"])):
-        verdict = verdict_of(clock, at=storage.now(clock.now - ago))
-        assert read_back(environ, verdict) == ((None if problem else verdict), problem)
-    for at in ("long ago", None, 1_800_000_000, storage.now(clock.now)[:-5]):
+        for form in (storage.now, old_form):
+            verdict = verdict_of(clock, at=form(clock.now - ago))
+            assert read_back(environ, verdict) == ((None if problem else verdict), problem)
+    no_zone = stamp(clock)[: -len("Z")]
+    assert no_zone.endswith(":00.000") and timestamps.parse(no_zone + "Z") is not None
+    for at in ("long ago", None, 1_800_000_000, no_zone, old_form(clock.now)[: -len("-0500")]):
         assert read_back(environ, verdict_of(clock, at=at)) == (None, ["verdict not shown, age"])
     assert read_back(environ, without(verdict_of(clock), "at")) == (None, ["verdict not shown, age"])
 
