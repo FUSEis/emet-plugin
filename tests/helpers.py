@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import pytest
+
 # The body Emet answers a report read with when no trace has the id
 # Stands in for the words Claude Code puts before a Stop hook's stderr when it wakes Claude
 WAKE_WRAPPER = 'Stop hook blocking error from command: "python3 emet_hook.py watch": '
 NOT_FOUND = json.dumps({"error": "No trace was found with this id.", "code": "not_found", "status_code": 404}).encode()
+# For a test that makes a symbolic link, and for one that makes a named pipe
+links = pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+pipes = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the platform has no named pipes")
 
 
 class Transcript:

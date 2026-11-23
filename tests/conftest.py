@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from emet_claude import pause
+from emet_claude import pause, storage
 from helpers import Clock, FakeEmet, Transcript
 
 API_KEY = "Abcd1234.ZyxwVuts98765432QwertyUiop123456"
@@ -48,3 +48,12 @@ def environ(tmp_path: Path, emet: FakeEmet) -> Dict[str, str]:
         # Never the developer's own Claude account
         "CLAUDE_CONFIG_DIR": str(tmp_path / "claude-config"),
     }
+
+
+@pytest.fixture(params=["as the system is", "as on Windows"])
+def link_flag(request, monkeypatch):
+    """Runs a test as the system is, and again without the flag that refuses a link at the open, which Windows does not have."""
+    if request.param == "as on Windows":
+        monkeypatch.setattr(storage, "READ_FLAGS", storage.READ_FLAGS & ~storage.NOFOLLOW)
+        monkeypatch.setattr(storage, "NOFOLLOW", 0)
+    return storage.NOFOLLOW
