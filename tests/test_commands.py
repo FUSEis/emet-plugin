@@ -919,6 +919,154 @@ def test_subagent_stop_does_not_send_the_turn_still_running(transcript, environ,
     assert finals == ["model.msg_2"]
 
 
+# Stands for a key an entry does not have
+ABSENT = object()
+
+
+def stop_worker(transcript, environ, mode="stop", **fields):
+    commands.run_worker(mode, json.dumps({**transcript.hook_input(), **fields}).encode(), environ)
+
+
+def turn_then_the_start_of_the_next(transcript, **next_fields):
+    """A finished turn, and a next turn whose first model call is in the file before the worker of the first Stop reads it."""
+    first = transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    named = {key: value for key, value in {"promptId": "prompt-2", **next_fields}.items() if value is not ABSENT}
+    second = transcript.prompt("And 3 + 3?", source="queued", **named)
+    transcript.tool_use("msg_2", "toolu_1", "Bash", {"command": "echo 6"})
+    return first, second
+
+
+def test_a_stop_sends_only_the_turn_it_ended_and_the_next_turn_is_sent_whole_at_its_own_stop(transcript, environ, emet, no_wait):
+    first, second = turn_then_the_start_of_the_next(transcript)
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"]]
+    transcript.tool_result("toolu_1", "6")
+    transcript.text("msg_3", "6")
+    stop_worker(transcript, environ, prompt_id="prompt-2")
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (second["uuid"], True)]
+    assert {span["span_id"] for span in emet.envelopes[1]["spans"]} >= {"model.msg_2", "tool.toolu_1", "model.msg_3"}
+    assert [span["span_id"] for span in emet.envelopes[1]["spans"] if span.get("is_final_output")] == ["model.msg_3"]
+
+
+@pytest.mark.parametrize("fields", [{}, {"prompt_id": None}, {"prompt_id": ""}, {"prompt_id": 5}, {"prompt_id": "prompt-9"}])
+def test_a_stop_that_names_no_turn_of_the_file_sends_every_answered_turn(transcript, environ, emet, no_wait, fields):
+    first, second = turn_then_the_start_of_the_next(transcript)
+    stop_worker(transcript, environ, **fields)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
+
+
+@pytest.mark.parametrize("next_id", [ABSENT, None, "", 5, "not a plain id", "prompt-1"], ids=repr)
+def test_a_later_start_that_names_no_other_turn_is_sent_with_the_turn_the_stop_ended(transcript, environ, emet, no_wait, next_id):
+    first, second = turn_then_the_start_of_the_next(transcript, promptId=next_id)
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
+
+
+def test_a_stop_leaves_every_turn_that_started_after_the_one_it_ended(transcript, environ, emet, no_wait):
+    first, second = turn_then_the_start_of_the_next(transcript)
+    # The middle turn still runs when a third one is in the file
+    third = transcript.prompt("And 4 + 4?", promptId="prompt-3")
+    transcript.text("msg_3", "8")
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"]]
+    stop_worker(transcript, environ, prompt_id="prompt-3")
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes[1:]] == [(second["uuid"], True), (third["uuid"], True)]
+
+
+@pytest.mark.parametrize("mode", ["subagent-stop", "session-start"])
+def test_a_hook_that_is_no_stop_sends_all_but_the_last_turn_whatever_turn_it_names(transcript, environ, emet, no_wait, mode):
+    first, second = turn_then_the_start_of_the_next(transcript)
+    transcript.prompt("And 4 + 4?", promptId="prompt-3")
+    stop_worker(transcript, environ, mode=mode, source="compact", prompt_id="prompt-1")
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
+
+
+def test_a_stop_whose_turn_another_worker_sent_already_leaves_a_turn_that_started_since(transcript, environ, emet, no_wait):
+    first = transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    second = transcript.prompt("And 3 + 3?", source="queued", promptId="prompt-2")
+    transcript.text("msg_2", "6")
+    # The worker of the second Stop took the session's lock first
+    stop_worker(transcript, environ, prompt_id="prompt-2")
+    third = transcript.notice("A background command finished.", promptId="prompt-3")
+    transcript.tool_use("msg_3", "toolu_1", "Bash", {"command": "cat out.txt"})
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
+    transcript.tool_result("toolu_1", "done")
+    transcript.text("msg_4", "The command is done.")
+    stop_worker(transcript, environ, prompt_id="prompt-3")
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes[2:]] == [(third["uuid"], True)]
+    assert [span["span_id"] for span in emet.envelopes[2]["spans"] if span.get("is_final_output")] == ["model.msg_4"]
+
+
+def test_what_is_added_to_a_turn_already_sent_still_joins_it_when_a_later_turn_is_left(transcript, environ, emet, no_wait):
+    first = transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    transcript.tool_use("msg_late", "toolu_late", "Bash", {"command": "echo"})
+    transcript.prompt("And 3 + 3?", source="queued", promptId="prompt-2")
+    transcript.tool_use("msg_2", "toolu_1", "Bash", {"command": "echo 6"})
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], first["uuid"]]
+    assert [span["span_id"] for span in emet.envelopes[1]["spans"]] == ["model.msg_late"]
+
+
+def test_a_turn_queued_for_retry_counts_as_sent(transcript, environ, emet, no_wait):
+    finished = transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    emet.statuses = [503]
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert state(environ)["sent_turns"] == ["prompt-1"]
+    transcript.notice("A background command finished.", promptId="prompt-2")
+    transcript.tool_use("msg_2", "toolu_1", "Bash", {"command": "cat out.txt"})
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert {env["trace_id"] for env in emet.envelopes} == {finished["uuid"]}
+
+
+def test_the_state_file_keeps_the_ids_of_the_last_turns_sent_and_no_more(transcript, environ, emet, monkeypatch):
+    monkeypatch.setattr(commands, "MAX_SENT_TURNS", 3)
+    for number in range(5):
+        transcript.prompt(f"What is {number} + 1?", promptId=f"prompt-{number}")
+        transcript.text(f"msg_{number}", str(number + 1))
+    transcript.prompt("What is 1 + 1, again?", promptId="prompt-3")
+    transcript.text("msg_again", "2")
+    transcript.prompt("And with an id that is no plain name?", promptId="prompt 9")
+    transcript.text("msg_9", "2")
+    run(transcript, environ)
+    assert state(environ)["sent_turns"] == ["prompt-2", "prompt-4", "prompt-3"]
+    log = (Path(environ["CLAUDE_PLUGIN_DATA"]) / "emet.log").read_text(encoding="utf-8")
+    assert "prompt-" not in log + json.dumps(emet.requests) + json.dumps(status(environ))
+
+
+@pytest.mark.parametrize("damaged", [None, "prompt-1", {"prompt-1": 1}, [5, None, ["prompt-1"], "not a plain id"]])
+def test_a_damaged_list_of_sent_turns_names_no_turn(transcript, environ, emet, no_wait, damaged):
+    finished_turn(transcript)
+    run(transcript, environ)
+    rewrite_state(environ, lambda saved: saved.update(sent_turns=damaged))
+    started = transcript.prompt("And 3 + 3?", promptId="prompt-2")
+    transcript.tool_use("msg_2", "toolu_1", "Bash", {"command": "echo 6"})
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert emet.envelopes[-1]["trace_id"] == started["uuid"]
+    assert state(environ)["sent_turns"] == ["prompt-2"]
+
+
+def test_turns_before_the_one_the_stop_ended_are_still_sent(transcript, environ, emet, no_wait):
+    earlier = []
+    for number in (1, 2):
+        earlier.append(transcript.prompt(f"What is {number} + 1?", promptId=f"prompt-0{number}")["uuid"])
+        transcript.text(f"msg_0{number}", str(number + 1))
+    first, _ = turn_then_the_start_of_the_next(transcript)
+    stop_worker(transcript, environ, prompt_id="prompt-1")
+    assert [env["trace_id"] for env in emet.envelopes] == [*earlier, first["uuid"]]
+
+
+def test_the_end_of_a_session_sends_every_answered_turn_whatever_turn_it_names(transcript, environ, emet, no_wait):
+    first, second = turn_then_the_start_of_the_next(transcript)
+    stop_worker(transcript, environ, mode="session-end", hook_event_name="SessionEnd", prompt_id="prompt-1")
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], second["uuid"]]
+
+
 def test_queue_keeps_the_order_turns_were_queued(tmp_path):
     root = storage.data_dir({"CLAUDE_PLUGIN_DATA": str(tmp_path)})
     for index in range(20):

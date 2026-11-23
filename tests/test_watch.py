@@ -6,6 +6,7 @@ import re
 import socket
 import stat
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 
 from conftest import API_KEY
 from emet_claude import commands, config, missed, pause, pending, report, storage, timestamps, transport, watch
-from helpers import WAKE_WRAPPER, Transcript, fork_of
+from helpers import UTC_FORM, WAKE_WRAPPER, Transcript, fork_of, links, old_form, pipes
 from test_report import claim, document
 
 SESSION = "session-1"
@@ -107,9 +108,9 @@ def deliver(environ, clock, trace_uuid=T1, ago=0.0, **fields):
     pending.append(root(environ), SESSION, line)
 
 
-def finish(environ, clock, queued=0, ago=-1.0):
+def finish(environ, clock, queued=0, ago=-1.0, form=storage.now):
     """Writes the line that ends a run of the sender, by default one second from now, as the run of a Stop that fires now does."""
-    pending.append(root(environ), SESSION, {"finished": storage.now(clock.now - ago), "queued": queued})
+    pending.append(root(environ), SESSION, {"finished": form(clock.now - ago), "queued": queued})
 
 
 def stop(transcript, environ, **fields):
@@ -177,6 +178,45 @@ def test_a_flagged_report_wakes_claude_with_the_rendered_text(session, environ, 
     assert emet.reads[0]["path"] == f"/api/v1/traces/{T1}/report/"
     assert emet.reads[0]["headers"]["Authorization"] == f"Bearer {API_KEY}"
     assert emet.requests == []
+
+
+def times_in(value, key=""):
+    """Returns every text in a saved value that reads as a time, with the key it stands under."""
+    if isinstance(value, dict):
+        return [found for name, held in value.items() for found in times_in(held, name)]
+    if isinstance(value, list):
+        return [found for held in value for found in times_in(held, key)]
+    return [(key, value)] if timestamps.parse(value) is not None else []
+
+
+def test_every_time_in_the_plugins_own_files_is_utc_with_milliseconds_and_z(transcript, environ, emet, clock, sender_on_the_clock):
+    clock.now += 0.789
+    transcript.prompt("What is 2 + 2?", timestamp=stamp(clock))
+    transcript.text("msg_1", "4", timestamp=stamp(clock))
+    send(transcript, environ)
+    (trace,) = pending.traces(root(environ), SESSION)
+    emet.report(trace, 200, document())
+    assert stop(transcript, environ) == 2
+    pause.extend(root(environ))
+    pause.extend(root(environ), None, pause.READS)
+    send(transcript, environ)
+    found = []
+    for path in sorted(root(environ).rglob("*.json*")):
+        if path.parent.name != "queue":
+            found += [(path.name, *time) for line in path.read_text(encoding="utf-8").splitlines() for time in times_in(json.loads(line))]
+    assert {name.replace(SESSION, "session").replace(trace, "trace") for name, _, _ in found} == {
+        "session.pending.jsonl",
+        "session.checks.jsonl",
+        "session.stop.json",
+        "session.trace.1.json",
+        "pause.json",
+        "read-pause.json",
+        "status.json",
+    }
+    assert {key for _, key, _ in found} >= {"at", "ended", "finished", "until", "updated_at", "paused_until", "reads_paused_until"}
+    assert [time for time in found if not UTC_FORM.fullmatch(time[2])] == []
+    assert [line for line in log(environ).splitlines() if not UTC_FORM.fullmatch(line.partition(" ")[0])] == []
+    assert any(not text.endswith(".000Z") for _, _, text in found), "the milliseconds are kept"
 
 
 def test_a_flagged_report_is_recorded_under_emets_ids(session, environ, emet, clock):
@@ -371,6 +411,32 @@ def test_the_poller_keeps_waiting_while_the_queue_holds_envelopes_or_the_stamp_i
     start = clock.now
     assert stop(session, environ) == 0
     assert clock.now - start == 60
+
+
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+@pytest.mark.parametrize("ago", [0.3, 0.001, 0.0, -0.3], ids=["0.3 s before", "1 ms before", "at the start", "0.3 s after"])
+def test_a_run_of_the_sender_that_ended_in_the_second_the_poller_started_in_does_not_end_the_wait(
+    session, environ, emet, clock, sleeper, form, ago
+):
+    clock.now += 0.5
+    # A run of the sender for an earlier Stop. This Stop's own run ends a second or more after the poller starts
+    finish(environ, clock, ago=ago, form=form)
+    emet.report(T1, 200, document())
+    # The sender of this Stop names the turn two seconds in
+    sleeper.at(2, lambda: deliver(environ, clock))
+    assert stop(session, environ) == 2, "the poller left before the sender named the turn"
+
+
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+@pytest.mark.parametrize("fraction", [0.0, 0.5, 0.999])
+def test_the_run_of_the_sender_a_second_after_the_poller_started_ends_the_wait_wherever_in_a_second_it_started(
+    session, environ, emet, clock, form, fraction
+):
+    clock.now += fraction
+    finish(environ, clock, form=form)
+    start = clock.now
+    assert stop(session, environ) == 0
+    assert clock.now == start
 
 
 def test_a_turn_delivered_from_the_queue_during_the_wait_is_polled(session, environ, emet, clock, asked, sleeper):
@@ -972,6 +1038,16 @@ def test_a_turn_delivered_before_the_latest_stop_is_an_earlier_turn_and_keeps_cl
     assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
 
 
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+def test_a_turn_delivered_in_the_second_it_ended_in_is_not_taken_for_an_earlier_one(environ, emet, clock, form):
+    ended = clock.now + 0.2
+    latest = watch.Stop(SESSION, "", "", 0, ended, "own", ended)
+    for delivered_at, earlier in ((ended + 0.3, False), (ended + 2, False), (ended - 0.3, True)):
+        pending.append(root(environ), SESSION, {"trace_uuid": str(uuid.uuid4()), "at": form(delivered_at), "endpoint": emet.url})
+        trace = watch.delivered(pending.lines(root(environ), SESSION), emet.url)[-1]
+        assert watch.earlier_turn(trace, latest) is earlier
+
+
 def test_a_turn_is_not_taken_for_an_earlier_one_when_the_poller_starts_long_after_the_sender(session, environ, emet, clock):
     deliver(environ, clock)
     emet.report(T1, 200, document())
@@ -1214,6 +1290,25 @@ def test_a_stop_file_of_a_version_this_plugin_does_not_know_is_read_as_a_damaged
     assert (read.token, read.prompt_id, read.size) == ("own", "prompt-1", 100)
 
 
+@pytest.mark.parametrize("form", [storage.now, old_form], ids=["stamped by this plugin", "stamped by an older one"])
+def test_the_size_of_the_session_file_orders_two_stops_of_one_second_wherever_in_it_they_began(environ, clock, form):
+    own = watch.Stop(SESSION, "", "", 100, clock.now + 0.6, "own")
+
+    def read(at, size):
+        storage.write_json(
+            watch.stop_path(root(environ), SESSION), {"v": 1, "token": "other", "prompt_id": "", "size": size, "at": form(at)}
+        )
+        return watch.latest(root(environ), own).token
+
+    assert read(clock.now + 0.2, 99) == "own"
+    assert read(clock.now + 0.9, 99) == "own"
+    assert read(clock.now + 0.9, 101) == "other"
+    assert read(clock.now + 0.6, 100) == "other"
+    # Stamps are cut, so one of a later Stop can read as earlier. Only one of an earlier second is refused by its time
+    assert read(clock.now + 0.2, 101) == "other"
+    assert read(clock.now - 0.1, 101) == "own"
+
+
 def test_a_stop_of_the_same_second_with_a_shorter_session_file_is_an_earlier_one(session, environ, emet, clock, sleeper):
     deliver(environ, clock)
     emet.report(T1, 200, document())
@@ -1391,6 +1486,178 @@ def test_a_turn_that_started_while_the_report_was_awaited_keeps_claude_asleep(
     assert bool(capfdbinary.readouterr()[1]) is woken
 
 
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_started_while_the_report_was_awaited_keeps_claude_asleep(
+    session, environ, emet, clock, sleeper, capfdbinary, kind
+):
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    sleeper.at(4, lambda: session.meta_turn("check the deploy", kind))
+    assert stop(session, environ) == 0
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
+    assert capfdbinary.readouterr() == (b"", b"")
+
+
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_started_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, kind):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    transcript.meta_turn("check the deploy", kind)
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+def test_a_notice_kept_as_a_record_only_is_no_newer_turn_and_one_a_model_call_answers_is(session, environ, emet, clock, sleeper):
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    sleeper.at(1, lambda: session.record_notice())
+    assert stop(session, environ) == 2
+    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+    stopped = watch.Stop(SESSION, str(session.path), "", session.path.stat().st_size, clock.now)
+    session.record_notice()
+    assert watch.newer_turn(stopped) is False
+    session.notice("<task-notification>Background command finished</task-notification>")
+    assert watch.newer_turn(stopped) is True
+
+
+def test_a_persons_prompt_after_a_start_with_no_answer_in_the_file_is_still_a_newer_turn(transcript, environ, emet, clock):
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.prompt("And 3 + 3?", source="queued", promptId="prompt-2")
+    deliver(environ, clock)
+    finish(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+def joined_turn(transcript, environ, clock):
+    """An answered turn, then a notice and a peer message that one model call answers. Returns their ids. The trace carries the notice's."""
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    ids = {"notice": transcript.notice("<task-notification>agent finished</task-notification>")["promptId"]}
+    ids["peer"] = transcript.meta_turn("check the deploy", "peer")["promptId"]
+    transcript.text("msg_2", "The agent finished and the deploy is up.")
+    deliver(environ, clock, prompt_id=ids["notice"])
+    return ids
+
+
+@pytest.mark.parametrize("named", ["notice", ""])
+def test_a_peer_message_that_joined_a_notice_with_no_answer_yet_is_not_taken_for_a_newer_turn(transcript, environ, emet, clock, named):
+    ids = joined_turn(transcript, environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ, prompt_id=ids.get(named, "")) == 2
+    stopped = watch.Stop(SESSION, str(transcript.path), ids.get(named, ""), transcript.path.stat().st_size, clock.now)
+    assert watch.newer_turn(stopped) is False
+
+
+def test_known_limit_a_stop_that_names_the_joined_messages_id_holds_the_turns_report_back(transcript, environ, emet, clock):
+    ids = joined_turn(transcript, environ, clock)
+    emet.report(T1, 200, document())
+    # The trace carries the notice's id. Which of the two a Stop names for a joined turn is not known
+    assert stop(transcript, environ, prompt_id=ids["peer"]) == 0
+    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    stopped = watch.Stop(SESSION, str(transcript.path), ids["peer"], transcript.path.stat().st_size, clock.now)
+    assert watch.newer_turn(stopped) is False
+
+
+def after_a_local_command(transcript):
+    transcript.local_command()
+    return [transcript.meta_turn("check the deploy", "scheduled")]
+
+
+def after_a_shell_escape(transcript):
+    transcript.shell_escape()
+    return [transcript.meta_turn("the agent's result", "peer")]
+
+
+def after_a_notice_with_no_answer_but_a_subagents(transcript):
+    notice = transcript.notice("<task-notification>agent finished</task-notification>")
+    transcript.text("msg_side", "A subagent's words", isSidechain=True)
+    transcript.meta_turn("the agent's result", "peer")
+    return [notice]
+
+
+def after_a_persons_prompt_with_no_answer(transcript):
+    prompt = transcript.prompt("And 3 + 3?", promptId="prompt-2")
+    transcript.meta_turn("check the deploy", "scheduled")
+    return [prompt]
+
+
+def after_another_with_no_answer(transcript):
+    first = transcript.meta_turn("the first agent's result", "peer")
+    transcript.meta_turn("the second agent's result", "peer")
+    return [first]
+
+
+def after_a_record_only_notice(transcript):
+    transcript.record_notice()
+    return [transcript.meta_turn("the agent's result", "peer")]
+
+
+def after_an_answered_turn(transcript):
+    return [transcript.meta_turn("check the deploy", "scheduled")]
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        after_a_local_command,
+        after_a_shell_escape,
+        after_a_notice_with_no_answer_but_a_subagents,
+        after_a_persons_prompt_with_no_answer,
+        after_another_with_no_answer,
+        after_a_record_only_notice,
+        after_an_answered_turn,
+    ],
+)
+def test_the_sender_and_the_poller_find_the_same_turns_whatever_a_scheduled_or_peer_start_follows(transcript, write):
+    first = transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    expected = [first["uuid"]] + [entry["uuid"] for entry in write(transcript)]
+    transcript.text("msg_2", "Done.")
+    _, turns = watch.transcript.split_turns(watch.transcript.read_entries(transcript.path, 0)[0])
+    # The sender passes over a turn with no answer, which is how it drops a local command
+    assert [turn[0][1]["uuid"] for turn in turns if watch.transcript.answered(turn)] == expected
+    found, _ = watch.session_entries(str(transcript.path))
+    assert [entry["uuid"] for _, entry in watch.turn_starts(found)] == expected
+
+
+def test_a_scheduled_or_peer_turn_does_not_hide_that_no_person_is_at_the_session(transcript, environ, emet, clock):
+    transcript.prompt("What is 2 + 2?", source="sdk")
+    transcript.text("msg_1", "4")
+    transcript.meta_turn("the agent's result", "peer")
+    transcript.text("msg_2", "Noted.")
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    assert stop(transcript, environ) == 0
+    assert emet.reads == [] and outcomes(environ) == [(T1, "no_person", False)]
+
+
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_the_report_of_a_turn_a_meta_entry_started_is_read_at_its_stop_and_can_wake_claude(
+    session, environ, emet, clock, capfdbinary, sender_on_the_clock, kind
+):
+    send(session, environ)
+    (first,) = pending.traces(root(environ), SESSION)
+    emet.report(first, 200, document(status="clear"))
+    assert stop(session, environ) == 0
+    clock.advance(600)
+    fired = session.meta_turn("check the deploy", kind)
+    session.text("msg_2", "Spend rose 12% in March.")
+    send(session, environ)
+    first, second = pending.traces(root(environ), SESSION)
+    emet.report(second, 200, document())
+    assert stop(session, environ, prompt_id=fired["promptId"]) == 2
+    assert outcomes(environ) == [(first, "clear", True), (second, "flagged", True)]
+    assert watch.checks(root(environ), SESSION)[-1]["handed"] is True and capfdbinary.readouterr()[1]
+
+
 def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, capfdbinary):
     transcript.prompt("What is 2 + 2?", promptId="prompt-1")
     transcript.text("msg_1", "4")
@@ -1400,6 +1667,34 @@ def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id
     emet.report(T1, 200, document())
     assert stop(transcript, environ, prompt_id="prompt-1") == 0
     assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+
+
+def test_the_report_of_a_turn_that_began_before_the_last_stop_was_sent_is_read_at_its_own_stop(
+    transcript, environ, emet, clock, capfdbinary, sender_on_the_clock, monkeypatch
+):
+    monkeypatch.setattr(commands.time, "sleep", lambda seconds: None)
+
+    def worker(prompt_id):
+        commands.run_worker("stop", json.dumps({**transcript.hook_input(), "prompt_id": prompt_id}).encode(), environ)
+
+    transcript.prompt("What is 2 + 2?", promptId="prompt-1")
+    transcript.text("msg_1", "4")
+    # The queued prompt's first model call is in the file before the worker of the first Stop reads it
+    second = transcript.prompt("How did March go?", source="queued", promptId="prompt-2")
+    transcript.tool_use("msg_2", "toolu_1", "Bash", {"command": "cat march.csv"})
+    worker("prompt-1")
+    (first,) = pending.traces(root(environ), SESSION)
+    emet.report(first, 200, document(status="clear", claims=[]))
+    assert stop(transcript, environ, prompt_id="prompt-1") == 0
+    assert second["uuid"] not in emet.trace_uuids
+    transcript.tool_result("toolu_1", "spend,12")
+    transcript.text("msg_3", "Spend rose 12% in March.")
+    worker("prompt-2")
+    emet.report(emet.trace_uuids[second["uuid"]], 200, document())
+    assert stop(transcript, environ, prompt_id="prompt-2") == 2
+    assert emet.polled(emet.trace_uuids[second["uuid"]]) == 1
+    text = capfdbinary.readouterr()[1].decode("utf-8")
+    assert text.startswith(report.WAKE_OPENING) and "Spend rose 12% in March." in text and "The March export shows a 9% rise." in text
 
 
 @pytest.mark.parametrize("prompt_id", ["", None, "prompt-9"])
@@ -1770,6 +2065,11 @@ def test_without_any_end_the_window_is_counted_from_the_second_the_stop_began_in
     read = watch.latest(root(environ), own)
     assert read.token == "later"
     assert watch.turn_end(watch.Trace(T1, began, ""), own) == watch.turn_end(watch.Trace(T1, began, ""), read) == clock.now
+    # And from a Stop file an older plugin stamped
+    storage.write_json(watch.stop_path(root(environ), SESSION), {"token": "older", "size": 0, "at": old_form(began)})
+    read = watch.latest(root(environ), own)
+    assert read.token == "older"
+    assert watch.turn_end(watch.Trace(T1, began, ""), read) == clock.now
 
 
 @pytest.mark.parametrize(
@@ -2423,9 +2723,12 @@ def test_a_lone_surrogate_in_a_saved_text_is_never_shown(environ, clock):
 def test_a_saved_verdict_is_shown_for_seven_days_and_never_from_a_time_ahead_of_the_clock(environ, clock):
     week = watch.VERDICT_DAYS * 24 * 3600
     for ago, problem in ((week - 60, []), (week + 60, ["verdict not shown, age"]), (-240, []), (-360, ["verdict not shown, age"])):
-        verdict = verdict_of(clock, at=storage.now(clock.now - ago))
-        assert read_back(environ, verdict) == ((None if problem else verdict), problem)
-    for at in ("long ago", None, 1_800_000_000, storage.now(clock.now)[:-5]):
+        for form in (storage.now, old_form):
+            verdict = verdict_of(clock, at=form(clock.now - ago))
+            assert read_back(environ, verdict) == ((None if problem else verdict), problem)
+    no_zone = stamp(clock)[: -len("Z")]
+    assert no_zone.endswith(":00.000") and timestamps.parse(no_zone + "Z") is not None
+    for at in ("long ago", None, 1_800_000_000, no_zone, old_form(clock.now)[: -len("-0500")]):
         assert read_back(environ, verdict_of(clock, at=at)) == (None, ["verdict not shown, age"])
     assert read_back(environ, without(verdict_of(clock), "at")) == (None, ["verdict not shown, age"])
 
@@ -2538,15 +2841,6 @@ def test_a_verdict_file_that_cannot_be_read_once_open_is_unreadable_and_is_close
     monkeypatch.setattr(os, "close", lambda fd: closed.append(fd) or close(fd))
     assert read_back(environ, verdict_of(clock)) == (None, ["verdict not shown, unreadable"])
     assert len(closed) == 1
-
-
-@pytest.fixture(params=["as the system is", "as on Windows"])
-def link_flag(request, monkeypatch):
-    """Runs a test as the system is, and again without the flag that refuses a link at the open, which Windows does not have."""
-    if request.param == "as on Windows":
-        monkeypatch.setattr(storage, "READ_FLAGS", storage.READ_FLAGS & ~storage.NOFOLLOW)
-        monkeypatch.setattr(storage, "NOFOLLOW", 0)
-    return storage.NOFOLLOW
 
 
 def test_a_verdict_file_is_opened_once_and_judged_by_what_was_opened(environ, clock, monkeypatch, link_flag):
@@ -3135,3 +3429,89 @@ def test_a_fork_is_told_nothing_about_the_turns_it_copied_and_its_own_turn_is_ch
     assert [path.name.split(".")[:2] for path in (root(environ) / "verdicts").glob("session-2.*")] == [
         ["session-2", emet.trace_uuids[own["uuid"]]]
     ]
+
+
+@links
+@pytest.mark.parametrize("exists", [True, False])
+def test_a_link_at_the_checks_file_is_removed_and_the_outcome_is_written_to_a_new_file(tmp_path, environ, link_flag, exists):
+    outside = tmp_path / "outside.jsonl"
+    if exists:
+        outside.write_text("untouched", encoding="utf-8")
+    path = watch.checks_path(root(environ), SESSION)
+    path.symlink_to(outside)
+    assert watch.record(root(environ), SESSION, T1, "clear") is True
+    assert outside.read_text(encoding="utf-8") == "untouched" if exists else not outside.exists()
+    assert not path.is_symlink() and path.is_file()
+    assert outcomes(environ) == [(T1, "clear", True)]
+    assert log(environ).count("checks file was a link, removed") == 1
+    assert watch.record(root(environ), SESSION, T1, "clear") is True
+    assert log(environ).count("checks file was a link, removed") == 1 and len(outcomes(environ)) == 2
+
+
+@links
+def test_a_link_put_at_the_checks_file_after_the_look_is_refused_by_the_open(tmp_path, environ, monkeypatch):
+    outside = tmp_path / "outside.jsonl"
+    path = watch.checks_path(root(environ), SESSION)
+    path.symlink_to(outside)
+    # The look sees no link, as when one is planted between the look and the open
+    monkeypatch.setattr(type(path), "is_symlink", lambda self: False)
+    assert watch.record(root(environ), SESSION, T1, "clear") is False
+    assert not outside.exists()
+    assert f"report {T1} -> clear, not recorded OSError" in log(environ)
+    assert not (root(environ) / "status.json").exists()
+
+
+@links
+def test_a_link_at_the_checks_file_is_not_read_and_reading_leaves_it(tmp_path, environ):
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(json.dumps({"trace_uuid": T1, "outcome": "clear", "final": True}) + "\n", encoding="utf-8")
+    path = watch.checks_path(root(environ), SESSION)
+    path.symlink_to(outside)
+    assert watch.checks(root(environ), SESSION) == []
+    assert path.is_symlink()
+
+
+@pipes
+@pytest.mark.parametrize("writer", [False, True])
+def test_a_pipe_at_the_checks_file_is_read_as_empty_without_waiting(environ, writer):
+    path = watch.checks_path(root(environ), SESSION)
+    os.mkfifo(path)
+    # A pipe takes a writer only while it has a reader. With one that writes nothing, a read that does not wait has no answer
+    ends = [os.open(path, os.O_RDONLY | os.O_NONBLOCK), os.open(path, os.O_WRONLY | os.O_NONBLOCK)] if writer else []
+    found = []
+    # On another thread, so an open that waits for a writer fails the test and does not hang it
+    waiter = threading.Thread(target=lambda: found.append(watch.checks(root(environ), SESSION)), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    for end in ends:
+        os.close(end)
+    assert found == [[]]
+
+
+@pipes
+def test_a_pipe_at_the_checks_file_is_not_written_and_nothing_waits(environ):
+    os.mkfifo(watch.checks_path(root(environ), SESSION))
+    recorded = []
+    waiter = threading.Thread(target=lambda: recorded.append(watch.record(root(environ), SESSION, T1, "clear")), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    assert recorded == [False]
+    assert f"report {T1} -> clear, not recorded OSError" in log(environ)
+
+
+def test_a_folder_at_the_checks_file_leaves_no_descriptor_open(environ, monkeypatch):
+    watch.checks_path(root(environ), SESSION).mkdir()
+    opened = []
+    real = os.open
+
+    def kept(*args, **kwargs):
+        opened.append(real(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(os, "open", kept)
+    assert watch.checks(root(environ), SESSION) == []
+    assert watch.record(root(environ), SESSION, T1, "clear") is False
+    monkeypatch.undo()
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
