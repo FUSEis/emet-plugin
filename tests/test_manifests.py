@@ -278,7 +278,8 @@ def test_the_status_skill_puts_every_outcome_of_a_report_check_under_one_of_thre
     # A showing is recorded only for a report that was recorded as flagged
     assert {watch.FLAGGED, watch.SHOWN} == UNDER_FLAGGED
     shown = rows[watch.SHOWN][1]
-    assert "together with a later prompt of the session" in shown and "An earlier `flagged` entry holds the same `trace_uuid`." in shown
+    assert "together with a later prompt of the session" in shown
+    assert "It took the place of the `flagged` entry with the same `trace_uuid`, so the turn is listed once." in shown
     assert "That does not prove the user saw Claude's message." in shown
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     assert "**Flagged**, **Checked, not flagged**, **Not checked**" in text
@@ -313,6 +314,7 @@ def test_the_status_skill_says_once_what_the_check_cannot_do_and_shows_no_text_o
         assert f"`{reason}`" in held, reason
     assert f"`{watch.SHOWN_TURN}` (the turn's own prompt carried the notice about an earlier report" in held
     assert f"Unless `held` is `{watch.SHOWN_TURN}`, the plugin gives the notice to Claude with a later prompt of that session" in held
+    assert f"a `{watch.SHOWN}` entry for the same `trace_uuid` then takes the place of this one" in held
     from emet_claude import missed
 
     assert f"is given to Claude with the user's next prompt, for at most {missed.SHOW_CAP} reports in a session" in text
@@ -332,8 +334,13 @@ def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no
     assert "The word always comes first and is never left out, translated or replaced by another word." in text
     assert "give it as the meaning of the word and add nothing to it: no label Emet shows on its pages" in text
     assert "keep every word and value you quote exactly as it is written there" in text
+    assert "Every time this version of the plugin writes in both files is in UTC and ends in `Z`" in text
+    assert "was written by version 0.1.4 or earlier, in the machine's local time: convert it to UTC before you show it." in text
+    assert "`2027-01-15T23:30:00+0530` is 18:00:00 UTC the same day, and `2027-01-15T22:00:00-0500` is 03:00:00 UTC on the 16th" in text
+    assert "Say UTC with each time you show, and show its date too when converting changed the date" in text
+    assert "If you do not know the current time, give the pause time and do not say whether it has passed." in text
     # The example entry is in the form the rule asks for, with a word the plugin records
-    example = re.search(r"For example: [0-9:]{8}, trace [0-9a-f]{8}, `([a-z_]+)`: ([^.]+\.)", text)
+    example = re.search(r"For example: [0-9:]{8} UTC, trace [0-9a-f]{8}, `([a-z_]+)`: ([^.]+\.)", text)
     rows = check_rows()
     assert example is not None and example.group(1) in watch.OUTCOMES
     assert rows[example.group(1)][1] == example.group(2)
@@ -390,7 +397,7 @@ def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_and_the_
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     table = text.partition("| Log shows | Meaning | Fix |\n| --- | --- | --- |\n")[2].partition("\n\n")[0]
     shown = [span for row in table.splitlines() for span in re.findall(r"`([^`]+)`", row.split(" | ")[0])]
-    assert len(log_lines(watch)) == 23, "every storage.log call of watch.py is read, the two forms of each outcome line included"
+    assert len(log_lines(watch)) == 24, "every storage.log call of watch.py is read, the two forms of each outcome line included"
     assert len(log_lines(missed)) == 7, "every storage.log call of missed.py is read"
     # A line the two modules share needs one row
     lines = sorted(set(log_lines(watch) + log_lines(missed)))
@@ -898,6 +905,8 @@ def test_the_readme_says_when_claude_speaks_about_a_report_and_that_no_setting_t
         f"Under `claude -p` or the SDK, and on a Claude Code older than {needed}, no report is read.",
         f"The plugin asks for {watch.BUDGET_S // 60} minutes after a turn ends.",
         "for a day at most" if watch.MAX_AGE_S == 24 * 3600 else "",
+        "It is saved for a later prompt, within the limits below, and `/emet:status` lists it.",
+        "It then never interrupts you, since it is late: a flagged one is saved for a later prompt, within the limits below.",
         "can miss things or be wrong",
         "They make such an action unlikely; they cannot rule it out.",
         "There is no setting for this alone.",
@@ -1008,7 +1017,12 @@ def test_contributing_tells_a_maintainer_to_try_the_missed_verdict_and_an_unsupp
     # Every row of the table sits in the list item, or the table breaks in two
     rows = [line for line in live.splitlines() if line.lstrip().startswith("|")]
     assert len(rows) == 6 and all(line.startswith("   | ") for line in rows)
-    assert f"as `{watch.FLAGGED}` and not told to Claude, with the reason `{watch.NEWER_TURN}`, and as `{watch.SHOWN}`" in live
+    assert f"is under Flagged once, as `{watch.SHOWN}`" in live
+    # One entry for each turn: no document says the held turn is listed a second time
+    for name in ("CONTRIBUTING.md", "claude/README.md", "claude/skills/status/SKILL.md", "changelog.d/wire-the-report-check.added.md"):
+        path = ROOT / name
+        assert not path.exists() or "listed again" not in path.read_text(encoding="utf-8"), name
+    assert f"The checks file keeps both lines, `{watch.FLAGGED}` with the reason `{watch.NEWER_TURN}` and `{watch.SHOWN}`." in live
     # The version the plugin needs is the oldest it supports, so an older one is tried only to see the plugin stay quiet
     assert "the oldest version the plugin supports" not in live
     assert "The plugin does not support one; this checks that it stays quiet there." in live

@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 from datetime import datetime, timezone
@@ -6,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from emet_claude import commands, envelope, pending, report, storage, timestamps, transport, watch
-from helpers import WAKE_WRAPPER, Transcript
+from helpers import WAKE_WRAPPER, Transcript, links, pipes
 from test_report import document
 
 TRACE = "0f0e6c6e-4a8e-4d47-9b4c-3c9f2f1d8a11"
@@ -70,6 +71,91 @@ def test_a_trace_that_gets_more_spans_later_is_written_once(transcript, environ,
     assert len(emet.envelopes) == 2
     written = [item["trace_uuid"] for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
     assert written == [emet.trace_uuids[prompt["uuid"]]]
+
+
+@pytest.mark.parametrize("kind", ["scheduled", "peer"])
+def test_a_turn_a_meta_entry_starts_is_sent_as_its_own_trace_and_gets_its_own_line(transcript, environ, emet, kind):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    fired = transcript.meta_turn("check the deploy", kind)
+    transcript.text("msg_fired", "The deploy is up.")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (fired["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["trace_uuid"] for item in lines] == [emet.trace_uuids[first["uuid"]], emet.trace_uuids[fired["uuid"]]]
+    # Polled as any turn no part of the plugin started, and known by Claude Code's id of it
+    assert "started_by" not in lines[1] and lines[1]["prompt_id"] == fired["promptId"]
+
+
+def test_a_peer_message_right_after_a_notice_with_no_answer_yet_is_sent_as_one_turn_under_the_notices_ids(transcript, environ, emet):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    notice = transcript.notice("<task-notification>agent finished</task-notification>")
+    transcript.meta_turn("check the deploy", "peer")
+    transcript.text("msg_both", "The agent finished and the deploy is up.")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (notice["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["trace_uuid"] for item in lines] == [emet.trace_uuids[first["uuid"]], emet.trace_uuids[notice["uuid"]]]
+    assert lines[1]["prompt_id"] == notice["promptId"]
+    assert "skipped_turns" not in status(environ) and not [item for item in pending.lines(root(environ), "session-1") if "skipped" in item]
+    assert "The agent finished and the deploy is up." in json.dumps(emet.envelopes[1])
+
+
+def test_a_peer_message_after_a_record_only_notice_is_its_own_trace_under_its_own_id_and_the_notice_sends_nothing(
+    transcript, environ, emet
+):
+    first = transcript.meta_turn("the first agent's result", "peer")
+    transcript.text("msg_first", "Noted.")
+    run(transcript, environ)
+    transcript.record_notice("<task-notification>the first agent finished</task-notification>")
+    run(transcript, environ)
+    assert len(emet.envelopes) == 1
+    second = transcript.meta_turn("the second agent's result", "peer")
+    answer = transcript.text("msg_second", "Noted too.")
+    transcript.record_notice("<task-notification>the second agent finished</task-notification>")
+    run(transcript, environ)
+    assert [(env["trace_id"], env["end"]) for env in emet.envelopes] == [(first["uuid"], True), (second["uuid"], True)]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert [item["prompt_id"] for item in lines] == [first["promptId"], second["promptId"]]
+    # The notice written after the answer does not move the end of the turn
+    assert lines[1]["ended"] == emet.envelopes[1]["spans"][0]["ended_at"] == answer["timestamp"]
+    assert "agent finished" not in json.dumps(emet.envelopes) and "skipped_turns" not in status(environ)
+
+
+@pytest.mark.parametrize("escape", [False, True])
+def test_a_scheduled_turn_after_a_local_command_is_sent_under_its_own_ids_with_its_own_prompt(transcript, environ, emet, escape):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    transcript.shell_escape() if escape else transcript.local_command()
+    fired = transcript.meta_turn("check the deploy", "scheduled")
+    transcript.text("msg_fired", "The deploy is up.")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], fired["uuid"]]
+    lines = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert lines[1]["prompt_id"] == fired["promptId"]
+    sent = json.dumps(emet.envelopes[1])
+    assert "check the deploy" in sent and "Total cost" not in sent and "file.txt" not in sent
+
+
+def test_peer_messages_with_no_answer_between_them_are_sent_as_one_turn(transcript, environ, emet):
+    first = transcript.meta_turn("check the deploy", "peer")
+    transcript.meta_turn("and the queue", "peer")
+    transcript.text("msg_both", "Both are fine.")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"]]
+    (line,) = [item for item in pending.lines(root(environ), "session-1") if "trace_uuid" in item]
+    assert line["prompt_id"] == first["promptId"]
+
+
+def test_an_ordinary_meta_entry_with_an_answer_still_joins_the_turn_before_it(transcript, environ, emet):
+    first = finished_turn(transcript)
+    run(transcript, environ)
+    transcript.prompt("context", source=None, isMeta=True)
+    transcript.text("msg_late", "one more thing")
+    run(transcript, environ)
+    assert [env["trace_id"] for env in emet.envelopes] == [first["uuid"], first["uuid"]]
+    assert kept(environ) == [emet.trace_uuids[first["uuid"]]]
 
 
 def test_a_reply_that_names_no_trace_keeps_nothing_and_still_counts_as_delivered(transcript, environ, emet):
@@ -541,3 +627,92 @@ def test_the_mark_of_a_command_turn_is_kept_when_another_session_delivers_it_fro
     assert marks(environ, "session-0") == [(emet.trace_uuids[command["uuid"]], "own_command")]
     assert marks(environ, "session-1") == [(emet.trace_uuids[prompt["uuid"]], None)]
     assert "own_command" not in json.dumps(emet.envelopes)
+
+
+def log(environ):
+    return (root(environ) / "emet.log").read_text(encoding="utf-8")
+
+
+@links
+@pytest.mark.parametrize("exists", [True, False])
+def test_a_link_at_the_pending_file_is_removed_and_the_line_is_written_to_a_new_file(tmp_path, environ, link_flag, exists):
+    outside = tmp_path / "outside.jsonl"
+    if exists:
+        outside.write_text("untouched", encoding="utf-8")
+    path = pending.path(root(environ), "session-1")
+    path.symlink_to(outside)
+    pending.note(root(environ), "session-1", TRACE, "")
+    assert outside.read_text(encoding="utf-8") == "untouched" if exists else not outside.exists()
+    assert not path.is_symlink() and path.is_file()
+    assert kept(environ) == [TRACE]
+    assert log(environ).count("pending file was a link, removed") == 1 and TRACE not in log(environ)
+    pending.refuse(root(environ), "session-1", "turn-a", 400, "")
+    assert log(environ).count("pending file was a link, removed") == 1 and len(pending.lines(root(environ), "session-1")) == 2
+
+
+@links
+def test_a_link_put_at_the_pending_file_after_the_look_is_refused_by_the_open(tmp_path, environ, monkeypatch):
+    outside = tmp_path / "outside.jsonl"
+    path = pending.path(root(environ), "session-1")
+    path.symlink_to(outside)
+    # The look sees no link, as when one is planted between the look and the open
+    monkeypatch.setattr(type(path), "is_symlink", lambda self: False)
+    pending.note(root(environ), "session-1", TRACE, "")
+    assert not outside.exists()
+    assert "pending not written: OSError" in log(environ) and TRACE not in log(environ)
+
+
+@links
+def test_a_link_at_the_pending_file_is_not_read_and_reading_leaves_it(tmp_path, environ):
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(json.dumps({"trace_uuid": TRACE, "at": "t"}) + "\n", encoding="utf-8")
+    path = pending.path(root(environ), "session-1")
+    path.symlink_to(outside)
+    assert pending.lines(root(environ), "session-1") == []
+    assert path.is_symlink()
+
+
+@pipes
+@pytest.mark.parametrize("writer", [False, True])
+def test_a_pipe_at_the_pending_file_is_read_as_empty_without_waiting(environ, writer):
+    path = pending.path(root(environ), "session-1")
+    os.mkfifo(path)
+    # A pipe takes a writer only while it has a reader. With one that writes nothing, a read that does not wait has no answer
+    ends = [os.open(path, os.O_RDONLY | os.O_NONBLOCK), os.open(path, os.O_WRONLY | os.O_NONBLOCK)] if writer else []
+    found = []
+    # On another thread, so an open that waits for a writer fails the test and does not hang it
+    waiter = threading.Thread(target=lambda: found.append(pending.lines(root(environ), "session-1")), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    for end in ends:
+        os.close(end)
+    assert found == [[]]
+
+
+@pipes
+def test_a_pipe_at_the_pending_file_is_not_written_and_nothing_waits(environ):
+    os.mkfifo(pending.path(root(environ), "session-1"))
+    waiter = threading.Thread(target=pending.note, args=(root(environ), "session-1", TRACE, ""), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    assert not waiter.is_alive()
+    assert "pending not written: OSError" in log(environ)
+
+
+def test_a_folder_at_the_pending_file_leaves_no_descriptor_open(environ, monkeypatch):
+    pending.path(root(environ), "session-1").mkdir()
+    opened = []
+    real = os.open
+
+    def recorded(*args, **kwargs):
+        opened.append(real(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(os, "open", recorded)
+    assert pending.lines(root(environ), "session-1") == []
+    pending.refuse(root(environ), "session-1", "turn-a", 400, "")
+    monkeypatch.undo()
+    assert "pending not written" in log(environ)
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)

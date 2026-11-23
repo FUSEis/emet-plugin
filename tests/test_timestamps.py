@@ -102,10 +102,16 @@ def test_writes_what_claude_code_writes():
     assert timestamps.text(datetime(987, 1, 2, 3, 4, 5, tzinfo=timezone.utc)) == "0987-01-02T03:04:05.000Z"
 
 
-def test_reads_the_time_the_plugin_writes_in_its_own_files():
-    before = datetime.now(timezone.utc).replace(microsecond=0)
-    at = timestamps.parse(storage.now())
-    assert before <= at <= datetime.now(timezone.utc)
+def test_reads_the_time_the_plugin_writes_in_its_own_files(monkeypatch):
+    # One reading of one clock. Two readings can fall in different seconds, and two clocks can disagree
+    monkeypatch.setattr(storage.time, "time", lambda: 1_800_000_000.789)
+    assert storage.now() == "2027-01-15T08:00:00.789Z"
+    assert timestamps.parse(storage.now()) == datetime(2027, 1, 15, 8, 0, 0, 789000, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("old", ["2027-01-15T03:00:00-0500", "2027-01-15T08:00:00+0000", "2027-01-15T13:30:00+0530"])
+def test_still_reads_the_time_an_older_plugin_wrote_in_its_files(old):
+    assert timestamps.parse(old) == datetime(2027, 1, 15, 8, tzinfo=timezone.utc)
 
 
 def test_sends_times_unchanged_for_todays_transcripts(transcript, environ, emet):

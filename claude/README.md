@@ -49,12 +49,12 @@ After a turn ends, the plugin asks Emet for its report on that turn. When the re
 **When it happens, and when it does not.**
 
 - Only for a report Emet marked as flagged. Any other report is recorded and Claude says nothing.
-- Only when the report is ready within 60 seconds of the end of the turn, and you have not started another turn since. The first read comes about 8 seconds after the turn ends. A report that comes later, or after your next prompt, is recorded and never interrupts you. It comes with your next prompt, and `/emet:status` lists it.
-- At most 3 times in one session. Later flagged reports are recorded, come with your next prompt, and are listed by `/emet:status`.
+- Only when the report is ready within 60 seconds of the end of the turn, and you have not started another turn since. The first read comes about 8 seconds after the turn ends. A report that comes later, or after your next prompt, is recorded and never interrupts you. It is saved for a later prompt, within the limits below, and `/emet:status` lists it.
+- At most 3 times in one session. Later flagged reports are recorded, are saved for a later prompt within the limits below, and are listed by `/emet:status`.
 - Once for each report: the same report never makes Claude speak twice. Claude's extra message is sent to Emet like any turn, marked as started by the plugin, and its report is never read. So one message from Claude never leads to another.
 - Never about the plugin's own commands. The answer to `/emet:status` or `/emet:setup` is sent to Emet like any turn, and its report is never read, so Claude does not speak about it. Running one of them counts as your next turn: a report on the answer before it is recorded and does not interrupt you.
 - Only in a session with a person at it. Under `claude -p` or the SDK, and on a Claude Code older than 2.1.287, no report is read.
-- The plugin asks for 5 minutes after a turn ends. A report that was not ready by then is asked for again when a later turn of the session ends, for a day at most. It is then recorded only, since it is late.
+- The plugin asks for 5 minutes after a turn ends. A report that was not ready by then is asked for again when a later turn of the session ends, for a day at most. It then never interrupts you, since it is late: a flagged one is saved for a later prompt, within the limits below.
 
 The extra message is a turn of your session. It uses your Claude plan like any other turn, and Claude Code shows it in the conversation. Claude Code 2.1.305 shows a line that reads "Stop hook feedback" above it.
 
@@ -88,6 +88,7 @@ For each finished turn, one trace:
 - **Images and other binary content** are never sent in any mode. A placeholder such as `[image content not shown: image/png, 412 KB]` takes their place, and the span is marked truncated so Emet does not treat it as complete.
 - **What Claude saw, not more.** Tool results are sent as Claude received them, except that output Claude Code saved to disk because it was too large is sent in full.
 - **The turn Claude takes to tell you about a report** is sent like any other, with `emet.plugin.turn_started_by` set to `report_wake`. Its prompt is replaced by a fixed placeholder, so Emet's own report text is not sent back to Emet as a person's message. Claude's message is sent as an answer.
+- **A turn Claude Code starts by itself**, on a schedule (a `/loop` iteration, a scheduled wake-up) or for a message from another Claude session such as a background subagent's result, is sent like any turn. Its prompt follows the capture mode as your own prompts do, and no conversation title is taken from it.
 - **Nothing else.** Thinking blocks, system prompts, tool definitions and files Claude did not read are not sent.
 - `metadata` keeps usage and timing reports working, but Emet cannot check claims without content.
 
@@ -104,11 +105,11 @@ Two kinds of files in it can hold text from your session:
 | `queue/*.json` | Turns that could not be delivered yet, whole, as your capture mode sends them: prompts, answers and tool results in `sanitized` and `full`, none of them in `metadata`. | Emet accepts or refuses the turn. It is retried on the next turn, oldest first. At most 500 files or 256 MB; the oldest are dropped beyond that. There is no time limit. |
 | `verdicts/*.json` | One file for each report Emet flagged: Emet's ids, the address it was read from, the time, whether the notice was handed to Claude, the version of the file's own format, and the text written for Claude about it, 4,000 characters at most. The text quotes the disputed claims, Emet's reasons and suggested corrections, and the sentences of Claude's answer they are about. The report itself is never saved. The plugin reads the text back for one use: to give it to Claude with a later prompt, when Claude was not woken with the report. | A later prompt of that session, at which the file is removed when the session shows Claude was woken with the report, when the text is given to Claude with that prompt, when the session already had 3 reports given that way, or when the conversation was compacted since. 7 days at most: a file older than that is removed the next time the plugin reads reports. |
 
-The other files hold ids, times, counts and HTTP statuses. They hold no text from a turn or from a report:
+Every time the plugin writes, in any of its files, is in UTC, as in `2027-01-15T08:00:00.789Z`. A time with an offset, as in `2027-01-15T03:00:00-0500`, was written by 0.1.4 or earlier, in the machine's local time. The other files hold ids, times, counts and HTTP statuses. They hold no text from a turn or from a report:
 
 | File | What it holds | Kept until |
 | --- | --- | --- |
-| `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, for each subagent still followed the path of its transcript, its ids and a position, and the version of the file's own format. | The plugin is uninstalled. |
+| `state/<session>.json` | How far the session's transcript has been read: a position in the file, the id of the last turn sent, Claude Code's ids of the last 100 turns sent, for each subagent still followed the path of its transcript, its ids and a position, and the version of the file's own format. | The plugin is uninstalled. |
 | `state/<session>.pending.jsonl` | One line for each turn Emet accepted: Emet's ids of the trace and of its conversation, the time, the address that accepted it, Claude Code's id of the turn and the time the turn ended, and a word that marks a turn the plugin's own notice or one of its commands started. Also a line for a turn Emet refused (its id and the HTTP status), for a turn that could not be read (the name of the error's type), and for the end of each run (the time and the number of turns queued). | The plugin is uninstalled. |
 | `state/<session>.checks.jsonl` | One line for each outcome of reading a turn's report: the trace id, an outcome word such as `clear`, `flagged` or `timed_out`, the time, Emet's id and revision of the report, whether the notice was handed to Claude, and if not, a word for why. Also a line with the word `shown` when a flagged report was given to Claude with a later prompt: the same ids, and Claude Code's id of that prompt. | The plugin is uninstalled. |
 | `state/<session>.stop.json` | The session's latest turn end: a random name for it, Claude Code's id of the turn, the size of the transcript, two times, and the version of the file's own format. | The next turn end replaces it. |

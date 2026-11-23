@@ -67,7 +67,6 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
@@ -261,7 +260,8 @@ def headless(found: List[Tuple[int, Dict[str, Any]]], environ: Mapping[str, str]
     if environ.get(ENTRYPOINT_NAME, "").startswith("sdk"):
         return True
     entries = [entry for _, entry in found]
-    starts = [entry for entry in entries if transcript.starts_turn(entry)]
+    # A scheduled fire or a message from another session says nothing of who is at the session
+    starts = [entry for entry in entries if transcript.starts_turn(entry) and not entry.get("isMeta")]
     if starts and "sdk" in (starts[-1].get("promptSource"), starts[-1].get("turnOrigin")):
         return True
     named = [entry["entrypoint"] for entry in entries if isinstance(entry.get("entrypoint"), str)]
@@ -330,17 +330,21 @@ def claude_code_version(found: List[Tuple[int, Dict[str, Any]]]) -> Tuple[int, .
     return ()
 
 
+def turn_starts(found: List[Tuple[int, Dict[str, Any]]]) -> List[Tuple[int, Dict[str, Any]]]:
+    """Returns the entries that start a turn a model call answers, grouped as the sender groups them."""
+    main = [item for item in found if not item[1].get("isSidechain")]
+    return [
+        item
+        for item, opens in zip(main, transcript.opens_turn(entry for _, entry in main))
+        # A command of the plugin is in the same wrapper as a local command, and a model call answers it
+        if opens and (not transcript.LOCAL_COMMAND.match(transcript.text_of(item[1])) or transcript.own_command(item[1]))
+    ]
+
+
 def newer_turn(stop: Stop) -> bool:
     """Says whether the session file shows a turn started after the one this Stop ended."""
     found, _ = session_entries(stop.transcript_path, stop.size)
-    starts = [
-        (offset, entry)
-        for offset, entry in found
-        if transcript.starts_turn(entry)
-        and not entry.get("isSidechain")
-        # A command of the plugin is in the same wrapper as a local command, and a model call answers it
-        and (not transcript.LOCAL_COMMAND.match(transcript.text_of(entry)) or transcript.own_command(entry))
-    ]
+    starts = turn_starts(found)
     if any(offset >= stop.size for offset, _ in starts):
         return True
     if not starts:
@@ -374,7 +378,7 @@ def announce(root: Path, stop: Stop) -> None:
         "at": storage.now(stop.at),
     }
     if stop.ended:
-        saved["ended"] = timestamps.text(datetime.fromtimestamp(stop.ended, timezone.utc))
+        saved["ended"] = storage.now(stop.ended)
     for attempt in range(STOP_WRITES):
         try:
             storage.write_json(stop_path(root, stop.session_id), saved)
@@ -400,10 +404,10 @@ def latest(root: Path, own: Stop) -> Stop:
         return own
     at = timestamps.parse(saved.get("at"))
     token, size, prompt_id = saved.get("token"), saved.get("size"), saved.get("prompt_id")
-    # The stamp holds whole seconds
+    # Cut to whole seconds: the stamp of a later Stop is cut too, to seconds by an older plugin, and must not read as earlier
     if at is None or at.timestamp() < int(own.at) or not isinstance(token, str) or token in ("", own.token):
         return own
-    # Times hold whole seconds. The size tells an earlier Stop of the same second from a later one
+    # The size tells an earlier Stop of the same second from a later one
     if type(size) is not int or size < own.size:
         return own
     ended = timestamps.parse(saved.get("ended"))
@@ -417,11 +421,13 @@ def earlier_turn(trace: Trace, stop: Stop) -> bool:
     if trace.prompt_id and stop.prompt_id:
         return trace.prompt_id != stop.prompt_id
     # Without both ids: a turn is delivered after it ends, so one delivered before the last entry of the latest turn is an earlier one
+    # Cut to whole seconds: an older plugin stamps a line so, and its line of the latest turn must not read as earlier
     return trace.at < int(stop.ended)
 
 
 def turn_end(trace: Trace, stop: Stop) -> float:
     """Returns when the trace's turn ended: by its own line, else the last entry the Stop read, else the second the Stop began in."""
+    # Cut to whole seconds: the run's own Stop and one read from a file an older plugin stamped give the same end
     return trace.ended or stop.ended or float(int(stop.at))
 
 
@@ -571,9 +577,9 @@ def sender_done(lines: List[Dict[str, Any]], start: float) -> bool:
     """
     for item in lines:
         at = timestamps.parse(item.get("finished"))
-        # The stamp holds whole seconds, and the sender of this Stop waits a second before it sends.
-        # So a stamp of the second the poller started in is an earlier run's
-        if at is not None and at.timestamp() > int(start) and type(item.get("queued")) is int and item["queued"] == 0:
+        # Cut to whole seconds: a run stamped in the second the poller started in is an earlier Stop's.
+        # The sender of this Stop waits a second before it sends
+        if at is not None and int(at.timestamp()) > int(start) and type(item.get("queued")) is int and item["queued"] == 0:
             return True
     return False
 
@@ -585,7 +591,10 @@ def checks_path(root: Path, session_id: str) -> Path:
 def checks(root: Path, session_id: str) -> List[Dict[str, Any]]:
     """Returns the outcomes recorded for the session, oldest first. A line cut short by a crash is skipped."""
     try:
-        text = checks_path(root, session_id).read_text(encoding="utf-8")
+        # No link is followed, and a pipe in the file's place cannot make the read wait: one with nothing in it reads as None.
+        # An opener, so that a folder in the file's place leaves no descriptor open
+        with open(checks_path(root, session_id), "rb", opener=lambda name, _: os.open(name, storage.READ_FLAGS)) as handle:
+            text = (handle.read() or b"").decode("utf-8")
     except (OSError, ValueError):
         return []
     found = []
@@ -650,10 +659,18 @@ def record(root: Path, session_id: str, trace_uuid: str, outcome: str, ids: Opti
     )
     target = checks_path(root, session_id)
     try:
-        written = target.read_bytes() if target.exists() else b""
+        # A link in the file's place is removed, never written through. The flags below close the gap after this look
+        if target.is_symlink():
+            target.unlink()
+            storage.log(root, "checks file was a link, removed")
+        written = b""
+        if target.exists():
+            with open(target, "rb", opener=lambda name, _: os.open(name, storage.READ_FLAGS)) as handle:
+                written = handle.read()
         # A write cut short by a crash leaves no newline, which would swallow this line too
         start = "" if not written or written.endswith(b"\n") else "\n"
-        fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0), 0o600)
+        # The flags of a read refuse a link and never wait for a pipe. They hold no access mode, which is added here
+        fd = os.open(str(target), storage.READ_FLAGS | os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as handle:
             handle.write(start + json.dumps(item) + "\n")
     except OSError as error:
