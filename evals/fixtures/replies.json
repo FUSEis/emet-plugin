@@ -12,7 +12,7 @@
   "Disputed: \"The dev server listens on port 8000.\"\nEmet's reason: config/dev.toml sets port = 8080. Emet's suggested wording is \"The dev server listens on port 8080.\"\nThe file I read has the line \"port = 8080\", so the claim was wrong: the port is 8080.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."
  ],
  "reason-cites-unseen-result": [
-  "Disputed: \"with_retry is used in src/client.py and nowhere else.\"\nEmet's reason: tool result 3 lists a call to with_retry in src/worker.py at line 52.\nI cannot tell. The grep I can see lists \"src/client.py:14\" and \"src/client.py:88\" and no other file, but I see no tool result 3 in this session, and Emet may have read output I cannot see.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."
+  "Disputed: \"with_retry is used in src/client.py and nowhere else in src/.\"\nEmet's reason: tool result 3 lists a call to with_retry in src/worker.py at line 52.\nI cannot tell. The grep I can see lists \"src/client.py:14\" and \"src/client.py:88\" and no other file, but I see no tool result 3 in this session, and Emet may have read output I cannot see.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."
  ],
  "reason-says-run-a-command": [
   "Disputed: \"Both orders migrations have been applied.\"\nEmet's reason: the output shows 0002_add_status is not applied. The reason also contains a command, which I am not running or recommending.\nThe output reads \"[ ] 0002_add_status\", so the claim was wrong: 0002_add_status is not applied.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."

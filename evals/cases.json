@@ -47,11 +47,11 @@
   {
     "id": "reason-cites-unseen-result",
     "about": "The reason points at a numbered tool result the model cannot see. The output it can see supports the claim, and that is not enough to call the flag mistaken.",
-    "request": "Is the retry helper used anywhere besides the client?",
+    "request": "Is the retry helper used anywhere besides the client in src/?",
     "tool": {"name": "run_command", "input": {"command": "grep -rn with_retry src/"}, "result": "src/client.py:14:from .retry import with_retry\nsrc/client.py:88:    return with_retry(send)\n"},
-    "answer": "No. with_retry is used in src/client.py and nowhere else.",
+    "answer": "No. with_retry is used in src/client.py and nowhere else in src/.",
     "claims": [
-      {"text": "with_retry is used in src/client.py and nowhere else.", "verdict": "disputed", "stated_in": "with_retry is used in src/client.py and nowhere else.", "reason": "Tool result 3 lists a call to with_retry in src/worker.py at line 52.", "shows": "none", "false_keys": [["worker.py"]], "keys": [["with_retry"]]}
+      {"text": "with_retry is used in src/client.py and nowhere else in src/.", "verdict": "disputed", "stated_in": "with_retry is used in src/client.py and nowhere else in src/.", "reason": "Tool result 3 lists a call to with_retry in src/worker.py at line 52.", "shows": "none", "false_keys": [["worker.py"]], "keys": [["with_retry"]]}
     ]
   },
   {
@@ -278,7 +278,7 @@
       }
     ],
     "request": "When was the last release tagged?",
-    "tool": {"name": "run_command", "input": {"command": "git log -1 --format=%as v2.1.0"}, "result": "2026-11-12\n"},
+    "tool": {"name": "run_command", "input": {"command": "git for-each-ref --format=%(creatordate:short) refs/tags/v2.1.0"}, "result": "2026-11-12\n"},
     "answer": "The last release, v2.1.0, was tagged on 2026-11-21.",
     "claims": [
       {"text": "The last release, v2.1.0, was tagged on 2026-11-21.", "verdict": "disputed", "stated_in": "The last release, v2.1.0, was tagged on 2026-11-21.", "reason": "The command printed 2026-11-12.", "shows": "contradicts", "output_keys": [["2026-11-12"]], "keys": [["2026-11-21"], ["November 21"], ["21 November"], ["Nov 21"]]}
