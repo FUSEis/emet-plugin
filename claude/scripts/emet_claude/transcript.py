@@ -43,7 +43,8 @@ COMMAND_PROMPT = re.compile(
 # How Claude Code names a turn a person started, in turnOrigin and in origin.kind
 PERSON_ORIGIN = "human"
 # How Claude Code 2.1.3xx names, in turnOrigin, a turn it starts with a meta entry: a scheduled fire, a message from another session
-META_TURN_ORIGINS = ("scheduled", "peer")
+SCHEDULED_ORIGIN = "scheduled"
+META_TURN_ORIGINS = (SCHEDULED_ORIGIN, "peer")
 
 
 def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List[Tuple[int, Entry]], int]:
@@ -109,6 +110,11 @@ def starts_meta_turn(entry: Entry) -> bool:
     if entry.get("turnOrigin") not in META_TURN_ORIGINS or entry.get("promptSource") != "system":
         return False
     return isinstance(entry.get("promptId"), str) and bool(entry["promptId"])
+
+
+def on_schedule(entry: Entry) -> bool:
+    """Says whether the entry starts a turn Claude Code started on a schedule: a /loop iteration, a scheduled wake-up."""
+    return starts_meta_turn(entry) and entry.get("turnOrigin") == SCHEDULED_ORIGIN
 
 
 def record_only(entry: Entry) -> bool:
