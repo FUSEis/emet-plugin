@@ -228,11 +228,13 @@ class Stop:
     token: str = ""
     # The time of the last entry the turn had written when the run started, 0 when none could be read
     ended: float = 0.0
+    # The steady clock when the run started. The waits of the run are counted from it. Never saved
+    steady: float = 0.0
 
 
 @dataclass
 class Plan:
-    """When a turn's report is asked for next, and how many times it was not ready."""
+    """When a turn's report is asked for next, on the steady clock, and how many times it was not ready."""
 
     due: float
     step: int = 0
@@ -412,7 +414,14 @@ def latest(root: Path, own: Stop) -> Stop:
         return own
     ended = timestamps.parse(saved.get("ended"))
     return Stop(
-        own.session_id, own.transcript_path, pending.plain(prompt_id), size, at.timestamp(), token, ended.timestamp() if ended else 0.0
+        own.session_id,
+        own.transcript_path,
+        pending.plain(prompt_id),
+        size,
+        at.timestamp(),
+        token,
+        ended.timestamp() if ended else 0.0,
+        own.steady,
     )
 
 
@@ -450,13 +459,19 @@ def hold_reason(root: Path, config: Config, stop: Stop, trace: Trace, found: Lis
     return ""
 
 
+def on_the_steady_clock(at: float) -> float:
+    """Returns what the steady clock reads at a time of the system clock, as the two stand now."""
+    return pause.steady() + at - pause.clock()
+
+
 def before_the_window_closes(due: float, end: float, soonest: float) -> float:
     """Returns when to ask next: as planned, or sooner, so that one read still starts inside the time a wake is allowed in.
 
     The waits only grow by chance and by the time requests take, so the planned read would often come just after it.
-    Never sooner than soonest: the shortest wait, or the one Emet named.
+    Never sooner than soonest: the shortest wait, or the one Emet named. due and soonest are on the steady clock.
+    end is the time of the system clock the turn ended at, as the late rule reads it.
     """
-    edge = end + LATE_S - EDGE_S
+    edge = on_the_steady_clock(end + LATE_S - EDGE_S)
     return edge if soonest <= edge < due else due
 
 
@@ -985,15 +1000,15 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
     """Polls the session's delivered turns until none is waiting or the time is up. Returns the text to wake Claude with, or ""."""
     session_id = stop.session_id
     # The time is counted from the Stop, also for a run that waited to take over
-    start = stop.at
-    idle_since = pause.clock()
+    start = stop.steady
+    idle_since = pause.steady()
     plans: Dict[str, Plan] = {}
     # Handled in this run, whether or not the outcome could be written
     done: Set[str] = set()
     # Asked for at least once in this run
     asked: Set[str] = set()
     while True:
-        now = pause.clock()
+        now = pause.steady()
         if now - start >= BUDGET_S:
             # A turn this run never asked about did not time out
             return close(root, config, session_id, TIMED_OUT, asked)
@@ -1013,7 +1028,8 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         for trace in delivered(lines, config.endpoint):
             if trace.trace_uuid in done:
                 continue
-            if now - trace.at > MAX_AGE_S:
+            # The system clock: the line was stamped by another process
+            if pause.clock() - trace.at > MAX_AGE_S:
                 done.add(trace.trace_uuid)
                 record(root, session_id, trace.trace_uuid, EXPIRED)
                 continue
@@ -1021,14 +1037,14 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         watched = waiting[-MAX_WATCHED:]
         if watched:
             idle_since = now
-        elif sender_done(lines, start) or now - idle_since >= IDLE_S:
+        elif sender_done(lines, stop.at) or now - idle_since >= IDLE_S:
             return ""
         for trace in watched:
             plan = plans.setdefault(trace.trace_uuid, Plan(max(now, start + FIRST_S)))
             if plan.due > now:
                 continue
             # Checked before each request: the ones before it in this pass can each take the full timeout
-            if pause.clock() - start >= BUDGET_S:
+            if pause.steady() - start >= BUDGET_S:
                 break
             asked.add(trace.trace_uuid)
             answer = read_report(config, trace.trace_uuid)
@@ -1056,9 +1072,9 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
                     storage.log(root, f"report {trace.trace_uuid} -> {answer.status or 'network'}, asked again later")
                 wait = max(float(STEPS_S[min(plan.step, len(STEPS_S) - 1)]), answer.retry_after or 0.0)
                 plan.step += 1
-                soonest = pause.clock() + max(float(STEPS_S[0]), answer.retry_after or 0.0)
-                plan.due = before_the_window_closes(pause.clock() + wait * (1 + extra()), turn_end(trace, stop), soonest)
-        now = pause.clock()
+                soonest = pause.steady() + max(float(STEPS_S[0]), answer.retry_after or 0.0)
+                plan.due = before_the_window_closes(pause.steady() + wait * (1 + extra()), turn_end(trace, stop), soonest)
+        now = pause.steady()
         due = [plans[trace.trace_uuid].due for trace in watched if trace.trace_uuid not in done]
         until = min([*due, now + TICK_S, start + BUDGET_S])
         sleep(max(until - now, SHORTEST_SLEEP_S))
@@ -1081,7 +1097,7 @@ def attend(root: Path, config: Config, stop: Stop) -> str:
         if latest(root, stop).token != stop.token:
             storage.log(root, "watch left, a later Stop of the session waits")
             return ""
-        if pause.clock() - stop.at + TICK_S >= BUDGET_S:
+        if pause.steady() - stop.steady + TICK_S >= BUDGET_S:
             storage.log(root, "watch left, the watcher before it ran on")
             return ""
         sleep(TICK_S)
@@ -1089,7 +1105,7 @@ def attend(root: Path, config: Config, stop: Stop) -> str:
 
 def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     """Decides whether this Stop is polled at all, and polls. Returns the text to wake Claude with, or ""."""
-    began = pause.clock()
+    began, steady = pause.clock(), pause.steady()
     hook_input = storage.loads(raw or b"{}")
     if not isinstance(hook_input, dict):
         return ""
@@ -1115,7 +1131,7 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     if headless(found, environ):
         storage.log(root, "watch skipped, no person is at the session")
         return skip(root, config, session_id, NO_PERSON)
-    stop = Stop(session_id, transcript_path, pending.plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found))
+    stop = Stop(session_id, transcript_path, pending.plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found), steady)
     # Written before the lock is tried: the watcher already running judges this turn by it
     announce(root, stop)
     return attend(root, config, stop)

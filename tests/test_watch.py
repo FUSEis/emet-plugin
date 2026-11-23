@@ -33,6 +33,8 @@ class Sleeper:
     def __init__(self, clock):
         self.clock = clock
         self.start = clock.now
+        # Planned moments are counted on the steady clock, so a test can set the system clock in the middle of a run
+        self.began = clock.steady
         self.planned = []
 
     def at(self, offset, action):
@@ -42,7 +44,7 @@ class Sleeper:
         assert seconds > 0
         self.clock.advance(seconds)
         for item in list(self.planned):
-            if self.clock.now - self.start >= item[0]:
+            if self.clock.steady - self.began >= item[0]:
                 self.planned.remove(item)
                 item[1]()
 
@@ -78,11 +80,11 @@ def no_wait_for_the_watcher_lock(monkeypatch):
 def asked(monkeypatch, clock):
     """Lists each report read as (seconds since the test began, trace)."""
     found = []
-    start = clock.now
+    start = clock.steady
     real = watch.read_report
 
     def recording(settings, trace_uuid):
-        found.append((round(clock.now - start, 3), trace_uuid))
+        found.append((round(clock.steady - start, 3), trace_uuid))
         return real(settings, trace_uuid)
 
     monkeypatch.setattr(watch, "read_report", recording)
@@ -978,7 +980,8 @@ def watcher_lock(environ, session_id=SESSION):
 
 def later_stop(environ, clock, transcript, prompt_id="", named="later"):
     """Writes what the Stop of a later turn of the session writes before it tries the lock."""
-    ended = watch.Stop(SESSION, str(transcript.path), prompt_id, transcript.path.stat().st_size, clock.now, named, clock.now)
+    size = transcript.path.stat().st_size
+    ended = watch.Stop(SESSION, str(transcript.path), prompt_id, size, clock.now, named, clock.now, clock.steady)
     watch.announce(root(environ), ended)
     return ended
 
