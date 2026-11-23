@@ -44,6 +44,9 @@ def test_the_readme_requires_the_claude_code_the_report_check_needs():
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     assert f"Requirements: Claude Code {needed} or later" in readme
     assert f"older than {needed}" in watch.__doc__
+    # The source for the fix is that version's release note. The open issue is not one
+    assert f"[release note for {needed}](https://github.com/anthropics/claude-code/releases/tag/v{needed})" in readme
+    assert "claude-code/blob/main/CHANGELOG.md" not in readme
     # Both ways to install name it, and the agent is told to check it before installing
     install = (ROOT / "README.md").read_text(encoding="utf-8")
     assert f"needs Claude Code {needed} or later" in install
