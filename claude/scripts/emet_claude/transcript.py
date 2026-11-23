@@ -8,7 +8,7 @@ import re
 import stat
 import sys
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, List, Optional, Sequence, Tuple
+from typing import Any, BinaryIO, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from . import report, storage, timestamps
 
@@ -42,6 +42,8 @@ COMMAND_PROMPT = re.compile(
 )
 # How Claude Code names a turn a person started, in turnOrigin and in origin.kind
 PERSON_ORIGIN = "human"
+# How Claude Code 2.1.3xx names, in turnOrigin, a turn it starts with a meta entry: a scheduled fire, a message from another session
+META_TURN_ORIGINS = ("scheduled", "peer")
 
 
 def read_entries(path: Path, offset: int, sidechain: bool = False) -> Tuple[List[Tuple[int, Entry]], int]:
@@ -102,9 +104,21 @@ def has_binary(entry: Entry) -> bool:
     return any(part.get("type") in BINARY_PARTS for part in content_parts(entry))
 
 
+def starts_meta_turn(entry: Entry) -> bool:
+    """Says whether a meta entry starts a turn of its own. Most meta entries are context inside a turn, such as a skill's text."""
+    if entry.get("turnOrigin") not in META_TURN_ORIGINS or entry.get("promptSource") != "system":
+        return False
+    return isinstance(entry.get("promptId"), str) and bool(entry["promptId"])
+
+
+def record_only(entry: Entry) -> bool:
+    """Says whether the entry is a record only, as Claude Code writes after a background subagent's message. No model call answers it."""
+    return entry.get("queueTranscriptOnly") is True
+
+
 def starts_turn(entry: Entry) -> bool:
-    """True for a user entry that a model call answers: a prompt, a background-task notice or a compaction summary."""
-    if entry.get("type") != "user" or entry.get("isMeta"):
+    """True for a user entry that a model call answers: a prompt, a notice, a compaction summary or a meta entry that starts a turn."""
+    if entry.get("type") != "user" or record_only(entry) or (entry.get("isMeta") and not starts_meta_turn(entry)):
         return False
     parts = content_parts(entry)
     if any(part.get("type") == "tool_result" for part in parts):
@@ -195,12 +209,32 @@ def prompt_text(entry: Entry) -> str:
     return text
 
 
+def opens_turn(entries: Iterable[Entry]) -> Iterator[bool]:
+    """Says for each entry of a main conversation, in order, whether it opens a turn. The sender and the poller both group turns by this.
+
+    A scheduled or peer start joins the start before it while no model call has answered that one: one call answers both.
+    It never joins a local command or its output, which no model call answers.
+    """
+    running: Optional[Entry] = None
+    answered = True
+    for entry in entries:
+        if entry.get("type") == "assistant":
+            answered = True
+        joins = bool(entry.get("isMeta")) and running is not None and not answered and not LOCAL_COMMAND.match(text_of(running))
+        opens = starts_turn(entry) and not joins
+        if opens:
+            running, answered = entry, False
+        yield opens
+
+
 def split_turns(entries: List[Tuple[int, Entry]]) -> Tuple[List[Tuple[int, Entry]], List[List[Tuple[int, Entry]]]]:
     """Returns the entries before the first turn start (the tail of a turn already sent) and the turns."""
     head: List[Tuple[int, Entry]] = []
     turns: List[List[Tuple[int, Entry]]] = []
-    for item in entries:
-        if starts_turn(item[1]):
+    # Part of no turn: the time of a record must not move the end of the turn before it
+    entries = [item for item in entries if not record_only(item[1])]
+    for item, opens in zip(entries, opens_turn(entry for _, entry in entries)):
+        if opens:
             turns.append([item])
         elif turns:
             turns[-1].append(item)
