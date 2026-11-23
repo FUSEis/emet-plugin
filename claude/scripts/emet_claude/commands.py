@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar
 from urllib.parse import urlencode
 
-from . import VERSION, envelope, pause, pending, storage, transcript, transport, watch
+from . import VERSION, checks, envelope, pause, pending, storage, transcript, transport, watch
 from .config import FROM_CLAUDE_ACCOUNT, Config, load
 from .spans import Builder, Capture
 
@@ -300,7 +300,7 @@ def process(
 
         known = set((state.get("agents") or {}).keys())
         # The poller's own record of its wakes, which a turn must follow to be taken for one a wake started
-        handed = watch.handed_times(root, session_id) if turns else []
+        handed = checks.handed_times(root, session_id) if turns else []
         if head and state.get("last_trace"):
             tail = attempt(partial(envelope.for_tail, config, builder, session_id, state["last_trace"], head, "turn", cwd))
             if tail is not None:

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from conftest import API_KEY
-from emet_claude import commands, config, missed, pause, pending, report, storage, timestamps, transport, watch
+from emet_claude import checks, commands, config, missed, pause, pending, report, sessions, storage, timestamps, transport, verdicts, watch
 from helpers import UTC_FORM, WAKE_WRAPPER, Transcript, fork_of, links, old_form, pipes
 from test_report import claim, document
 
@@ -158,7 +158,7 @@ def not_polled(transcript, environ, skipped_for):
 
 
 def outcomes(environ, session_id=SESSION):
-    return [(item["trace_uuid"], item["outcome"], item["final"]) for item in watch.checks(root(environ), session_id)]
+    return [(item["trace_uuid"], item["outcome"], item["final"]) for item in checks.checks(root(environ), session_id)]
 
 
 def status(environ):
@@ -225,7 +225,7 @@ def test_a_flagged_report_is_recorded_under_emets_ids(session, environ, emet, cl
     deliver(environ, clock)
     emet.report(T1, 200, document())
     stop(session, environ)
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert check == {
         "trace_uuid": T1,
         "outcome": "flagged",
@@ -247,13 +247,13 @@ def test_a_report_that_is_not_flagged_never_wakes_claude(session, environ, emet,
     assert stop(session, environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
     assert outcomes(environ) == [(T1, word, True)]
-    assert watch.verdicts(root(environ), SESSION) == []
+    assert verdicts.verdicts(root(environ), SESSION) == []
 
 
 def test_the_poller_lists_every_status_a_report_can_carry():
-    assert sorted(watch.REPORT_STATUSES) == sorted(report.STATUS_WORDS)
-    assert len(set(watch.REPORT_STATUSES)) == len(watch.REPORT_STATUSES)
-    assert all(watch.OUTCOMES[word] is True for word in report.STATUS_WORDS)
+    assert sorted(checks.REPORT_STATUSES) == sorted(report.STATUS_WORDS)
+    assert len(set(checks.REPORT_STATUSES)) == len(checks.REPORT_STATUSES)
+    assert all(checks.OUTCOMES[word] is True for word in report.STATUS_WORDS)
 
 
 def test_a_status_the_poller_does_not_list_is_recorded_as_unreadable(session, environ, emet, clock, monkeypatch, capfdbinary):
@@ -269,18 +269,18 @@ def test_a_status_the_poller_does_not_list_is_recorded_as_unreadable(session, en
 
 
 def test_the_table_of_outcomes_names_every_outcome_and_whether_it_is_final():
-    rows = re.findall(r"^\| `([a-z_]+)` \| (yes|no) \| \S.* \|$", watch.__doc__, re.M)
-    assert [name for name, _ in rows] == list(watch.OUTCOMES)
-    assert {name: final == "yes" for name, final in rows} == watch.OUTCOMES
-    assert all(f"`{held}`" in watch.__doc__ for held in (watch.SCHEDULED_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE))
-    assert f"already had {watch.WAKE_CAP} wakes" in watch.__doc__ and f"the {watch.BUDGET_S} seconds" in watch.__doc__
-    assert f"more than {watch.LATE_S} seconds after its turn ended" in watch.__doc__
-    assert f"A turn is still polled after those {watch.LATE_S} seconds" in watch.__doc__ and "for the next prompt" in watch.__doc__
+    rows = re.findall(r"^\| `([a-z_]+)` \| (yes|no) \| \S.* \|$", checks.__doc__, re.M)
+    assert [name for name, _ in rows] == list(checks.OUTCOMES)
+    assert {name: final == "yes" for name, final in rows} == checks.OUTCOMES
+    assert all(f"`{held}`" in checks.__doc__ for held in (checks.SCHEDULED_TURN, checks.CAPPED, checks.NEWER_TURN, checks.LATE))
+    assert f"already had {watch.WAKE_CAP} wakes" in checks.__doc__ and f"the {watch.BUDGET_S} seconds" in checks.__doc__
+    assert f"more than {watch.LATE_S} seconds after its turn ended" in checks.__doc__
+    assert f"A turn is still polled after those {watch.LATE_S} seconds" in checks.__doc__ and "for the next prompt" in checks.__doc__
 
 
 def test_only_a_listed_outcome_can_be_recorded(environ):
     with pytest.raises(KeyError):
-        watch.record(root(environ), SESSION, T1, "something_else")
+        checks.record(root(environ), SESSION, T1, "something_else")
     assert outcomes(environ) == []
 
 
@@ -331,10 +331,10 @@ def test_a_turn_still_waiting_when_the_time_is_up_is_polled_after_the_next_stop(
     next_turn(session, clock)
     assert stop(session, environ) == 0
     assert outcomes(environ) == [(T1, "timed_out", False), (T1, "flagged", True)]
-    assert [(item["handed"], item["text"].startswith(report.MISSED_OPENING)) for item in watch.verdicts(root(environ), SESSION)] == [
+    assert [(item["handed"], item["text"].startswith(report.MISSED_OPENING)) for item in verdicts.verdicts(root(environ), SESSION)] == [
         (False, True)
     ]
-    assert watch.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
 
 
 def test_the_body_of_a_202_is_never_rendered(session, environ, emet, clock, capfdbinary):
@@ -342,7 +342,7 @@ def test_the_body_of_a_202_is_never_rendered(session, environ, emet, clock, capf
     emet.report(T1, 202, document())
     assert stop(session, environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
-    assert watch.verdicts(root(environ), SESSION) == []
+    assert verdicts.verdicts(root(environ), SESSION) == []
     assert outcomes(environ) == [(T1, "timed_out", False)]
 
 
@@ -584,7 +584,7 @@ def test_no_report_is_asked_for_during_a_pause(session, environ, emet, clock):
     next_turn(session, clock)
     assert stop(session, environ) == 0
     assert outcomes(environ)[-1] == (T1, "flagged", True) and emet.polled(T1) == 1
-    assert watch.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
 
 
 def test_a_pause_another_session_starts_ends_a_run_already_polling(session, environ, emet, clock, sleeper):
@@ -687,7 +687,7 @@ def test_a_turn_emet_refused_is_never_polled(session, environ, emet, clock, refu
     assert stop(session, environ) == 0
     assert emet.reads == []
     assert outcomes(environ) == []
-    assert watch.delivered(pending.lines(root(environ), SESSION), emet.url) == []
+    assert sessions.delivered(pending.lines(root(environ), SESSION), emet.url) == []
 
 
 def test_a_line_with_a_field_the_poller_does_not_know_is_still_a_turn(session, environ, emet, clock):
@@ -705,7 +705,7 @@ def test_the_turn_after_a_wake_is_never_polled_and_is_recorded_as_its_own_outcom
     assert capfdbinary.readouterr() == (b"", b"")
     assert emet.reads == [] and clock.now == start
     assert not (root(environ) / "verdicts").exists()
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert check == {"trace_uuid": T1, "outcome": "wake_turn", "final": True, "at": storage.now(clock.now)}
     assert status(environ)["checks"] == [{"session_id": SESSION, **check}]
     # No report was read, and the log must not read as if one was
@@ -715,8 +715,8 @@ def test_the_turn_after_a_wake_is_never_polled_and_is_recorded_as_its_own_outcom
     assert stop(session, environ) == 0
     assert outcomes(environ) == [(T1, "wake_turn", True)] and emet.reads == []
     # It ends the polling of its turn, and uses up no wake
-    found = watch.checks(root(environ), SESSION)
-    assert watch.settled(found) == {T1} and watch.wakes(found) == 0
+    found = checks.checks(root(environ), SESSION)
+    assert checks.settled(found) == {T1} and checks.wakes(found) == 0
 
 
 def test_the_turn_after_a_wake_is_not_polled_while_another_turn_is(session, environ, emet, clock, capfdbinary):
@@ -837,11 +837,11 @@ def test_the_stop_that_takes_over_after_a_wake_never_wakes_claude_for_the_woken_
     # The Stop of turn 2 takes over
     assert watch.attend(root(environ), config.load(environ), waiting[0]) == ""
     assert capfdbinary.readouterr() == (b"", b"")
-    found = watch.checks(root(environ), SESSION)
+    found = checks.checks(root(environ), SESSION)
     assert [item["trace_uuid"] for item in found if item.get("handed") is True] == [sent["second"]]
     assert [(item["outcome"], item["final"]) for item in found if item["trace_uuid"] == sent["woken"]] == [("wake_turn", True)]
     assert emet.polled(sent["woken"]) == 0
-    assert [verdict["trace_uuid"] for verdict in watch.verdicts(root(environ), SESSION)] == [sent["second"]]
+    assert [verdict["trace_uuid"] for verdict in verdicts.verdicts(root(environ), SESSION)] == [sent["second"]]
     # The woken turn's Stop named nothing: the latest Stop is still turn 2's, which ended before the woken turn was delivered
     saved = json.loads(watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8"))
     assert (saved["token"], saved["ended"]) == ("later", written(waiting[0].ended))
@@ -932,7 +932,7 @@ def test_the_version_is_the_last_one_the_session_file_names(transcript, environ,
 
 
 def test_only_the_end_of_a_long_session_file_is_read_for_the_version(transcript, environ, emet, clock, monkeypatch):
-    monkeypatch.setattr(watch, "TAIL_BYTES", 600)
+    monkeypatch.setattr(sessions, "TAIL_BYTES", 600)
     transcript.prompt("x" * 2000, version="2.1.100")
     transcript.text("msg_1", "4", version="2.1.294")
     deliver(environ, clock)
@@ -966,7 +966,7 @@ def test_nothing_is_recorded_for_a_turn_a_hook_started_whatever_else_would_skip_
     not_polled(transcript, environ, skipped_for)
     deliver(environ, clock)
     assert stop(transcript, environ, stop_hook_active=True) == 0
-    assert not watch.checks_path(root(environ), SESSION).exists()
+    assert not checks.checks_path(root(environ), SESSION).exists()
     assert stop(transcript, environ) == 0
     assert outcomes(environ) == [(T1, skipped_for, False)]
 
@@ -1021,7 +1021,7 @@ def test_a_turn_that_ends_while_a_watcher_runs_is_judged_by_its_own_stop_and_wak
     sleeper.at(42, lambda: deliver(environ, clock, T2))
     assert stop(session, environ, prompt_id="prompt-1") == 2
     assert capfdbinary.readouterr()[1].startswith(report.WAKE_OPENING.encode())
-    (check,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T2]
+    (check,) = [item for item in checks.checks(root(environ), SESSION) if item["trace_uuid"] == T2]
     assert (check["outcome"], check["handed"], "held" in check) == ("flagged", True, False)
     assert [at for at, trace in asked if trace == T2] == [42]
 
@@ -1037,7 +1037,7 @@ def test_a_turn_delivered_before_the_latest_stop_is_an_earlier_turn_and_keeps_cl
     sleeper.at(10, lambda: later_stop(environ, clock, session))
     assert stop(session, environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
 
 
@@ -1047,7 +1047,7 @@ def test_a_turn_delivered_in_the_second_it_ended_in_is_not_taken_for_an_earlier_
     latest = watch.Stop(SESSION, "", "", 0, ended, "own", ended)
     for delivered_at, earlier in ((ended + 0.3, False), (ended + 2, False), (ended - 0.3, True)):
         pending.append(root(environ), SESSION, {"trace_uuid": str(uuid.uuid4()), "at": form(delivered_at), "endpoint": emet.url})
-        trace = watch.delivered(pending.lines(root(environ), SESSION), emet.url)[-1]
+        trace = sessions.delivered(pending.lines(root(environ), SESSION), emet.url)[-1]
         assert watch.earlier_turn(trace, latest) is earlier
 
 
@@ -1057,7 +1057,7 @@ def test_a_turn_is_not_taken_for_an_earlier_one_when_the_poller_starts_long_afte
     # The sender named the turn five seconds before this process started
     clock.advance(5)
     assert stop(session, environ) == 2
-    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+    assert checks.checks(root(environ), SESSION)[0]["handed"] is True
 
 
 def test_the_turn_a_later_stop_ended_is_not_taken_for_an_earlier_one_when_that_stop_wrote_late(
@@ -1091,7 +1091,7 @@ def test_the_turn_before_is_kept_for_the_next_prompt_by_the_stop_that_takes_over
         sleeper.at(24, running.close)
         assert stop(session, environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["trace_uuid"], check["outcome"], check["handed"], check["held"]) == (T1, "flagged", False, "newer_turn")
 
 
@@ -1241,7 +1241,7 @@ def test_a_turn_not_ready_in_its_own_time_is_kept_for_the_next_prompt_once_a_lat
         sleeper.at(100, running.close)
         assert stop(session, environ) == 0
     assert outcomes(environ) == [(T1, "timed_out", False)]
-    assert watch.verdicts(root(environ), SESSION) == []
+    assert verdicts.verdicts(root(environ), SESSION) == []
     emet.reports[T1] = []
     emet.report(T1, 200, document())
     emet.report(T2, 200, document(status="clear"))
@@ -1250,7 +1250,7 @@ def test_a_turn_not_ready_in_its_own_time_is_kept_for_the_next_prompt_once_a_lat
     sleeper.at(302, lambda: finish(environ, clock))
     assert stop(session, environ) == 0
     assert outcomes(environ)[1:] == [(T1, "flagged", True), (T2, "clear", True)]
-    (verdict,) = watch.verdicts(root(environ), SESSION)
+    (verdict,) = verdicts.verdicts(root(environ), SESSION)
     assert (verdict["trace_uuid"], verdict["handed"]) == (T1, False)
 
 
@@ -1438,10 +1438,10 @@ def test_only_the_newest_turn_wakes_claude_and_an_older_flagged_one_is_kept_for_
         deliver(environ, clock, trace)
         emet.report(trace, 200, document())
     assert stop(session, environ) == 2
-    first, second = watch.checks(root(environ), SESSION)
+    first, second = checks.checks(root(environ), SESSION)
     assert (first["trace_uuid"], first["outcome"], first["handed"], first["held"]) == (T1, "flagged", False, "newer_turn")
     assert (second["trace_uuid"], second["handed"], "held" in second) == (T2, True, False)
-    assert [item["handed"] for item in watch.verdicts(root(environ), SESSION)] == [False, True]
+    assert [item["handed"] for item in verdicts.verdicts(root(environ), SESSION)] == [False, True]
     assert f"report {T1} not handed to Claude, newer_turn" in log(environ)
 
 
@@ -1453,8 +1453,8 @@ def test_a_turn_delivered_while_the_report_was_awaited_keeps_claude_asleep(sessi
     sleeper.at(10, lambda: deliver(environ, clock, T2))
     assert stop(session, environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
-    assert len(watch.verdicts(root(environ), SESSION)) == 1
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    assert len(verdicts.verdicts(root(environ), SESSION)) == 1
 
 
 @pytest.mark.parametrize(
@@ -1478,14 +1478,14 @@ def test_a_turn_that_started_while_the_report_was_awaited_keeps_claude_asleep(
     emet.report(T1, 200, document())
     sleeper.at(4, lambda: session.write(dict(entry)))
     assert stop(session, environ) == (2 if woken else 0)
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["outcome"], check["final"], check["handed"], check.get("held")) == (
         "flagged",
         True,
         woken,
         None if woken else "newer_turn",
     )
-    assert len(watch.verdicts(root(environ), SESSION)) == 1
+    assert len(verdicts.verdicts(root(environ), SESSION)) == 1
     assert bool(capfdbinary.readouterr()[1]) is woken
 
 
@@ -1498,7 +1498,7 @@ def test_a_turn_a_meta_entry_started_while_the_report_was_awaited_keeps_claude_a
     emet.report(T1, 200, document())
     sleeper.at(4, lambda: session.meta_turn("check the deploy", kind))
     assert stop(session, environ) == 0
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
     assert capfdbinary.readouterr() == (b"", b"")
 
@@ -1512,7 +1512,7 @@ def test_a_turn_a_meta_entry_started_before_the_poller_started_is_told_apart_by_
     finish(environ, clock)
     emet.report(T1, 200, document())
     assert stop(transcript, environ, prompt_id="prompt-1") == 0
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
 
 
 def test_a_notice_kept_as_a_record_only_is_no_newer_turn_and_one_a_model_call_answers_is(session, environ, emet, clock, sleeper):
@@ -1521,7 +1521,7 @@ def test_a_notice_kept_as_a_record_only_is_no_newer_turn_and_one_a_model_call_an
     emet.report(T1, 200, document())
     sleeper.at(1, lambda: session.record_notice())
     assert stop(session, environ) == 2
-    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+    assert checks.checks(root(environ), SESSION)[0]["handed"] is True
     stopped = watch.Stop(SESSION, str(session.path), "", session.path.stat().st_size, clock.now)
     session.record_notice()
     assert watch.newer_turn(stopped) is False
@@ -1536,7 +1536,7 @@ def test_a_persons_prompt_after_a_start_with_no_answer_in_the_file_is_still_a_ne
     finish(environ, clock)
     emet.report(T1, 200, document())
     assert stop(transcript, environ, prompt_id="prompt-1") == 0
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
 
 
 def joined_turn(transcript, environ, clock):
@@ -1564,7 +1564,7 @@ def test_known_limit_a_stop_that_names_the_joined_messages_id_holds_the_turns_re
     emet.report(T1, 200, document())
     # The trace carries the notice's id. Which of the two a Stop names for a joined turn is not known
     assert stop(transcript, environ, prompt_id=ids["peer"]) == 0
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
     stopped = watch.Stop(SESSION, str(transcript.path), ids["peer"], transcript.path.stat().st_size, clock.now)
     assert watch.newer_turn(stopped) is False
 
@@ -1624,11 +1624,11 @@ def test_the_sender_and_the_poller_find_the_same_turns_whatever_a_scheduled_or_p
     transcript.text("msg_1", "4")
     expected = [first["uuid"]] + [entry["uuid"] for entry in write(transcript)]
     transcript.text("msg_2", "Done.")
-    _, turns = watch.transcript.split_turns(watch.transcript.read_entries(transcript.path, 0)[0])
+    _, turns = sessions.transcript.split_turns(sessions.transcript.read_entries(transcript.path, 0)[0])
     # The sender passes over a turn with no answer, which is how it drops a local command
-    assert [turn[0][1]["uuid"] for turn in turns if watch.transcript.answered(turn)] == expected
-    found, _ = watch.session_entries(str(transcript.path))
-    assert [entry["uuid"] for _, entry in watch.turn_starts(found)] == expected
+    assert [turn[0][1]["uuid"] for turn in turns if sessions.transcript.answered(turn)] == expected
+    found, _ = sessions.session_entries(str(transcript.path))
+    assert [entry["uuid"] for _, entry in sessions.turn_starts(found)] == expected
 
 
 def test_a_scheduled_or_peer_turn_does_not_hide_that_no_person_is_at_the_session(transcript, environ, emet, clock):
@@ -1658,7 +1658,7 @@ def test_the_report_of_a_turn_a_meta_entry_started_is_read_at_its_stop_and_only_
     emet.report(second, 200, document())
     assert stop(session, environ, prompt_id=fired["promptId"]) == (2 if woken else 0)
     assert outcomes(environ) == [(first, "clear", True), (second, "flagged", True)]
-    assert watch.checks(root(environ), SESSION)[-1]["handed"] is woken and bool(capfdbinary.readouterr()[1]) is woken
+    assert checks.checks(root(environ), SESSION)[-1]["handed"] is woken and bool(capfdbinary.readouterr()[1]) is woken
 
 
 def prompt(transcript, environ, capfdbinary, prompt_id):
@@ -1687,18 +1687,18 @@ def test_a_flagged_report_of_a_scheduled_turn_wakes_no_one_and_comes_with_the_ne
     assert stop(session, environ, prompt_id=fired["promptId"]) == 0
     assert capfdbinary.readouterr() == (b"", b"")
     assert emet.polled(trace) == 1, "the report is read"
-    (check,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == trace]
+    (check,) = [item for item in checks.checks(root(environ), SESSION) if item["trace_uuid"] == trace]
     assert (check["outcome"], check["final"], check["handed"], check["held"]) == ("flagged", True, False, "scheduled_turn")
     assert f"report {trace} not handed to Claude, scheduled_turn" in log(environ)
     (listed,) = [item for item in status(environ)["checks"] if item["trace_uuid"] == trace]
     assert (listed["outcome"], listed["handed"], listed["held"]) == ("flagged", False, "scheduled_turn")
-    (saved,) = watch.verdicts(root(environ), SESSION)
+    (saved,) = verdicts.verdicts(root(environ), SESSION)
     assert saved["handed"] is False
-    assert watch.wakes(watch.checks(root(environ), SESSION)) == 0, "it uses up none of the session's wakes"
+    assert checks.wakes(checks.checks(root(environ), SESSION)) == 0, "it uses up none of the session's wakes"
     # The next prompt of the session, such as the loop's next iteration, carries it
     assert prompt(session, environ, capfdbinary, "prompt-2") == saved["text"]
     assert [outcome for found, outcome, _ in outcomes(environ) if found == trace] == ["flagged", "shown"]
-    assert watch.verdicts(root(environ), SESSION) == []
+    assert verdicts.verdicts(root(environ), SESSION) == []
 
 
 def test_a_persons_turn_still_wakes_claude_after_three_scheduled_turns_were_flagged_and_shown(session, environ, emet, clock, capfdbinary):
@@ -1708,30 +1708,30 @@ def test_a_persons_turn_still_wakes_claude_after_three_scheduled_turns_were_flag
         emet.report(trace, 200, document())
         assert stop(session, environ) == 0
         assert prompt(session, environ, capfdbinary, f"prompt-{number + 1}")
-    found = watch.checks(root(environ), SESSION)
+    found = checks.checks(root(environ), SESSION)
     assert [item["held"] for item in found if item["outcome"] == "flagged"] == ["scheduled_turn"] * watch.WAKE_CAP
     # The person's own turn, which just ended
     next_turn(session, clock)
     deliver(environ, clock, T1)
     emet.report(T1, 200, document())
     assert stop(session, environ) == 2
-    assert watch.checks(root(environ), SESSION)[-1]["handed"] is True
+    assert checks.checks(root(environ), SESSION)[-1]["handed"] is True
 
 
 def test_a_scheduled_turn_is_named_before_the_cap_a_newer_turn_and_a_late_report_and_after_a_turn_that_carried_a_verdict(environ, clock):
     for number in range(watch.WAKE_CAP):
-        assert watch.record(root(environ), SESSION, str(uuid.UUID(int=number + 1)), "flagged", {"handed": True})
+        assert checks.record(root(environ), SESSION, str(uuid.UUID(int=number + 1)), "flagged", {"handed": True})
     latest = watch.Stop(SESSION, "", "prompt-2", 0, clock.now, "own", clock.now)
-    trace = watch.Trace(T1, clock.now, "", "prompt-1", clock.now - watch.LATE_S - 1, scheduled=True)
-    found = watch.checks(root(environ), SESSION)
-    assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == watch.SCHEDULED_TURN
-    assert watch.record(root(environ), SESSION, T2, "shown", {"prompt_id": "prompt-1"})
-    found = watch.checks(root(environ), SESSION)
-    assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == watch.SHOWN_TURN
+    trace = sessions.Trace(T1, clock.now, "", "prompt-1", clock.now - watch.LATE_S - 1, scheduled=True)
+    found = checks.checks(root(environ), SESSION)
+    assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == checks.SCHEDULED_TURN
+    assert checks.record(root(environ), SESSION, T2, "shown", {"prompt_id": "prompt-1"})
+    found = checks.checks(root(environ), SESSION)
+    assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == checks.SHOWN_TURN
     # Only the sender's one word marks a line
     for origin, marked in (("scheduled", True), ("peer", False), (True, False)):
         line = {"trace_uuid": T1, "at": storage.now(clock.now), "endpoint": "e", "turn_origin": origin}
-        assert [found.scheduled for found in watch.delivered([line], "e")] == [marked], origin
+        assert [found.scheduled for found in sessions.delivered([line], "e")] == [marked], origin
 
 
 def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, capfdbinary):
@@ -1742,7 +1742,7 @@ def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id
     finish(environ, clock)
     emet.report(T1, 200, document())
     assert stop(transcript, environ, prompt_id="prompt-1") == 0
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
 
 
 def test_the_report_of_a_turn_that_began_before_the_last_stop_was_sent_is_read_at_its_own_stop(
@@ -1789,7 +1789,7 @@ def test_without_the_turns_id_a_queued_prompt_is_told_apart_by_when_it_was_answe
         sleeper.at(answered, lambda: transcript.tool_result("t", "x", isSidechain=True))
         sleeper.at(answered, lambda: transcript.text("msg_2", "6", timestamp=stamp))
     assert stop(transcript, environ, prompt_id=prompt_id) == 0
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
 
 
 def test_an_answer_written_before_the_poller_started_is_the_turn_that_ended_even_when_it_reached_the_file_late(
@@ -1850,7 +1850,7 @@ def test_a_session_with_no_person_at_it_is_not_polled(transcript, environ, emet,
     assert emet.reads == [] and clock.now == start
     assert "watch skipped, no person is at the session" in log(environ)
     assert outcomes(environ) == [(T1, "no_person", False)]
-    assert status(environ)["checks"] == [{"session_id": SESSION, **watch.checks(root(environ), SESSION)[0]}]
+    assert status(environ)["checks"] == [{"session_id": SESSION, **checks.checks(root(environ), SESSION)[0]}]
 
 
 @pytest.mark.parametrize("skipped_for", ["no_person", "old_claude_code", "not_configured"])
@@ -1860,7 +1860,7 @@ def test_a_stop_that_is_not_polled_writes_nothing_when_the_sender_has_not_named_
     start = clock.now
     assert stop(transcript, environ) == 0
     assert clock.now == start
-    assert not watch.checks_path(root(environ), SESSION).exists()
+    assert not checks.checks_path(root(environ), SESSION).exists()
 
 
 @pytest.mark.parametrize("skipped_for", ["no_person", "old_claude_code", "not_configured"])
@@ -1898,8 +1898,8 @@ def test_a_stop_that_is_not_polled_records_only_turns_still_waiting_and_the_five
     deliver(environ, clock, traces[0], ago=24 * 3600 + 60)
     for trace in traces[1:]:
         deliver(environ, clock, trace)
-    watch.record(root(environ), SESSION, traces[8], "clear")
-    watch.record(root(environ), SESSION, traces[7], "timed_out")
+    checks.record(root(environ), SESSION, traces[8], "clear")
+    checks.record(root(environ), SESSION, traces[7], "timed_out")
     assert stop(transcript, environ) == 0
     assert outcomes(environ)[2:] == [(trace, "no_person", False) for trace in traces[3:8]]
 
@@ -1908,7 +1908,7 @@ def test_a_stop_that_is_not_polled_records_nothing_for_a_turn_older_than_a_day(t
     not_polled(transcript, environ, "no_person")
     deliver(environ, clock, ago=24 * 3600 + 60)
     assert stop(transcript, environ) == 0
-    assert not watch.checks_path(root(environ), SESSION).exists()
+    assert not checks.checks_path(root(environ), SESSION).exists()
 
 
 def test_the_same_reason_is_recorded_once_for_a_turn_until_another_outcome_follows(transcript, environ, emet, clock):
@@ -1968,7 +1968,7 @@ def test_a_flagged_report_that_was_held_back_uses_up_no_wake(session, environ, e
         clock.advance(5)
         next_turn(session, clock)
         assert stop(session, environ) == 0
-    assert [item["held"] for item in watch.checks(root(environ), SESSION)] == ["newer_turn"] * 3
+    assert [item["held"] for item in checks.checks(root(environ), SESSION)] == ["newer_turn"] * 3
     codes = []
     for number in range(4, 4 + watch.WAKE_CAP + 1):
         trace = str(uuid.UUID(int=number))
@@ -1977,7 +1977,7 @@ def test_a_flagged_report_that_was_held_back_uses_up_no_wake(session, environ, e
         emet.report(trace, 200, document())
         codes.append(stop(session, environ))
     assert codes == [2] * watch.WAKE_CAP + [0]
-    assert watch.checks(root(environ), SESSION)[-1]["held"] == "wake_cap"
+    assert checks.checks(root(environ), SESSION)[-1]["held"] == "wake_cap"
 
 
 def test_a_report_ready_more_than_a_minute_after_its_turn_ended_is_kept_for_the_next_prompt_and_wakes_no_one(
@@ -1992,9 +1992,9 @@ def test_a_report_ready_more_than_a_minute_after_its_turn_ended_is_kept_for_the_
     assert capfdbinary.readouterr() == (b"", b"")
     # The turn is still polled after the window, so the report can be saved
     assert [at for at, _ in asked] == [8, 13, 23, 38, 58, 88] and 58 <= watch.LATE_S < 88
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["outcome"], check["final"], check["handed"], check["held"]) == ("flagged", True, False, "late")
-    (verdict,) = watch.verdicts(root(environ), SESSION)
+    (verdict,) = verdicts.verdicts(root(environ), SESSION)
     assert verdict["handed"] is False and verdict["text"] == report.missed_message(document(), emet.url, SESSION)
     assert f"report {T1} not handed to Claude, late" in log(environ)
     assert watch.LATE_S == 60
@@ -2010,7 +2010,7 @@ def test_a_report_ready_a_minute_after_its_turn_ended_still_wakes_claude_and_a_l
         sleeper.at(after, running.close)
         assert stop(session, environ) == code
     assert asked == [(after, T1)]
-    assert watch.checks(root(environ), SESSION)[0].get("held") == (None if code else "late")
+    assert checks.checks(root(environ), SESSION)[0].get("held") == (None if code else "late")
 
 
 def test_the_minute_is_counted_from_the_last_entry_of_the_turn_and_not_from_its_stop(session, environ, emet, clock, asked):
@@ -2024,7 +2024,7 @@ def test_the_minute_is_counted_from_the_last_entry_of_the_turn_and_not_from_its_
     assert stop(session, environ) == 0
     # Counted from the last entry: the fourth read is the one just inside the window, and the report is ready 79 seconds after it
     assert [at for at, _ in asked] == [38, 43, 53, watch.LATE_S - watch.EDGE_S, 79]
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "late"
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "late"
 
 
 @pytest.mark.parametrize(("after", "code"), [(watch.LATE_S, 2), (watch.LATE_S + 2, 0)])
@@ -2041,7 +2041,7 @@ def test_the_minute_is_counted_from_the_stop_when_the_session_file_names_no_time
         sleeper.at(600 + after, running.close)
         assert stop(transcript, environ) == code
     assert asked == [(600 + after, T1)]
-    assert watch.checks(root(environ), SESSION)[0].get("held") == (None if code else "late")
+    assert checks.checks(root(environ), SESSION)[0].get("held") == (None if code else "late")
 
 
 def test_a_report_held_back_as_late_uses_up_no_wake(session, environ, emet, clock):
@@ -2052,8 +2052,8 @@ def test_a_report_held_back_as_late_uses_up_no_wake(session, environ, emet, cloc
         emet.report(trace, 200, document())
         clock.advance(watch.LATE_S + 1)
         assert stop(session, environ) == 0
-    found = watch.checks(root(environ), SESSION)
-    assert [item["held"] for item in found] == ["late"] * 2 and watch.wakes(found) == 0
+    found = checks.checks(root(environ), SESSION)
+    assert [item["held"] for item in found] == ["late"] * 2 and checks.wakes(found) == 0
     codes = []
     for number in range(3, 3 + watch.WAKE_CAP + 1):
         trace = str(uuid.UUID(int=number))
@@ -2062,7 +2062,7 @@ def test_a_report_held_back_as_late_uses_up_no_wake(session, environ, emet, cloc
         emet.report(trace, 200, document())
         codes.append(stop(session, environ))
     assert codes == [2] * watch.WAKE_CAP + [0]
-    assert watch.checks(root(environ), SESSION)[-1]["held"] == "wake_cap"
+    assert checks.checks(root(environ), SESSION)[-1]["held"] == "wake_cap"
 
 
 @pytest.mark.parametrize("named", [True, False], ids=["the line names the end", "the Stop read the end"])
@@ -2109,17 +2109,17 @@ def test_the_window_closes_at_the_same_millisecond_for_a_stop_of_the_run_and_one
 ):
     entry = {"timestamp": f"{stamp(clock)[:-5]}.{digits}Z"}
     ended = timestamps.parse(f"{stamp(clock)[:-5]}.{digits[:3]}Z").timestamp()
-    own = watch.Stop(SESSION, "", "", 0, clock.now, "own", watch.last_time([(0, entry)]))
+    own = watch.Stop(SESSION, "", "", 0, clock.now, "own", sessions.last_time([(0, entry)]))
     if path == "file":
-        watch.announce(root(environ), watch.Stop(SESSION, "", "", 0, clock.now, "later", watch.last_time([(0, entry)])))
+        watch.announce(root(environ), watch.Stop(SESSION, "", "", 0, clock.now, "later", sessions.last_time([(0, entry)])))
         own = watch.latest(root(environ), watch.Stop(SESSION, "", "", 0, clock.now, "own"))
         assert own.token == "later"
     assert own.ended == ended, "the end of a turn is held in milliseconds on every path"
-    trace = watch.Trace(T1, clock.now, "")
+    trace = sessions.Trace(T1, clock.now, "")
     clock.now = ended + watch.LATE_S + (0.001 if over else 0)
     text = watch.settle(root(environ), config.load(environ), own, trace, document())
     assert bool(text) is not over
-    assert watch.checks(root(environ), SESSION)[0].get("held") == ("late" if over else None)
+    assert checks.checks(root(environ), SESSION)[0].get("held") == ("late" if over else None)
 
 
 @pytest.mark.parametrize("digits", ["000", "500", "999"])
@@ -2127,7 +2127,7 @@ def test_the_window_closes_at_the_same_millisecond_for_a_stop_of_the_run_and_one
 def test_the_window_closes_at_the_millisecond_the_trace_line_names(environ, emet, clock, digits, over):
     ended = f"{stamp(clock)[:-5]}.{digits}Z"
     deliver(environ, clock, T1, ended=ended)
-    (trace,) = watch.delivered(pending.lines(root(environ), SESSION), emet.url)
+    (trace,) = sessions.delivered(pending.lines(root(environ), SESSION), emet.url)
     assert trace.ended == timestamps.parse(ended).timestamp()
     own = watch.Stop(SESSION, "", "", 0, clock.now, "own", clock.now - 30)
     clock.now = trace.ended + watch.LATE_S + (0.001 if over else 0)
@@ -2140,12 +2140,12 @@ def test_without_any_end_the_window_is_counted_from_the_second_the_stop_began_in
     watch.announce(root(environ), watch.Stop(SESSION, "", "", 0, began, "later"))
     read = watch.latest(root(environ), own)
     assert read.token == "later"
-    assert watch.turn_end(watch.Trace(T1, began, ""), own) == watch.turn_end(watch.Trace(T1, began, ""), read) == clock.now
+    assert watch.turn_end(sessions.Trace(T1, began, ""), own) == watch.turn_end(sessions.Trace(T1, began, ""), read) == clock.now
     # And from a Stop file an older plugin stamped
     storage.write_json(watch.stop_path(root(environ), SESSION), {"token": "older", "size": 0, "at": old_form(began)})
     read = watch.latest(root(environ), own)
     assert read.token == "older"
-    assert watch.turn_end(watch.Trace(T1, began, ""), read) == clock.now
+    assert watch.turn_end(sessions.Trace(T1, began, ""), read) == clock.now
 
 
 HOUR = 3600
@@ -2165,11 +2165,11 @@ def test_a_report_read_after_the_machine_slept_an_hour_wakes_no_one_and_comes_wi
     assert capfdbinary.readouterr() == (b"", b"")
     # The run goes on with the time it had left, and the report is still read
     assert [at for at, _ in asked] == [8, 13]
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["outcome"], check["final"], check["handed"], check["held"]) == ("flagged", True, False, "late")
     # Stamped by the system clock, as every time in a file is
     assert check["at"] == storage.now(began + HOUR + 13)
-    (verdict,) = watch.verdicts(root(environ), SESSION)
+    (verdict,) = verdicts.verdicts(root(environ), SESSION)
     assert verdict["handed"] is False and verdict["text"] == report.missed_message(document(), emet.url, SESSION)
     prompt = {**session.hook_input(), "hook_event_name": "UserPromptSubmit", "prompt": "And 3 + 3?", "prompt_id": "prompt-2"}
     assert missed.choose(json.dumps(prompt).encode(), environ) == verdict["text"]
@@ -2197,7 +2197,7 @@ def test_after_the_system_clock_is_set_back_a_report_is_not_late_by_it_and_still
     # The late rule reads the system clock, which now stands before the end of the turn
     assert stop(session, environ) == 2
     assert [at for at, _ in asked] == [8, 13, 23, 38, 58, 88] and watch.LATE_S < 88 < watch.BUDGET_S
-    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+    assert checks.checks(root(environ), SESSION)[0]["handed"] is True
 
 
 @pytest.mark.parametrize("set_by", [HOUR, -HOUR], ids=["set forward", "set back"])
@@ -2257,7 +2257,7 @@ def test_a_system_clock_set_forward_after_the_last_read_was_planned_moves_that_r
     sleeper.at(45, lambda: clock.set_by(10))
     assert stop(session, environ) == 2
     assert [at for at, _ in asked] == [8, 13, 23, 38, watch.LATE_S - watch.EDGE_S - 10]
-    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+    assert checks.checks(root(environ), SESSION)[0]["handed"] is True
 
 
 def test_a_stop_read_from_its_file_keeps_the_steady_start_of_the_run_that_reads_it(environ, clock):
@@ -2306,17 +2306,17 @@ def test_the_read_before_the_window_closes_is_placed_on_the_steady_clock_by_wher
 )
 def test_the_first_reason_that_applies_is_the_one_a_held_report_names(environ, emet, clock, capped, earlier, late, reason):
     for number in range(watch.WAKE_CAP if capped else watch.WAKE_CAP - 1):
-        assert watch.record(root(environ), SESSION, str(uuid.UUID(int=number + 1)), "flagged", {"handed": True})
+        assert checks.record(root(environ), SESSION, str(uuid.UUID(int=number + 1)), "flagged", {"handed": True})
     latest = watch.Stop(SESSION, "", "prompt-2", 0, clock.now, "own", clock.now)
-    trace = watch.Trace(T1, clock.now, "", "prompt-1" if earlier else "prompt-2", clock.now - (watch.LATE_S + 1 if late else 0))
-    found = watch.checks(root(environ), SESSION)
+    trace = sessions.Trace(T1, clock.now, "", "prompt-1" if earlier else "prompt-2", clock.now - (watch.LATE_S + 1 if late else 0))
+    found = checks.checks(root(environ), SESSION)
     assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == reason, (
         "the order of the hold reasons is the cap, then a newer turn, then a late report"
     )
 
 
 def test_a_wake_turn_that_cannot_be_recorded_is_logged_as_a_turn_too(session, environ, emet, clock):
-    watch.checks_path(root(environ), SESSION).mkdir()
+    checks.checks_path(root(environ), SESSION).mkdir()
     deliver(environ, clock, started_by="report_wake")
     finish(environ, clock)
     assert stop(session, environ) == 0
@@ -2343,7 +2343,7 @@ def test_an_older_turn_delivered_after_the_newer_one_ended_keeps_claude_asleep(t
     emet.report(T1, 200, document())
     assert stop(transcript, environ, prompt_id="prompt-2") == 0
     assert capfdbinary.readouterr() == (b"", b"")
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["outcome"], check["handed"], check["held"]) == ("flagged", False, "newer_turn")
 
 
@@ -2371,7 +2371,7 @@ def test_the_turn_a_report_is_about_is_told_by_its_id_and_by_the_times_only_with
     finish(environ, clock)
     emet.report(T1, 200, document())
     assert stop(transcript, environ, **({} if stop_id is None else {"prompt_id": stop_id})) == code
-    assert watch.checks(root(environ), SESSION)[0].get("held") == (None if code else "newer_turn")
+    assert checks.checks(root(environ), SESSION)[0].get("held") == (None if code else "newer_turn")
 
 
 def test_the_turn_that_ended_wakes_claude_by_its_id_even_when_it_was_delivered_before_its_last_entry(session, environ, emet, clock):
@@ -2386,7 +2386,7 @@ def test_the_turn_that_ended_wakes_claude_by_its_id_even_when_it_was_delivered_b
     emet.report(T2, 200, document())
     # Without the id on the line, the times say it is an earlier turn
     assert stop(session, environ, prompt_id="prompt-1") == 0
-    assert watch.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[-1]["held"] == "newer_turn"
 
 
 @pytest.mark.parametrize(("with_ends", "code"), [(True, 2), (False, 0)])
@@ -2400,7 +2400,7 @@ def test_an_older_turn_the_queue_delivers_last_does_not_hold_back_the_newer_turn
     emet.report(T1, 202)
     finish(environ, clock)
     assert stop(transcript, environ, prompt_id="prompt-2") == code
-    (check,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T2]
+    (check,) = [item for item in checks.checks(root(environ), SESSION) if item["trace_uuid"] == T2]
     # Without the ends of both turns, the order of the lines is all there is
     assert check.get("held") == (None if code else "newer_turn")
 
@@ -2414,7 +2414,7 @@ def test_a_newer_turn_delivered_first_still_holds_back_the_older_turns_report(tr
     finish(environ, clock)
     # Both lines name the Stop's turn, so only their ends tell which is the older one
     assert stop(transcript, environ, prompt_id="prompt-1") == 0
-    (check,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T1]
+    (check,) = [item for item in checks.checks(root(environ), SESSION) if item["trace_uuid"] == T1]
     assert check["held"] == "newer_turn"
 
 
@@ -2437,7 +2437,7 @@ def test_a_turn_the_queue_delivers_after_a_newer_turn_was_refused_wakes_no_one(
     assert line["prompt_id"] == "prompt-1" and timestamps.parse(line["ended"]).timestamp() == clock.now - 60
     emet.report(first, 200, document())
     assert stop(transcript, environ, prompt_id="prompt-2") == 0
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["trace_uuid"], check["handed"], check["held"]) == (first, False, "newer_turn")
 
 
@@ -2465,7 +2465,7 @@ def test_a_report_is_late_by_the_end_the_trace_line_names_even_when_the_stop_rea
     finish(environ, clock)
     assert stop(session, environ, prompt_id="prompt-1") == 0
     assert [at for at, _ in asked] == [38, 43, 53, watch.LATE_S - watch.EDGE_S, 79]
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "late"
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "late"
 
 
 @pytest.mark.parametrize("ended", ["soon", "", None, 5, "2027-01-15T08:00:00"])
@@ -2477,8 +2477,8 @@ def test_an_end_the_trace_line_names_that_cannot_be_read_is_not_used(session, en
 
 def long_session(transcript, monkeypatch):
     """A session file whose first turn is longer than what the poller reads before and after its start."""
-    monkeypatch.setattr(watch, "TAIL_BYTES", 2000)
-    monkeypatch.setattr(watch, "AHEAD_BYTES", 2000)
+    monkeypatch.setattr(sessions, "TAIL_BYTES", 2000)
+    monkeypatch.setattr(sessions, "AHEAD_BYTES", 2000)
     transcript.prompt("x" * 6000)
     transcript.text("msg_1", "4")
     assert transcript.path.stat().st_size > 6000
@@ -2491,7 +2491,7 @@ def test_a_turn_that_starts_after_the_stop_is_found_in_a_long_session_file(trans
     sleeper.at(4, lambda: transcript.text("msg_2", "y" * 1000))
     sleeper.at(4, lambda: transcript.prompt("And 3 + 3?"))
     assert stop(transcript, environ) == 0
-    assert watch.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
+    assert checks.checks(root(environ), SESSION)[0]["held"] == "newer_turn"
 
 
 def test_a_turn_that_starts_further_past_the_stop_than_the_poller_reads_is_not_found(
@@ -2515,9 +2515,9 @@ def test_wakes_are_capped_per_session(session, environ, emet, clock, tmp_path):
         codes.append(stop(session, environ))
     assert watch.WAKE_CAP == 3
     assert codes == [2, 2, 2, 0]
-    last = watch.checks(root(environ), SESSION)[-1]
+    last = checks.checks(root(environ), SESSION)[-1]
     assert (last["outcome"], last["final"], last["handed"], last["held"]) == ("flagged", True, False, "wake_cap")
-    saved = watch.verdicts(root(environ), SESSION)
+    saved = verdicts.verdicts(root(environ), SESSION)
     assert [item["handed"] for item in saved] == [True] * 3 + [False]
     assert "not handed to Claude, wake_cap" in log(environ)
     other = Transcript(tmp_path / "projects", "session-2")
@@ -2534,7 +2534,7 @@ def test_the_report_is_recorded_and_saved_before_claude_is_woken(session, enviro
 
     def crash(text):
         seen["checks"] = outcomes(environ)
-        seen["verdicts"] = [item["handed"] for item in watch.verdicts(root(environ), SESSION)]
+        seen["verdicts"] = [item["handed"] for item in verdicts.verdicts(root(environ), SESSION)]
         raise OSError("the pipe broke")
 
     monkeypatch.setattr(watch, "wake", crash)
@@ -2550,13 +2550,13 @@ def test_the_report_is_recorded_and_saved_before_claude_is_woken(session, enviro
 
 
 def test_a_report_that_cannot_be_recorded_wakes_no_one(session, environ, emet, clock, capfdbinary):
-    watch.checks_path(root(environ), SESSION).mkdir()
+    checks.checks_path(root(environ), SESSION).mkdir()
     deliver(environ, clock)
     emet.report(T1, 200, document())
     assert stop(session, environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
     assert emet.polled(T1) == 1
-    assert [item["handed"] for item in watch.verdicts(root(environ), SESSION)] == [False]
+    assert [item["handed"] for item in verdicts.verdicts(root(environ), SESSION)] == [False]
     assert f"report {T1} -> flagged, not recorded" in log(environ)
 
 
@@ -2570,7 +2570,7 @@ def test_a_verdict_that_cannot_be_saved_still_wakes_claude(session, environ, eme
 
 def test_the_same_revision_of_a_report_is_shown_once_and_a_new_one_again(environ, emet, clock):
     settings = config.load(environ)
-    trace = watch.Trace(T1, clock.now, "")
+    trace = sessions.Trace(T1, clock.now, "")
     ended = watch.Stop(SESSION, "", "", 0, clock.now)
     first = watch.settle(root(environ), settings, ended, trace, document())
     again = watch.settle(root(environ), settings, ended, trace, document())
@@ -2578,8 +2578,8 @@ def test_the_same_revision_of_a_report_is_shown_once_and_a_new_one_again(environ
     rechecked["report"]["revision"] = 2
     third = watch.settle(root(environ), settings, ended, trace, rechecked)
     assert first and third and again == ""
-    assert [item["revision"] for item in watch.checks(root(environ), SESSION)] == [1, 2]
-    assert len(watch.verdicts(root(environ), SESSION)) == 2
+    assert [item["revision"] for item in checks.checks(root(environ), SESSION)] == [1, 2]
+    assert len(verdicts.verdicts(root(environ), SESSION)) == 2
 
 
 @pytest.mark.parametrize(
@@ -2589,7 +2589,7 @@ def test_a_report_that_names_no_ids_is_keyed_by_its_trace(session, environ, emet
     deliver(environ, clock)
     emet.report(T1, 200, document(report={"status": "flagged", **named}))
     assert stop(session, environ) == 2
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["report_uuid"], check["revision"]) == ids
 
 
@@ -2598,7 +2598,7 @@ def test_the_saved_verdict_holds_the_rendered_text_and_ids_not_the_document(sess
     deliver(environ, clock, conversation_uuid=CONVERSATION)
     emet.report(T1, 200, document(long))
     assert stop(session, environ) == 2
-    path = watch.verdict_path(root(environ), SESSION, T1, 1)
+    path = verdicts.verdict_path(root(environ), SESSION, T1, 1)
     verdict = json.loads(path.read_text(encoding="utf-8"))
     assert verdict == {
         "v": 1,
@@ -2615,7 +2615,7 @@ def test_the_saved_verdict_holds_the_rendered_text_and_ids_not_the_document(sess
     }
     assert len(verdict["text"]) <= 4000
     assert path.stat().st_size < 20_000
-    assert watch.verdicts(root(environ), SESSION) == [verdict]
+    assert verdicts.verdicts(root(environ), SESSION) == [verdict]
 
 
 def test_a_turn_with_no_conversation_id_gets_a_link_that_searches_for_the_session(session, environ, emet, clock, capfdbinary):
@@ -2631,15 +2631,15 @@ def test_a_verdict_stays_eligible_for_seven_days_and_is_then_removed(session, en
     deliver(environ, clock)
     emet.report(T1, 200, document())
     stop(session, environ)
-    path = watch.verdict_path(root(environ), SESSION, T1, 1)
+    path = verdicts.verdict_path(root(environ), SESSION, T1, 1)
     clock.advance(7 * 24 * 3600 - 60)
-    assert len(watch.verdicts(root(environ), SESSION)) == 1
+    assert len(verdicts.verdicts(root(environ), SESSION)) == 1
     finish(environ, clock)
     stop(session, environ)
     assert path.exists()
     clock.advance(120)
-    assert watch.verdicts(root(environ), SESSION) == []
-    assert watch.verdicts(root(environ), "../x") == []
+    assert verdicts.verdicts(root(environ), SESSION) == []
+    assert verdicts.verdicts(root(environ), "../x") == []
     finish(environ, clock)
     stop(session, environ)
     assert not path.exists()
@@ -2673,7 +2673,7 @@ def test_only_a_readable_verdict_older_than_seven_days_under_a_verdicts_name_is_
     stop(session, environ)
     assert not gone.exists()
     assert sorted(path.name for path in folder.iterdir()) == sorted(kept)
-    assert watch.verdicts(root(environ), SESSION) == []
+    assert verdicts.verdicts(root(environ), SESSION) == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="links need a privilege on Windows")
@@ -2689,7 +2689,7 @@ def test_nothing_is_written_or_removed_through_a_verdicts_folder_that_is_a_link(
     assert [path.name for path in elsewhere.iterdir()] == [old.name]
     assert "verdict not saved, its folder is a link" in log(environ)
     old.write_text(json.dumps(verdict_of(clock)), encoding="utf-8")
-    assert watch.verdicts(root(environ), SESSION) == []
+    assert verdicts.verdicts(root(environ), SESSION) == []
 
 
 def verdict_of(clock, **changed):
@@ -2721,7 +2721,7 @@ def read_back(environ, verdict, name=VERDICT_FILE):
     folder.mkdir(exist_ok=True)
     (folder / name).write_text(verdict if isinstance(verdict, str) else json.dumps(verdict), encoding="utf-8")
     before = len(log(environ).splitlines()) if (root(environ) / "emet.log").exists() else 0
-    found = watch.read_verdict(root(environ), name)
+    found = verdicts.read_verdict(root(environ), name)
     after = log(environ).splitlines()[before:] if (root(environ) / "emet.log").exists() else []
     return found, [line.partition(" ")[2] for line in after]
 
@@ -2733,7 +2733,7 @@ def without(verdict, key):
 def test_a_saved_verdict_that_checks_out_whole_is_returned_as_it_was_saved(environ, clock):
     good = verdict_of(clock)
     assert read_back(environ, good) == (good, [])
-    assert watch.verdicts(root(environ), SESSION) == [good]
+    assert verdicts.verdicts(root(environ), SESSION) == [good]
 
 
 def test_a_saved_verdict_with_no_version_is_read_as_the_first_one(environ, clock):
@@ -2822,7 +2822,7 @@ def test_the_ids_a_saved_verdict_may_hold_are_the_ones_the_poller_writes(environ
 )
 def test_a_saved_verdict_whose_name_and_content_disagree_is_never_shown(environ, clock, name, changed):
     assert read_back(environ, verdict_of(clock, **changed), name) == (None, ["verdict not shown, mismatch"])
-    assert watch.verdicts(root(environ), "session-2") == []
+    assert verdicts.verdicts(root(environ), "session-2") == []
 
 
 def test_a_saved_text_longer_than_a_rendered_message_is_never_shown(environ, clock, monkeypatch):
@@ -2940,7 +2940,7 @@ def test_a_lone_surrogate_in_a_saved_text_is_never_shown(environ, clock):
 
 
 def test_a_saved_verdict_is_shown_for_seven_days_and_never_from_a_time_ahead_of_the_clock(environ, clock):
-    week = watch.VERDICT_DAYS * 24 * 3600
+    week = verdicts.VERDICT_DAYS * 24 * 3600
     for ago, problem in ((week - 60, []), (week + 60, ["verdict not shown, age"]), (-240, []), (-360, ["verdict not shown, age"])):
         for form in (storage.now, old_form):
             verdict = verdict_of(clock, at=form(clock.now - ago))
@@ -2959,8 +2959,8 @@ def test_a_saved_verdict_that_is_a_link_is_never_shown(environ, clock, tmp_path)
     folder = root(environ) / "verdicts"
     folder.mkdir()
     (folder / VERDICT_FILE).symlink_to(outside)
-    assert watch.read_verdict(root(environ), VERDICT_FILE) is None
-    assert watch.verdicts(root(environ), SESSION) == []
+    assert verdicts.read_verdict(root(environ), VERDICT_FILE) is None
+    assert verdicts.verdicts(root(environ), SESSION) == []
     assert log(environ).count("verdict not shown, link") == 2
     # The folder itself
     (folder / VERDICT_FILE).unlink()
@@ -2969,7 +2969,7 @@ def test_a_saved_verdict_that_is_a_link_is_never_shown(environ, clock, tmp_path)
     elsewhere.mkdir()
     (elsewhere / VERDICT_FILE).write_text(json.dumps(verdict_of(clock)), encoding="utf-8")
     folder.symlink_to(elsewhere, target_is_directory=True)
-    assert watch.read_verdict(root(environ), VERDICT_FILE) is None
+    assert verdicts.read_verdict(root(environ), VERDICT_FILE) is None
     assert log(environ).count("verdict not shown, link") == 3
 
 
@@ -3002,7 +3002,7 @@ def test_a_file_that_does_not_have_a_verdicts_name_is_never_read(environ, clock,
     folder = root(environ) / "verdicts"
     folder.mkdir()
     (folder / name).write_text(json.dumps(verdict_of(clock)), encoding="utf-8")
-    assert watch.read_verdict(root(environ), name) is None
+    assert verdicts.read_verdict(root(environ), name) is None
     assert [found for found, _ in opened] == ["emet.log"]
     assert log(environ).splitlines()[-1].endswith(" verdict not shown, name")
 
@@ -3013,7 +3013,7 @@ def test_a_name_that_leads_out_of_the_verdicts_folder_is_never_read(environ, clo
     (root(environ) / "verdicts").mkdir()
     (other / VERDICT_FILE).write_text(json.dumps(verdict_of(clock)), encoding="utf-8")
     for name in (f"../other/{VERDICT_FILE}", str(other / VERDICT_FILE)):
-        assert watch.read_verdict(root(environ), name) is None
+        assert verdicts.read_verdict(root(environ), name) is None
     assert [found for found, _ in opened] == ["emet.log", "emet.log"]
     assert log(environ).count("verdict not shown, name") == 2
 
@@ -3023,9 +3023,9 @@ def test_a_verdict_file_longer_than_any_the_poller_writes_is_never_read(environ,
     claims = [claim(n, "disputed", wide, (0, len(wide)), reason=wide, correction=wide) for n in range(1, 9)]
     widest = verdict_of(clock, text=report.missed_message(document(claims, answer=wide), "https://app.emet.so", SESSION))
     assert read_back(environ, widest) == (widest, [])
-    assert len(json.dumps(widest, ensure_ascii=False).encode("utf-8")) * 3 < watch.VERDICT_MAX_BYTES
+    assert len(json.dumps(widest, ensure_ascii=False).encode("utf-8")) * 3 < verdicts.VERDICT_MAX_BYTES
     monkeypatch.setattr(os, "read", lambda *args: pytest.fail("the file was read"))
-    padded = verdict_of(clock, added_later="x" * watch.VERDICT_MAX_BYTES)
+    padded = verdict_of(clock, added_later="x" * verdicts.VERDICT_MAX_BYTES)
     assert read_back(environ, padded) == (None, ["verdict not shown, size"])
 
 
@@ -3036,7 +3036,7 @@ def test_a_verdict_file_that_grows_after_its_size_was_read_is_never_shown(enviro
     def grow(fd):
         found = real(fd)
         # Longer, and still a verdict that would pass every other check
-        path.write_text(json.dumps(verdict_of(clock, added_later="x" * watch.VERDICT_MAX_BYTES)), encoding="utf-8")
+        path.write_text(json.dumps(verdict_of(clock, added_later="x" * verdicts.VERDICT_MAX_BYTES)), encoding="utf-8")
         return found
 
     taken = []
@@ -3045,7 +3045,7 @@ def test_a_verdict_file_that_grows_after_its_size_was_read_is_never_shown(enviro
     monkeypatch.setattr(os, "read", lambda fd, size: taken.append(read(fd, size)) or taken[-1])
     assert read_back(environ, verdict_of(clock)) == (None, ["verdict not shown, size"])
     # No more of it is taken into memory than shows that it is too long
-    assert sum(map(len, taken)) == watch.VERDICT_MAX_BYTES + 1
+    assert sum(map(len, taken)) == verdicts.VERDICT_MAX_BYTES + 1
 
 
 @pytest.mark.parametrize("failing", ["fstat", "read"])
@@ -3097,7 +3097,7 @@ def test_a_verdict_file_is_opened_once_and_judged_by_what_was_opened(environ, cl
     monkeypatch.setattr(os, "stat", by_name("stat"))
     monkeypatch.setattr(os, "lstat", by_name("lstat"))
     monkeypatch.setattr(Path, "is_symlink", link_asked)
-    assert watch.read_verdict(root(environ), VERDICT_FILE) == good
+    assert verdicts.read_verdict(root(environ), VERDICT_FILE) == good
     ((fd, flags),) = seen["open"]
     # The type, the number of names and the size come from the open file, and so do the bytes
     assert seen["fstat"] == [fd] and set(seen["read"]) == {fd}
@@ -3119,7 +3119,7 @@ def test_where_the_open_cannot_refuse_a_link_a_verdict_that_is_one_is_never_open
         (folder / VERDICT_FILE).symlink_to(outside)
     except (OSError, NotImplementedError):
         pytest.skip("no symbolic links here")
-    assert watch.read_verdict(root(environ), VERDICT_FILE) is None
+    assert verdicts.read_verdict(root(environ), VERDICT_FILE) is None
     assert [name for name, _ in opened] == ["emet.log"]
     assert log(environ).count("verdict not shown, link") == 1
 
@@ -3133,7 +3133,7 @@ def test_a_verdict_file_with_a_second_name_is_never_shown(environ, clock, tmp_pa
         os.link(outside, folder / VERDICT_FILE)
     except (OSError, NotImplementedError):
         pytest.skip("no hard links here")
-    assert watch.read_verdict(root(environ), VERDICT_FILE) is None
+    assert verdicts.read_verdict(root(environ), VERDICT_FILE) is None
     assert log(environ).count("verdict not shown, link") == 1
 
 
@@ -3151,9 +3151,9 @@ def test_a_verdict_file_that_holds_no_json_object_is_never_shown(environ, held):
 
 def test_a_verdict_file_that_is_missing_or_is_a_folder_is_never_shown(environ):
     folder = root(environ) / "verdicts"
-    assert watch.read_verdict(root(environ), VERDICT_FILE) is None
+    assert verdicts.read_verdict(root(environ), VERDICT_FILE) is None
     (folder / VERDICT_FILE).mkdir(parents=True)
-    assert watch.read_verdict(root(environ), VERDICT_FILE) is None
+    assert verdicts.read_verdict(root(environ), VERDICT_FILE) is None
     assert log(environ).count("verdict not shown, unreadable") == 2
 
 
@@ -3161,14 +3161,14 @@ def test_an_error_while_a_saved_verdict_is_judged_is_logged_by_type_and_never_ra
     def crash(*args):
         raise RuntimeError("Spend rose 12%")
 
-    monkeypatch.setattr(watch, "verdict_problem", crash)
+    monkeypatch.setattr(verdicts, "verdict_problem", crash)
     assert read_back(environ, verdict_of(clock)) == (None, ["verdict not shown, error RuntimeError"])
 
 
 def test_the_log_names_why_a_verdict_is_not_shown_by_one_of_ten_words_and_holds_nothing_of_the_file(environ, clock):
     words = ("name", "link", "size", "unreadable", "version", "wording", "shape", "mismatch", "text", "age")
-    named = (watch.BAD_NAME, watch.A_LINK, watch.TOO_LONG, watch.NOT_READ, watch.BAD_VERSION, watch.OTHER_WORDING)
-    assert (*named, watch.BAD_SHAPE, watch.OTHER_NAME, watch.BAD_TEXT, watch.BAD_AGE) == words
+    named = (verdicts.BAD_NAME, verdicts.A_LINK, verdicts.TOO_LONG, verdicts.NOT_READ, verdicts.BAD_VERSION, verdicts.OTHER_WORDING)
+    assert (*named, verdicts.BAD_SHAPE, verdicts.OTHER_NAME, verdicts.BAD_TEXT, verdicts.BAD_AGE) == words
     secret = "Spend-rose-12-percent"
     read_back(environ, verdict_of(clock, text=report.MISSED_OPENING + secret + "\x07"))
     read_back(environ, verdict_of(clock, session_id=secret))
@@ -3190,9 +3190,9 @@ def test_only_the_sessions_own_verdicts_that_check_out_are_listed_in_file_name_o
     read_back(environ, verdict_of(clock, session_id="session-2"), f"session-2.{T2}.1.json")
     read_back(environ, good, f"{SESSION}.notes.json")
     read_back(environ, "[1]", f"{SESSION}.{T1}.1.json")
-    assert watch.verdicts(root(environ), SESSION) == [good, second]
-    assert watch.verdicts(root(environ), "session-2") == [verdict_of(clock, session_id="session-2")]
-    assert watch.verdicts(root(environ), "*") == watch.verdicts(root(environ), "session") == []
+    assert verdicts.verdicts(root(environ), SESSION) == [good, second]
+    assert verdicts.verdicts(root(environ), "session-2") == [verdict_of(clock, session_id="session-2")]
+    assert verdicts.verdicts(root(environ), "*") == verdicts.verdicts(root(environ), "session") == []
 
 
 HIDDEN = (
@@ -3207,8 +3207,8 @@ def test_whatever_a_report_holds_the_verdict_the_poller_saves_is_one_it_reads_ba
     deliver(environ, clock, conversation_uuid=CONVERSATION)
     emet.report(T1, 200, document(claims, answer=text))
     assert stop(session, environ) == 2
-    (verdict,) = watch.verdicts(root(environ), SESSION)
-    assert verdict == json.loads(watch.verdict_path(root(environ), SESSION, T1, 1).read_text(encoding="utf-8"))
+    (verdict,) = verdicts.verdicts(root(environ), SESSION)
+    assert verdict == json.loads(verdicts.verdict_path(root(environ), SESSION, T1, 1).read_text(encoding="utf-8"))
     assert "verdict not shown" not in log(environ)
 
 
@@ -3220,7 +3220,7 @@ def test_a_saved_verdict_names_its_conversation_as_a_plain_uuid_or_not_at_all(se
     deliver(environ, clock, conversation_uuid=named)
     emet.report(T1, 200, document())
     assert stop(session, environ) == 2
-    (verdict,) = watch.verdicts(root(environ), SESSION)
+    (verdict,) = verdicts.verdicts(root(environ), SESSION)
     assert verdict["conversation_uuid"] == kept
     assert ("selected=" in verdict["text"]) is bool(kept)
 
@@ -3235,19 +3235,19 @@ def test_a_verdict_of_a_version_this_plugin_does_not_know_is_left_where_it_is_ho
 
 
 def test_a_verdict_says_it_was_handed_over_only_after_that_is_recorded(session, environ, emet, clock, monkeypatch):
-    path = watch.verdict_path(root(environ), SESSION, T1, 1)
+    path = verdicts.verdict_path(root(environ), SESSION, T1, 1)
     seen = []
 
     def crash(*args, **kwargs):
         seen.append(json.loads(path.read_text(encoding="utf-8"))["handed"])
         raise RuntimeError
 
-    monkeypatch.setattr(watch, "record", crash)
+    monkeypatch.setattr(checks, "record", crash)
     deliver(environ, clock)
     emet.report(T1, 200, document())
     assert stop(session, environ) == 0
     assert seen == [False]
-    assert [item["handed"] for item in watch.verdicts(root(environ), SESSION)] == [False]
+    assert [item["handed"] for item in verdicts.verdicts(root(environ), SESSION)] == [False]
     assert "watch error RuntimeError" in log(environ)
 
 
@@ -3267,8 +3267,8 @@ def test_every_outcome_is_listed_in_the_status_file_newest_first_and_once_per_tr
     assert status(environ)["queued"] == 3
     assert len(listed) == 5 and len({item["trace_uuid"] for item in listed}) == 5
     assert all(item["outcome"] == "not_assessed" and item["session_id"] == SESSION for item in listed)
-    assert listed[0] == {"session_id": SESSION, **watch.checks(root(environ), SESSION)[-1]}
-    newest_first = [item["trace_uuid"] for item in reversed(watch.checks(root(environ), SESSION))]
+    assert listed[0] == {"session_id": SESSION, **checks.checks(root(environ), SESSION)[-1]}
+    newest_first = [item["trace_uuid"] for item in reversed(checks.checks(root(environ), SESSION))]
     assert [item["trace_uuid"] for item in listed] == newest_first[:5]
     assert len(set(newest_first[:5])) == 5
     commands.update_status(root(environ), config.load(environ))
@@ -3290,7 +3290,7 @@ def test_no_file_but_the_verdict_holds_report_text_and_none_holds_the_key(sessio
     deliver(environ, clock)
     emet.report(T1, 200, document())
     assert stop(session, environ) == 2
-    verdict = watch.verdict_path(root(environ), SESSION, T1, 1)
+    verdict = verdicts.verdict_path(root(environ), SESSION, T1, 1)
     files = [path for path in root(environ).rglob("*") if path.is_file()]
     assert verdict in files
     for path in files:
@@ -3304,14 +3304,14 @@ def test_the_poller_files_are_private(session, environ, emet, clock):
     deliver(environ, clock)
     emet.report(T1, 200, document())
     stop(session, environ)
-    verdict = watch.verdict_path(root(environ), SESSION, T1, 1)
+    verdict = verdicts.verdict_path(root(environ), SESSION, T1, 1)
     assert stat.S_IMODE(verdict.stat().st_mode) == 0o600
     assert stat.S_IMODE(verdict.parent.stat().st_mode) == 0o700
-    assert stat.S_IMODE(watch.checks_path(root(environ), SESSION).stat().st_mode) == 0o600
+    assert stat.S_IMODE(checks.checks_path(root(environ), SESSION).stat().st_mode) == 0o600
 
 
 def test_an_outcome_written_after_a_line_cut_short_is_still_read(session, environ, emet, clock):
-    watch.checks_path(root(environ), SESSION).write_text('{"trace_uuid": "cut sh', encoding="utf-8")
+    checks.checks_path(root(environ), SESSION).write_text('{"trace_uuid": "cut sh', encoding="utf-8")
     deliver(environ, clock)
     finish(environ, clock)
     emet.report(T1, 200, document(status="clear"))
@@ -3323,13 +3323,13 @@ def test_an_outcome_written_after_a_line_cut_short_is_still_read(session, enviro
 def test_a_damaged_line_of_the_outcome_file_never_stops_a_run(transcript, environ, emet, clock, skipped_for):
     not_polled(transcript, environ, skipped_for)
     damaged = [{"trace_uuid": ["a list"], "outcome": skipped_for}, {"trace_uuid": {"a": 1}, "final": True}, {"outcome": 5}, {}]
-    watch.checks_path(root(environ), SESSION).write_text("".join(json.dumps(line) + "\n" for line in damaged), encoding="utf-8")
+    checks.checks_path(root(environ), SESSION).write_text("".join(json.dumps(line) + "\n" for line in damaged), encoding="utf-8")
     deliver(environ, clock)
     if skipped_for == "paused":
         pause.extend(root(environ))
     assert stop(transcript, environ) == 0
     assert "watch error" not in log(environ)
-    assert watch.checks(root(environ), SESSION)[-1]["outcome"] == skipped_for
+    assert checks.checks(root(environ), SESSION)[-1]["outcome"] == skipped_for
 
 
 @pytest.mark.parametrize(
@@ -3343,7 +3343,7 @@ def test_a_damaged_line_of_the_outcome_file_never_stops_a_run(transcript, enviro
     ],
 )
 def test_a_line_of_the_outcome_file_ends_the_polling_only_with_an_outcome_that_is_final(session, environ, emet, clock, line):
-    watch.checks_path(root(environ), SESSION).write_text(json.dumps({"trace_uuid": T1, **line}) + "\n", encoding="utf-8")
+    checks.checks_path(root(environ), SESSION).write_text(json.dumps({"trace_uuid": T1, **line}) + "\n", encoding="utf-8")
     deliver(environ, clock)
     emet.report(T1, 200, document())
     assert stop(session, environ) == 2
@@ -3353,15 +3353,15 @@ def test_a_line_of_the_outcome_file_ends_the_polling_only_with_an_outcome_that_i
 @pytest.mark.parametrize("line", [{}, {"outcome": "clear"}, {"outcome": "made_up"}, {"outcome": None}])
 def test_only_a_flagged_line_that_was_handed_over_counts_as_a_wake(session, environ, emet, clock, line):
     lines = [json.dumps({"trace_uuid": str(uuid.UUID(int=number)), "handed": True, "final": True, **line}) for number in range(1, 9)]
-    watch.checks_path(root(environ), SESSION).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    checks.checks_path(root(environ), SESSION).write_text("\n".join(lines) + "\n", encoding="utf-8")
     deliver(environ, clock)
     emet.report(T1, 200, document())
     assert stop(session, environ) == 2
 
 
 def test_an_outcome_file_that_is_not_text_reads_as_empty(environ):
-    watch.checks_path(root(environ), SESSION).write_bytes(b"\xff\xfe\n[1]\n")
-    assert watch.checks(root(environ), SESSION) == []
+    checks.checks_path(root(environ), SESSION).write_bytes(b"\xff\xfe\n[1]\n")
+    assert checks.checks(root(environ), SESSION) == []
 
 
 def test_the_wake_text_is_written_as_utf8_bytes(monkeypatch):
@@ -3514,7 +3514,7 @@ def test_a_turn_a_command_of_the_plugin_started_is_never_polled_and_is_recorded_
     assert capfdbinary.readouterr() == (b"", b"")
     assert emet.reads == [] and clock.now == start
     assert not (root(environ) / "verdicts").exists()
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert check == {"trace_uuid": T1, "outcome": "own_command", "final": True, "at": storage.now(clock.now)}
     assert status(environ)["checks"] == [{"session_id": SESSION, **check}]
     assert f"turn {T1} was started by a command of the plugin, not polled" in log(environ)
@@ -3522,8 +3522,8 @@ def test_a_turn_a_command_of_the_plugin_started_is_never_polled_and_is_recorded_
     # However often Stop fires
     assert stop(session, environ) == 0
     assert outcomes(environ) == [(T1, "own_command", True)] and emet.reads == []
-    found = watch.checks(root(environ), SESSION)
-    assert watch.settled(found) == {T1} and watch.wakes(found) == 0
+    found = checks.checks(root(environ), SESSION)
+    assert checks.settled(found) == {T1} and checks.wakes(found) == 0
 
 
 def test_each_mark_is_recorded_under_its_own_outcome_and_neither_turn_is_polled(session, environ, emet, clock):
@@ -3536,7 +3536,7 @@ def test_each_mark_is_recorded_under_its_own_outcome_and_neither_turn_is_polled(
     assert stop(session, environ) == 0
     assert sorted(outcomes(environ)) == sorted([(T1, "own_command", True), (T2, "wake_turn", True), (third, "wake_turn", True)])
     assert emet.reads == []
-    assert set(watch.NEVER_POLLED) == {"own_command", "wake_turn"} <= {word for word, final in watch.OUTCOMES.items() if final}
+    assert set(checks.NEVER_POLLED) == {"own_command", "wake_turn"} <= {word for word, final in checks.OUTCOMES.items() if final}
 
 
 def test_a_command_turn_holds_back_the_report_of_the_turn_before_it(transcript, environ, emet, clock, capfdbinary):
@@ -3549,7 +3549,7 @@ def test_a_command_turn_holds_back_the_report_of_the_turn_before_it(transcript, 
     assert stop(transcript, environ) == 0
     assert capfdbinary.readouterr() == (b"", b"")
     assert sorted(outcomes(environ)) == sorted([(T2, "own_command", True), (T1, "flagged", True)])
-    (held,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T1]
+    (held,) = [item for item in checks.checks(root(environ), SESSION) if item["trace_uuid"] == T1]
     assert (held["handed"], held["held"]) == (False, "newer_turn")
     assert emet.polled(T2) == 0
 
@@ -3567,7 +3567,7 @@ def test_a_command_of_the_plugin_that_starts_while_the_report_is_awaited_keeps_c
     # Another skill's command is in the same wrapper, and is still passed over here as it was
     sleeper.at(4, lambda: session.command(name))
     assert stop(session, environ) == (2 if woken else 0)
-    (check,) = watch.checks(root(environ), SESSION)
+    (check,) = checks.checks(root(environ), SESSION)
     assert (check["handed"], check.get("held")) == (woken, None if woken else "newer_turn")
 
 
@@ -3599,7 +3599,7 @@ def test_a_command_of_the_plugin_starts_a_turn_that_is_sent_unchanged_and_never_
     assert capfdbinary.readouterr() == (b"", b"")
     assert emet.polled(second) == 0 and emet.polled(first) == 1
     assert sorted(outcomes(environ)) == sorted([(first, "flagged", True), (second, "own_command", True)])
-    (held,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == first]
+    (held,) = [item for item in checks.checks(root(environ), SESSION) if item["trace_uuid"] == first]
     assert (held["handed"], held["held"]) == (False, "newer_turn")
     # Only the report of the first answer is saved, for /emet:status to list
     assert [path.name.split(".")[1] for path in (root(environ) / "verdicts").glob("*.json")] == [first]
@@ -3656,25 +3656,25 @@ def test_a_link_at_the_checks_file_is_removed_and_the_outcome_is_written_to_a_ne
     outside = tmp_path / "outside.jsonl"
     if exists:
         outside.write_text("untouched", encoding="utf-8")
-    path = watch.checks_path(root(environ), SESSION)
+    path = checks.checks_path(root(environ), SESSION)
     path.symlink_to(outside)
-    assert watch.record(root(environ), SESSION, T1, "clear") is True
+    assert checks.record(root(environ), SESSION, T1, "clear") is True
     assert outside.read_text(encoding="utf-8") == "untouched" if exists else not outside.exists()
     assert not path.is_symlink() and path.is_file()
     assert outcomes(environ) == [(T1, "clear", True)]
     assert log(environ).count("checks file was a link, removed") == 1
-    assert watch.record(root(environ), SESSION, T1, "clear") is True
+    assert checks.record(root(environ), SESSION, T1, "clear") is True
     assert log(environ).count("checks file was a link, removed") == 1 and len(outcomes(environ)) == 2
 
 
 @links
 def test_a_link_put_at_the_checks_file_after_the_look_is_refused_by_the_open(tmp_path, environ, monkeypatch):
     outside = tmp_path / "outside.jsonl"
-    path = watch.checks_path(root(environ), SESSION)
+    path = checks.checks_path(root(environ), SESSION)
     path.symlink_to(outside)
     # The look sees no link, as when one is planted between the look and the open
     monkeypatch.setattr(type(path), "is_symlink", lambda self: False)
-    assert watch.record(root(environ), SESSION, T1, "clear") is False
+    assert checks.record(root(environ), SESSION, T1, "clear") is False
     assert not outside.exists()
     assert f"report {T1} -> clear, not recorded OSError" in log(environ)
     assert not (root(environ) / "status.json").exists()
@@ -3684,22 +3684,22 @@ def test_a_link_put_at_the_checks_file_after_the_look_is_refused_by_the_open(tmp
 def test_a_link_at_the_checks_file_is_not_read_and_reading_leaves_it(tmp_path, environ):
     outside = tmp_path / "outside.jsonl"
     outside.write_text(json.dumps({"trace_uuid": T1, "outcome": "clear", "final": True}) + "\n", encoding="utf-8")
-    path = watch.checks_path(root(environ), SESSION)
+    path = checks.checks_path(root(environ), SESSION)
     path.symlink_to(outside)
-    assert watch.checks(root(environ), SESSION) == []
+    assert checks.checks(root(environ), SESSION) == []
     assert path.is_symlink()
 
 
 @pipes
 @pytest.mark.parametrize("writer", [False, True])
 def test_a_pipe_at_the_checks_file_is_read_as_empty_without_waiting(environ, writer):
-    path = watch.checks_path(root(environ), SESSION)
+    path = checks.checks_path(root(environ), SESSION)
     os.mkfifo(path)
     # A pipe takes a writer only while it has a reader. With one that writes nothing, a read that does not wait has no answer
     ends = [os.open(path, os.O_RDONLY | os.O_NONBLOCK), os.open(path, os.O_WRONLY | os.O_NONBLOCK)] if writer else []
     found = []
     # On another thread, so an open that waits for a writer fails the test and does not hang it
-    waiter = threading.Thread(target=lambda: found.append(watch.checks(root(environ), SESSION)), daemon=True)
+    waiter = threading.Thread(target=lambda: found.append(checks.checks(root(environ), SESSION)), daemon=True)
     waiter.start()
     waiter.join(5)
     for end in ends:
@@ -3709,9 +3709,9 @@ def test_a_pipe_at_the_checks_file_is_read_as_empty_without_waiting(environ, wri
 
 @pipes
 def test_a_pipe_at_the_checks_file_is_not_written_and_nothing_waits(environ):
-    os.mkfifo(watch.checks_path(root(environ), SESSION))
+    os.mkfifo(checks.checks_path(root(environ), SESSION))
     recorded = []
-    waiter = threading.Thread(target=lambda: recorded.append(watch.record(root(environ), SESSION, T1, "clear")), daemon=True)
+    waiter = threading.Thread(target=lambda: recorded.append(checks.record(root(environ), SESSION, T1, "clear")), daemon=True)
     waiter.start()
     waiter.join(5)
     assert recorded == [False]
@@ -3719,7 +3719,7 @@ def test_a_pipe_at_the_checks_file_is_not_written_and_nothing_waits(environ):
 
 
 def test_a_folder_at_the_checks_file_leaves_no_descriptor_open(environ, monkeypatch):
-    watch.checks_path(root(environ), SESSION).mkdir()
+    checks.checks_path(root(environ), SESSION).mkdir()
     opened = []
     real = os.open
 
@@ -3728,8 +3728,8 @@ def test_a_folder_at_the_checks_file_leaves_no_descriptor_open(environ, monkeypa
         return opened[-1]
 
     monkeypatch.setattr(os, "open", kept)
-    assert watch.checks(root(environ), SESSION) == []
-    assert watch.record(root(environ), SESSION, T1, "clear") is False
+    assert checks.checks(root(environ), SESSION) == []
+    assert checks.record(root(environ), SESSION, T1, "clear") is False
     monkeypatch.undo()
     for fd in opened:
         with pytest.raises(OSError):

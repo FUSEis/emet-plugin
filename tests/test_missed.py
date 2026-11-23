@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from emet_claude import commands, config, missed, pending, report, storage, timestamps, watch
+from emet_claude import checks, commands, config, missed, pending, report, sessions, storage, timestamps, verdicts, watch
 from emet_claude.transcript import WAKE_WINDOW_S
 from helpers import WAKE_WRAPPER, Transcript, old_form
 from test_report import claim, document
@@ -35,7 +35,7 @@ ENDPOINT = "https://app.emet.so"
 BEYOND_ASCII = "São Paulo → \U00020bb7"
 PROCESS_TIMEOUT_S = 30
 # Names of the developer's own session that would change what the child does
-INHERITED = ("CLAUDE_PLUGIN_OPTION_", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR", watch.ENTRYPOINT_NAME, "PYTHONPATH", "PYTHONIOENCODING")
+INHERITED = ("CLAUDE_PLUGIN_OPTION_", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR", sessions.ENTRYPOINT_NAME, "PYTHONPATH", "PYTHONIOENCODING")
 SILENT = (0, b"", b"")
 # The lock as the plugin takes it. The tests of the second part replace it with one that fails
 REAL_LOCKED = storage.locked
@@ -80,11 +80,11 @@ def save(environ, at, trace=T2, session=SESSION, name=None, **changed):
 def check(environ, at, trace=T2, outcome="flagged", session=SESSION, form=storage.now, **fields):
     """Writes one line of the session's checks file, as the poller does, recorded at that time."""
     line = {"trace_uuid": trace, "outcome": outcome, "final": True, "at": form(at), "report_uuid": REPORT, "revision": 1, **fields}
-    with open(watch.checks_path(root(environ), session), "a", encoding="utf-8", newline="\n") as handle:
+    with open(checks.checks_path(root(environ), session), "a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(line) + "\n")
 
 
-def held(environ, at, trace=T2, reason=watch.LATE, **changed):
+def held(environ, at, trace=T2, reason=checks.LATE, **changed):
     """A flagged report Claude was not woken for: its line and its file. Returns the verdict."""
     check(environ, at, trace, handed=False, held=reason)
     return save(environ, at, trace, **changed)
@@ -95,7 +95,7 @@ def files(environ):
 
 
 def lines(environ, session=SESSION):
-    return [(item["trace_uuid"], item["outcome"]) for item in watch.checks(root(environ), session)]
+    return [(item["trace_uuid"], item["outcome"]) for item in checks.checks(root(environ), session)]
 
 
 def prompt_input(transcript, prompt="And 3 + 3?", prompt_id="prompt-2", **fields):
@@ -160,37 +160,37 @@ def test_a_verdict_is_shown_once_and_the_second_prompt_shows_nothing(session, en
     assert hook(environ, prompt_input(session)) == (0, expected(verdict), b"")
     assert hook(environ, prompt_input(session, "And 4 + 4?", "prompt-3")) == SILENT, "the same verdict is never shown twice"
     assert lines(environ) == [(T2, "flagged"), (T2, "shown")]
-    (shown,) = [item for item in watch.checks(root(environ), SESSION) if item["outcome"] == "shown"]
+    (shown,) = [item for item in checks.checks(root(environ), SESSION) if item["outcome"] == "shown"]
     assert shown["prompt_id"] == "prompt-2", "the record names the prompt the verdict came with"
 
 
 def test_a_prompt_with_nothing_to_show_ends_the_process_with_exit_0_and_no_output(session, environ, emet):
     assert hook(environ, prompt_input(session)) == SILENT
     assert log(environ) == "", "a prompt with nothing saved for its session leaves no line in the log"
-    assert not watch.checks_path(root(environ), SESSION).exists()
+    assert not checks.checks_path(root(environ), SESSION).exists()
     assert emet.requests == [] and emet.reads == []
 
 
 def damaged(environ, session):
     held(environ, time.time() - 120)
-    watch.verdict_path(root(environ), SESSION, T2, 1).write_text('{"v": 1, "text": "Spend rose', encoding="utf-8")
+    verdicts.verdict_path(root(environ), SESSION, T2, 1).write_text('{"v": 1, "text": "Spend rose', encoding="utf-8")
     return prompt_input(session)
 
 
 def of_another_session(environ, session):
-    check(environ, time.time() - 120, session="session-2", handed=False, held=watch.LATE)
+    check(environ, time.time() - 120, session="session-2", handed=False, held=checks.LATE)
     save(environ, time.time() - 120, session="session-2")
     return prompt_input(session)
 
 
 def copied_from_another_session(environ, session):
-    check(environ, time.time() - 120, handed=False, held=watch.LATE)
+    check(environ, time.time() - 120, handed=False, held=checks.LATE)
     save(environ, time.time() - 120, session="session-2", name=f"{SESSION}.{T2}.1.json")
     return prompt_input(session)
 
 
 def expired(environ, session):
-    held(environ, time.time() - watch.VERDICT_DAYS * 24 * 3600 - 60)
+    held(environ, time.time() - verdicts.VERDICT_DAYS * 24 * 3600 - 60)
     return prompt_input(session)
 
 
@@ -313,7 +313,7 @@ def test_a_report_claude_was_not_woken_for_is_shown_with_the_next_prompt(session
     clock.advance(120)
     verdict = held(environ, clock.now)
     assert run(session, environ, capfdbinary) == expected(verdict)
-    (_, shown) = watch.checks(root(environ), SESSION)
+    (_, shown) = checks.checks(root(environ), SESSION)
     assert shown == {
         "trace_uuid": T2,
         "outcome": "shown",
@@ -329,7 +329,7 @@ def test_a_report_claude_was_not_woken_for_is_shown_with_the_next_prompt(session
     assert [(item["trace_uuid"], item["outcome"], item["session_id"]) for item in status["checks"]] == [(T2, "shown", SESSION)]
 
 
-@pytest.mark.parametrize("reason", [watch.SCHEDULED_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE])
+@pytest.mark.parametrize("reason", [checks.SCHEDULED_TURN, checks.CAPPED, checks.NEWER_TURN, checks.LATE])
 def test_every_reason_a_wake_was_held_back_for_leads_to_a_showing(session, environ, clock, capfdbinary, reason):
     verdict = held(environ, clock.now, reason=reason)
     assert run(session, environ, capfdbinary) == expected(verdict)
@@ -415,14 +415,14 @@ def test_a_verdict_the_poller_did_not_record_is_left_for_the_poller(session, env
     save(environ, clock.now)
     assert run(session, environ, capfdbinary) == b""
     assert files(environ) == [f"{SESSION}.{T2}.1.json"]
-    check(environ, clock.now, T2, handed=False, held=watch.LATE, revision=2)
+    check(environ, clock.now, T2, handed=False, held=checks.LATE, revision=2)
     assert run(session, environ, capfdbinary) == b"", "the line of another revision of the report is not this verdict's line"
 
 
 def test_a_showing_that_cannot_be_recorded_shows_nothing_and_keeps_the_file(session, environ, clock, capfdbinary, monkeypatch):
     verdict = held(environ, clock.now)
     real = os.open
-    target = str(watch.checks_path(root(environ), SESSION))
+    target = str(checks.checks_path(root(environ), SESSION))
 
     def refused(path, flags, *more, **named):
         if path == target and flags & os.O_APPEND:
@@ -507,10 +507,10 @@ def test_the_showings_of_reports_on_scheduled_turns_are_counted_apart_from_the_o
         verdict = held(environ, clock.now, next(traces), reason=reason)
         return run(session, environ, capfdbinary, prompt_id=next(prompts)) == expected(verdict)
 
-    assert [shown(watch.SCHEDULED_TURN) for _ in range(3)] == [True] * 3
-    assert [shown(watch.LATE) for _ in range(3)] == [True] * 3, "a loop does not use up the showings of a person's own turns"
+    assert [shown(checks.SCHEDULED_TURN) for _ in range(3)] == [True] * 3
+    assert [shown(checks.LATE) for _ in range(3)] == [True] * 3, "a loop does not use up the showings of a person's own turns"
     # One more of each kind waits. Each is removed under its own count
-    over = [held(environ, clock.now, next(traces), reason=reason)["trace_uuid"] for reason in (watch.SCHEDULED_TURN, watch.LATE)]
+    over = [held(environ, clock.now, next(traces), reason=reason)["trace_uuid"] for reason in (checks.SCHEDULED_TURN, checks.LATE)]
     assert run(session, environ, capfdbinary, prompt_id=next(prompts)) == b"" and files(environ) == []
     assert f"verdict {over[0]} removed, the session already had 3 showings for scheduled turns\n" in log(environ)
     assert f"verdict {over[1]} removed, the session already had 3 showings\n" in log(environ)
@@ -523,9 +523,9 @@ def test_three_showings_of_other_reports_leave_the_report_of_a_scheduled_turn_to
         held(environ, clock.now, str(uuid.UUID(int=number)))
         assert run(session, environ, capfdbinary, prompt_id=f"prompt-{number + 1}")
     clock.advance(1)
-    older = held(environ, clock.now, T1, reason=watch.SCHEDULED_TURN)
+    older = held(environ, clock.now, T1, reason=checks.SCHEDULED_TURN)
     late = held(environ, clock.now, T2)["trace_uuid"]
-    newer = held(environ, clock.now + 1, T3, reason=watch.SCHEDULED_TURN)
+    newer = held(environ, clock.now + 1, T3, reason=checks.SCHEDULED_TURN)
     assert run(session, environ, capfdbinary, prompt_id="prompt-8") == expected(newer), "one per prompt, the newest first"
     assert f"verdict {late} removed, the session already had 3 showings\n" in log(environ)
     assert run(session, environ, capfdbinary, prompt_id="prompt-9") == expected(older)
@@ -535,11 +535,11 @@ def test_wakes_and_showings_are_counted_apart(session, environ, clock, capfdbina
     for number in range(watch.WAKE_CAP):
         check(environ, clock.now - 3600, str(uuid.UUID(int=number + 1)), handed=True)
     clock.advance(60)
-    verdict = held(environ, clock.now, reason=watch.CAPPED)
+    verdict = held(environ, clock.now, reason=checks.CAPPED)
     assert run(session, environ, capfdbinary) == expected(verdict), "a report held back by the wake cap is shown with a prompt"
-    found = watch.checks(root(environ), SESSION)
-    assert watch.wakes(found) == watch.WAKE_CAP, "a showing is no wake: it must not use up the wakes of the session"
-    assert len(watch.handed_times(root(environ), SESSION)) == watch.WAKE_CAP, "nor let the sender take a turn for one a wake started"
+    found = checks.checks(root(environ), SESSION)
+    assert checks.wakes(found) == watch.WAKE_CAP, "a showing is no wake: it must not use up the wakes of the session"
+    assert len(checks.handed_times(root(environ), SESSION)) == watch.WAKE_CAP, "nor let the sender take a turn for one a wake started"
 
 
 def test_a_verdict_of_a_conversation_compacted_since_is_removed_unshown(session, environ, clock, capfdbinary):
@@ -650,7 +650,7 @@ def last_turn_by_the_sdk(transcript, environ):
 
 
 def entrypoint_named_by_claude_code(transcript, environ):
-    environ[watch.ENTRYPOINT_NAME] = "sdk-cli"
+    environ[sessions.ENTRYPOINT_NAME] = "sdk-cli"
 
 
 @pytest.mark.parametrize("arrange", [last_turn_by_the_sdk, entrypoint_named_by_claude_code])
@@ -660,7 +660,7 @@ def test_nothing_is_shown_where_no_person_is_at_the_session_and_the_verdict_wait
     assert run(session, environ, capfdbinary) == b"", "under claude -p or the SDK the words would go into a program's output"
     assert files(environ) == [f"{SESSION}.{T2}.1.json"] and lines(environ) == [(T2, "flagged")]
     assert "verdict not shown, no person is at the session" in log(environ)
-    environ.pop(watch.ENTRYPOINT_NAME, None)
+    environ.pop(sessions.ENTRYPOINT_NAME, None)
     session.prompt("Back at the keyboard.", entrypoint="cli")
     assert run(session, environ, capfdbinary, prompt_id="prompt-3") == expected(verdict), "it waits for a prompt a person sends"
 
@@ -752,12 +752,12 @@ def test_a_later_revision_of_a_report_already_shown_is_shown_as_a_report_of_its_
     assert run(session, environ, capfdbinary) == expected(first)
     clock.advance(60)
     # Emet checked the turn again and the poller recorded and saved the new revision
-    check(environ, clock.now, handed=False, held=watch.LATE, revision=2)
+    check(environ, clock.now, handed=False, held=checks.LATE, revision=2)
     second = save(environ, clock.now, revision=2)
     assert files(environ) == [f"{SESSION}.{T2}.2.json"]
     assert run(session, environ, capfdbinary, prompt_id="prompt-3") == expected(second), "the user never got this report"
     assert run(session, environ, capfdbinary, prompt_id="prompt-4") == b""
-    shown = [(item["revision"], item["prompt_id"]) for item in watch.checks(root(environ), SESSION) if item["outcome"] == "shown"]
+    shown = [(item["revision"], item["prompt_id"]) for item in checks.checks(root(environ), SESSION) if item["outcome"] == "shown"]
     assert shown == [(1, "prompt-2"), (2, "prompt-3")]
 
 
@@ -942,7 +942,7 @@ def test_an_error_in_the_prompt_hook_is_logged_by_type_and_never_raised(session,
     def broken(*args):
         raise RuntimeError("Spend rose 12% in March.")
 
-    monkeypatch.setattr(watch, "verdicts", broken)
+    monkeypatch.setattr(verdicts, "verdicts", broken)
     assert run(session, environ, capfdbinary) == b""
     assert "prompt hook error RuntimeError" in log(environ) and "Spend" not in log(environ)
     # Even the log can fail
@@ -951,7 +951,7 @@ def test_an_error_in_the_prompt_hook_is_logged_by_type_and_never_raised(session,
 
 
 def test_a_verdict_file_this_plugin_cannot_read_is_left_where_it_is(session, environ, clock, capfdbinary):
-    held(environ, clock.now, v=watch.VERDICT_VERSION + 1)
+    held(environ, clock.now, v=verdicts.VERDICT_VERSION + 1)
     assert run(session, environ, capfdbinary) == b""
     assert files(environ) == [f"{SESSION}.{T2}.1.json"], "its time may not mean what this version thinks"
 
@@ -989,7 +989,7 @@ def test_the_report_of_the_turn_that_carried_a_verdict_is_read_and_claude_is_nev
     assert answer_the_prompt(session, environ, emet, clock, "prompt-2") == 0, "a wake for this answer would start a chain"
     assert capfdbinary.readouterr() == (b"", b"")
     assert emet.polled(T1) == 1, "the report is still read: the turn holds the user's own question too"
-    (line,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == T1]
+    (line,) = [item for item in checks.checks(root(environ), SESSION) if item["trace_uuid"] == T1]
     assert (line["outcome"], line["handed"], line["held"]) == ("flagged", False, "shown_turn"), "and recorded, for /emet:status"
     assert files(environ) == [], "its verdict is not saved: Claude is never told of it, so the text has no use"
     assert f"report {T1} not handed to Claude, shown_turn" in log(environ)
@@ -1015,14 +1015,14 @@ def test_a_turn_that_carried_a_verdict_is_the_first_reason_a_report_is_held_for(
         check(environ, clock.now, str(uuid.UUID(int=number + 1)), handed=True)
     check(environ, clock.now, T2, "shown", prompt_id="prompt-1")
     latest = watch.Stop(SESSION, "", "prompt-2", 0, clock.now, "own", clock.now)
-    trace = watch.Trace(T1, clock.now, "", "prompt-1", clock.now - watch.LATE_S - 1)
-    found = watch.checks(root(environ), SESSION)
-    assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == watch.SHOWN_TURN
-    assert f"`{watch.SHOWN_TURN}`" in watch.__doc__ and "The first of the five that applies" in watch.__doc__
+    trace = sessions.Trace(T1, clock.now, "", "prompt-1", clock.now - watch.LATE_S - 1)
+    found = checks.checks(root(environ), SESSION)
+    assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == checks.SHOWN_TURN
+    assert f"`{checks.SHOWN_TURN}`" in checks.__doc__ and "The first of the five that applies" in checks.__doc__
     # A trace that names no turn is never taken for one that carried a verdict
     check(environ, clock.now, T3, "shown", prompt_id="")
-    unnamed = watch.Trace(T1, clock.now, "", "", clock.now)
-    assert watch.hold_reason(root(environ), config.load(environ), latest, unnamed, watch.checks(root(environ), SESSION)) == watch.CAPPED
+    unnamed = sessions.Trace(T1, clock.now, "", "", clock.now)
+    assert watch.hold_reason(root(environ), config.load(environ), latest, unnamed, checks.checks(root(environ), SESSION)) == checks.CAPPED
 
 
 def test_main_runs_the_prompt_hook_in_its_own_mode(session, environ, clock, capfdbinary, monkeypatch):

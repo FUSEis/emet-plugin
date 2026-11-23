@@ -38,12 +38,12 @@ def test_changelog_has_the_current_version():
 
 
 def test_the_readme_requires_the_claude_code_the_report_check_needs():
-    from emet_claude import watch
+    from emet_claude import checks, watch
 
     needed = ".".join(map(str, watch.MIN_CLAUDE_CODE))
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     assert f"Requirements: Claude Code {needed} or later" in readme
-    assert f"older than {needed}" in watch.__doc__
+    assert f"older than {needed}" in checks.__doc__
     # The source for the fix is that version's release note. The open issue is not one
     assert f"[release note for {needed}](https://github.com/anthropics/claude-code/releases/tag/v{needed})" in readme
     assert "claude-code/blob/main/CHANGELOG.md" not in readme
@@ -269,18 +269,18 @@ UNDER_FLAGGED = {"flagged", "shown"}
 
 
 def test_the_status_skill_puts_every_outcome_of_a_report_check_under_one_of_three_headings():
-    from emet_claude import report, watch
+    from emet_claude import checks, report
 
     rows = check_rows()
-    assert set(rows) == set(watch.OUTCOMES), "a new outcome word needs a row, or the skill would have to guess what it means"
+    assert set(rows) == set(checks.OUTCOMES), "a new outcome word needs a row, or the skill would have to guess what it means"
     assert set(report.STATUS_WORDS) > CHECKED_NOT_FLAGGED, "only a report Emet finished can count as checked"
     for word, (heading, _) in rows.items():
         # Anything not named above is not checked: a held, failed, late or unread report must never look clean
         expected = "Flagged" if word in UNDER_FLAGGED else "Checked, not flagged" if word in CHECKED_NOT_FLAGGED else "Not checked"
         assert heading == expected, word
     # A showing is recorded only for a report that was recorded as flagged
-    assert {watch.FLAGGED, watch.SHOWN} == UNDER_FLAGGED
-    shown = rows[watch.SHOWN][1]
+    assert {checks.FLAGGED, checks.SHOWN} == UNDER_FLAGGED
+    shown = rows[checks.SHOWN][1]
     assert "together with a later prompt of the session" in shown
     assert "It took the place of the `flagged` entry with the same `trace_uuid`, so the turn is listed once." in shown
     assert "That does not prove the user saw Claude's message." in shown
@@ -302,7 +302,7 @@ def test_the_status_skill_words_a_pass_as_no_conflicts_found_and_only_for_a_clea
 
 
 def test_the_status_skill_says_once_what_the_check_cannot_do_and_shows_no_text_of_a_report():
-    from emet_claude import watch
+    from emet_claude import checks, watch
 
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     assert text.count("compares an answer only with evidence from that turn, and can miss things or be wrong") == 1
@@ -312,20 +312,20 @@ def test_the_status_skill_says_once_what_the_check_cannot_do_and_shows_no_text_o
     assert "never add any, never guess what was disputed, and never open the report yourself" in text
     # The backstop for a report Claude was not woken for
     assert "List every flagged entry, also one Claude already told the user about." in text
-    held = check_rows()[watch.FLAGGED][1]
-    for reason in (watch.SHOWN_TURN, watch.SCHEDULED_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE):
+    held = check_rows()[checks.FLAGGED][1]
+    for reason in (checks.SHOWN_TURN, checks.SCHEDULED_TURN, checks.CAPPED, checks.NEWER_TURN, checks.LATE):
         assert f"`{reason}`" in held, reason
-    assert f"`{watch.SHOWN_TURN}` (the turn's own prompt carried the notice about an earlier report" in held
-    assert f"`{watch.SCHEDULED_TURN}` (Claude Code started the turn on a schedule" in held
+    assert f"`{checks.SHOWN_TURN}` (the turn's own prompt carried the notice about an earlier report" in held
+    assert f"`{checks.SCHEDULED_TURN}` (Claude Code started the turn on a schedule" in held
     assert "Claude is never woken for such a turn" in held
-    assert f"Unless `held` is `{watch.SHOWN_TURN}`, the plugin gives the notice to Claude with a later prompt of that session" in held
-    assert f"a `{watch.SHOWN}` entry for the same `trace_uuid` then takes the place of this one" in held
+    assert f"Unless `held` is `{checks.SHOWN_TURN}`, the plugin gives the notice to Claude with a later prompt of that session" in held
+    assert f"a `{checks.SHOWN}` entry for the same `trace_uuid` then takes the place of this one" in held
     from emet_claude import missed
 
     assert f"is given to Claude with the user's next prompt, for at most {missed.SHOW_CAP} reports in a session" in text
     assert f"such reports are counted apart, also {missed.SCHEDULED_SHOW_CAP} at most" in text
     assert f"already had {watch.WAKE_CAP} notices" in held and f"more than {watch.LATE_S} seconds after the turn ended" in held
-    assert f"holds the last {NUMBER_WORDS[watch.RECENT_CHECKS]} outcomes, newest first" in text
+    assert f"holds the last {NUMBER_WORDS[checks.RECENT_CHECKS]} outcomes, newest first" in text
     assert "Do not print the contents of the `verdicts` folder" in text
 
 
@@ -333,7 +333,7 @@ NUMBER_WORDS = {3: "three", 5: "five", 6: "six", 7: "seven"}
 
 
 def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no_label_of_emets():
-    from emet_claude import report, watch
+    from emet_claude import checks, report
 
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     assert "then the `outcome` word exactly as the file has it, in backticks, then what the word means, from the table" in text
@@ -348,7 +348,7 @@ def test_the_status_skill_shows_each_outcome_word_as_the_file_has_it_and_adds_no
     # The example entry is in the form the rule asks for, with a word the plugin records
     example = re.search(r"For example: [0-9:]{8} UTC, trace [0-9a-f]{8}, `([a-z_]+)`: ([^.]+\.)", text)
     rows = check_rows()
-    assert example is not None and example.group(1) in watch.OUTCOMES
+    assert example is not None and example.group(1) in checks.OUTCOMES
     assert rows[example.group(1)][1] == example.group(2)
     # An answer that named Emet's display label for a word was disputed by Emet: the files hold the word, not the label
     labels = set(report.STATUS_WORDS.values())
@@ -398,15 +398,17 @@ def log_lines(module):
 
 
 def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_and_the_prompt_hook_can_write():
-    from emet_claude import missed, watch
+    from emet_claude import checks, missed, sessions, verdicts, watch
 
     text = (PLUGIN / "skills" / "status" / "SKILL.md").read_text(encoding="utf-8")
     table = text.partition("| Log shows | Meaning | Fix |\n| --- | --- | --- |\n")[2].partition("\n\n")[0]
     shown = [span for row in table.splitlines() for span in re.findall(r"`([^`]+)`", row.split(" | ")[0])]
-    assert len(log_lines(watch)) == 24, "every storage.log call of watch.py is read, the two forms of each outcome line included"
+    counted = {module.__name__.rpartition(".")[2]: len(log_lines(module)) for module in (watch, checks, verdicts, sessions)}
+    assert counted == {"watch": 12, "checks": 9, "verdicts": 3, "sessions": 0}, "every storage.log call of the report check is read"
     assert len(log_lines(missed)) == 7, "every storage.log call of missed.py is read"
-    # A line the two modules share needs one row
-    lines = sorted(set(log_lines(watch) + log_lines(missed)))
+    # A line two modules share needs one row
+    lines = sorted(set(log_lines(watch) + log_lines(checks) + log_lines(verdicts) + log_lines(sessions) + log_lines(missed)))
+    assert len(lines) == 31
     # The most exact line first, so a line with a value in it cannot take the row of one that is all fixed words
     for line in sorted(lines, key=lambda pattern: (-len(pattern.replace(".+", "")), pattern)):
         matching = [span for span in shown if re.fullmatch(line, span)]
@@ -414,7 +416,7 @@ def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_and_the_
         shown.remove(matching[0])
     assert "A line that matches no row of the table is shown as it is" in text
     # One pattern covers the line of every turn that is never polled, so each is held by name
-    for started in watch.NEVER_POLLED.values():
+    for started in checks.NEVER_POLLED.values():
         assert f"| `turn <id> {started}, not polled` |" in table, started
         assert f"`turn <id> {started}, not polled, not recorded ...`" in table, started
     assert "Quote the log line as it is written, in backticks, before you explain it." in text
@@ -429,22 +431,22 @@ def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_and_the_
     assert source.count("remove(root, verdict, ") == 3
     (unread,) = [row for row in table.splitlines() if row.startswith("| `verdict not shown, <word>` |")]
     problems = (
-        watch.BAD_NAME,
-        watch.A_LINK,
-        watch.TOO_LONG,
-        watch.NOT_READ,
-        watch.BAD_VERSION,
-        watch.OTHER_WORDING,
-        watch.BAD_SHAPE,
-        watch.OTHER_NAME,
-        watch.BAD_TEXT,
-        watch.BAD_AGE,
+        verdicts.BAD_NAME,
+        verdicts.A_LINK,
+        verdicts.TOO_LONG,
+        verdicts.NOT_READ,
+        verdicts.BAD_VERSION,
+        verdicts.OTHER_WORDING,
+        verdicts.BAD_SHAPE,
+        verdicts.OTHER_NAME,
+        verdicts.BAD_TEXT,
+        verdicts.BAD_AGE,
     )
     assert f"The word names why: {', '.join(f'`{word}`' for word in problems)}, or `error` with the name of an error's type" in unread
-    assert f"`verdict <id> {watch.SHOWN} with a prompt, not recorded ...`" in table
-    assert f"or once it is {watch.VERDICT_DAYS} days old" in table
+    assert f"`verdict <id> {checks.SHOWN} with a prompt, not recorded ...`" in table
+    assert f"or once it is {verdicts.VERDICT_DAYS} days old" in table
     (held,) = [row for row in table.splitlines() if row.startswith("| `report <id> not handed to Claude, ...` |")]
-    for reason in (watch.SHOWN_TURN, watch.SCHEDULED_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE):
+    for reason in (checks.SHOWN_TURN, checks.SCHEDULED_TURN, checks.CAPPED, checks.NEWER_TURN, checks.LATE):
         assert f"(`{reason}`)" in held, reason
 
 
@@ -801,7 +803,7 @@ def section(path, heading):
 
 
 def test_the_readme_lists_the_files_an_installed_plugin_keeps_and_no_others():
-    from emet_claude import pause, pending, report, storage, transport, watch
+    from emet_claude import checks, pause, pending, report, storage, transport, verdicts, watch
 
     kept = section("claude/README.md", "## Where data goes and what stays local")
     here = Path("data")
@@ -821,37 +823,37 @@ def test_the_readme_lists_the_files_an_installed_plugin_keeps_and_no_others():
     # A hook starts the report check, so an installed plugin writes its files too
     assert WATCH_MODE in shipped_hook_modes()
     for name in (
-        f"state/<session>.{watch.checks_path(here, 's').name.partition('.')[2]}",
+        f"state/<session>.{checks.checks_path(here, 's').name.partition('.')[2]}",
         f"state/<session>.{watch.stop_path(here, 's').name.partition('.')[2]}",
-        f"{watch.verdict_folder(here).name}/*.json",
+        f"{verdicts.verdict_folder(here).name}/*.json",
         pause.READS,
     ):
         assert f"`{name}`" in kept, name
-    (verdicts,) = [line for line in kept.splitlines() if line.startswith("| `verdicts/*.json` |")]
-    assert f"{report.TOTAL_LIMIT:,} characters at most" in verdicts and "The report itself is never saved." in verdicts
-    assert f"{watch.VERDICT_DAYS} days at most: a file older than that is removed" in verdicts
+    (verdict_row,) = [line for line in kept.splitlines() if line.startswith("| `verdicts/*.json` |")]
+    assert f"{report.TOTAL_LIMIT:,} characters at most" in verdict_row and "The report itself is never saved." in verdict_row
+    assert f"{verdicts.VERDICT_DAYS} days at most: a file older than that is removed" in verdict_row
     # The prompt hook hands a saved verdict to Claude, and removes the file
     from emet_claude import missed
     from emet_claude.commands import PROMPT_MODE
 
     assert PROMPT_MODE in shipped_hook_modes()
     assert "The plugin does not read the text back" not in kept
-    assert "The plugin reads the text back for one use: to give it to Claude with a later prompt" in verdicts
+    assert "The plugin reads the text back for one use: to give it to Claude with a later prompt" in verdict_row
     assert (
         "| A later prompt of that session, at which the file is removed when the session shows Claude was woken with the report, "
         "when the text is given to Claude with that prompt, "
         f"when the session already had {missed.SHOW_CAP} reports given that way, or when the conversation was compacted since."
-    ) in verdicts
-    (checks,) = [line for line in kept.splitlines() if line.startswith("| `state/<session>.checks.jsonl` |")]
-    assert f"Also a line with the word `{watch.SHOWN}` when a flagged report was given to Claude with a later prompt" in checks
-    assert "the version of the file's own format" in verdicts
+    ) in verdict_row
+    (check_row,) = [line for line in kept.splitlines() if line.startswith("| `state/<session>.checks.jsonl` |")]
+    assert f"Also a line with the word `{checks.SHOWN}` when a flagged report was given to Claude with a later prompt" in check_row
+    assert "the version of the file's own format" in verdict_row
     for name in ("state/<session>.json", "state/<session>.stop.json"):
         (row,) = [line for line in kept.splitlines() if line.startswith(f"| `{name}` |")]
         assert "the version of the file's own format" in row, name
     (status,) = [line for line in kept.splitlines() if line.startswith("| `status.json` |")]
-    assert f"the last {NUMBER_WORDS[watch.RECENT_CHECKS]} outcomes of the report check" in status and "the two pause times" in status
+    assert f"the last {NUMBER_WORDS[checks.RECENT_CHECKS]} outcomes of the report check" in status and "the two pause times" in status
     assert (
-        watch.STALE_TEMP_S == 24 * 3600
+        verdicts.STALE_TEMP_S == 24 * 3600
         and "One left in `verdicts/` holds the text written for Claude about a report, and is removed once it is a day old" in kept
     )
     assert "Two kinds of files in it can hold text from your session" in kept
@@ -869,7 +871,7 @@ def shipped_hook_modes():
 
 
 def test_the_security_policy_covers_what_an_installed_plugin_does():
-    from emet_claude import report, watch
+    from emet_claude import report, verdicts, watch
 
     policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
     assert "`localhost`, `127.0.0.1`, `::1`" in policy
@@ -884,7 +886,7 @@ def test_the_security_policy_covers_what_an_installed_plugin_does():
         f"A report over {watch.REPORT_MAX_BYTES // 1024**2} MB, of a version the plugin does not know, or with a status it does not know",
         "All of it sits in one data block, as JSON strings. Angle brackets are escaped",
         f"The whole message is {report.TOTAL_LIMIT:,} characters at most.",
-        f"in `{watch.verdict_folder(Path('data')).name}/`, for {watch.VERDICT_DAYS} days at most. The report itself is never saved.",
+        f"in `{verdicts.verdict_folder(Path('data')).name}/`, for {verdicts.VERDICT_DAYS} days at most. The report itself is never saved.",
         f"at most {watch.WAKE_CAP} reports in a session, and only within {watch.LATE_S} seconds of the end of the turn",
         "It cannot remove it, because Claude reads the block.",
     ):
@@ -897,7 +899,7 @@ def test_the_security_policy_covers_what_an_installed_plugin_does():
 
 
 def test_the_readme_says_when_claude_speaks_about_a_report_and_that_no_setting_turns_it_off():
-    from emet_claude import watch
+    from emet_claude import checks, watch
 
     readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     told = section("claude/README.md", "## When Emet disputes a claim")
@@ -919,7 +921,7 @@ def test_the_readme_says_when_claude_speaks_about_a_report_and_that_no_setting_t
         "can miss things or be wrong",
         "They make such an action unlikely; they cannot rule it out.",
         "There is no setting for this alone.",
-        f"the last {NUMBER_WORDS[watch.RECENT_CHECKS]} report checks",
+        f"the last {NUMBER_WORDS[checks.RECENT_CHECKS]} report checks",
     ):
         assert said and said in told, said
     # No option of the plugin turns the report check off, so the README must not name one
@@ -1020,22 +1022,22 @@ def test_the_documents_say_what_the_prompt_hook_gives_claude_now_that_a_hook_sav
 
 
 def test_contributing_tells_a_maintainer_to_try_the_missed_verdict_and_an_unsupported_claude_code():
-    from emet_claude import missed, watch
+    from emet_claude import checks, missed, watch
 
     live = section("CONTRIBUTING.md", "## Live check")
     assert "Run these four prompts in one session" in live and f"the `{missed.EVENT}` hook shows a missed verdict" in live
     assert "you typed `What is 2 + 2?` before the report was back, so the report arrives with this prompt, once" in live
     assert f"`{missed.EVENT} says: {missed.USER_LINE}`" in live
-    assert f'`"held": "{watch.SHOWN_TURN}"`' in live and f"gets `{watch.SHOWN}` for the flagged turn" in live
+    assert f'`"held": "{checks.SHOWN_TURN}"`' in live and f"gets `{checks.SHOWN}` for the flagged turn" in live
     # Every row of the table sits in the list item, or the table breaks in two
     rows = [line for line in live.splitlines() if line.lstrip().startswith("|")]
     assert len(rows) == 6 and all(line.startswith("   | ") for line in rows)
-    assert f"is under Flagged once, as `{watch.SHOWN}`" in live
+    assert f"is under Flagged once, as `{checks.SHOWN}`" in live
     # One entry for each turn: no document says the held turn is listed a second time
     for name in ("CONTRIBUTING.md", "claude/README.md", "claude/skills/status/SKILL.md", "changelog.d/wire-the-report-check.added.md"):
         path = ROOT / name
         assert not path.exists() or "listed again" not in path.read_text(encoding="utf-8"), name
-    assert f"The checks file keeps both lines, `{watch.FLAGGED}` with the reason `{watch.NEWER_TURN}` and `{watch.SHOWN}`." in live
+    assert f"The checks file keeps both lines, `{checks.FLAGGED}` with the reason `{checks.NEWER_TURN}` and `{checks.SHOWN}`." in live
     # The version the plugin needs is the oldest it supports, so an older one is tried only to see the plugin stay quiet
     assert "the oldest version the plugin supports" not in live
     assert "The plugin does not support one; this checks that it stays quiet there." in live
@@ -1066,9 +1068,9 @@ def test_contributing_lists_every_file_the_plugin_keeps_with_the_module_that_own
     for name, owner in [
         ("state/<session>.json", "commands.py"),
         ("state/<session>.pending.jsonl", "pending.py"),
-        ("state/<session>.checks.jsonl", "watch.py"),
+        ("state/<session>.checks.jsonl", "checks.py"),
         ("state/<session>.stop.json", "watch.py"),
-        ("verdicts/<session>.<trace>.<revision>.json", "watch.py"),
+        ("verdicts/<session>.<trace>.<revision>.json", "verdicts.py"),
         ("queue/<number>-<hash>.json", "transport.py"),
         ("pause.json", "pause.py"),
         ("read-pause.json", "pause.py"),

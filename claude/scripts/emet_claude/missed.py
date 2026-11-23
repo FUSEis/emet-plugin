@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 
-from . import pause, pending, report, storage, timestamps, transcript, watch
+from . import checks, pause, pending, report, sessions, storage, timestamps, transcript, verdicts
 
 EVENT = "UserPromptSubmit"
 # Showings per session, counted apart from the wakes: a report held back by the wake cap is shown here
@@ -140,20 +140,20 @@ def report_key(item: Mapping[str, Any]) -> Tuple[Any, Any, Any]:
 
 def recorded(found: List[Dict[str, Any]], verdict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Returns the `flagged` line of the report the verdict was saved for, or None when the poller recorded none."""
-    lines = [item for item in found if item.get("outcome") == watch.FLAGGED and report_key(item) == report_key(verdict)]
+    lines = [item for item in found if item.get("outcome") == checks.FLAGGED and report_key(item) == report_key(verdict)]
     return lines[-1] if lines else None
 
 
 def on_schedule(found: List[Dict[str, Any]], item: Dict[str, Any]) -> bool:
     """Says whether the report is of a turn Claude Code started on a schedule, by the reason its `flagged` line names."""
     line = recorded(found, item)
-    return line is not None and line.get("held") == watch.SCHEDULED_TURN
+    return line is not None and line.get("held") == checks.SCHEDULED_TURN
 
 
 def remove(root: Path, verdict: Dict[str, Any], why: str = "") -> None:
     """Removes a verdict's file, so no report text rests on disk past its use. Never raises."""
     try:
-        watch.verdict_path(root, verdict["session_id"], verdict["trace_uuid"], verdict["revision"]).unlink()
+        verdicts.verdict_path(root, verdict["session_id"], verdict["trace_uuid"], verdict["revision"]).unlink()
     except OSError as error:
         # The record decides what is shown. A file that stays is removed at a later prompt, or once it is too old
         storage.log(root, f"verdict {verdict['trace_uuid']} not removed {type(error).__name__}")
@@ -187,8 +187,8 @@ def due(root: Path, session_id: str, saved: List[Dict[str, Any]], entries: Entri
 
     watching says whether a watcher of the session was running before entries were read.
     """
-    found = watch.checks(root, session_id)
-    showings = [item for item in found if item.get("outcome") == watch.SHOWN]
+    found = checks.checks(root, session_id)
+    showings = [item for item in found if item.get("outcome") == checks.SHOWN]
     shown = [report_key(item) for item in showings]
     waiting = []
     for verdict in saved:
@@ -229,7 +229,7 @@ def choose(raw: bytes, environ: Mapping[str, str]) -> str:
     session_id = str(hook_input.get("session_id") or "")
     root = storage.data_dir(environ)
     # Nearly every prompt ends here, after one look at a folder. An id that is no plain name has no verdicts
-    if not watch.verdicts(root, session_id):
+    if not verdicts.verdicts(root, session_id):
         return ""
     if not carries(hook_input):
         storage.log(root, "verdict not shown, the prompt is a command or a notice")
@@ -251,12 +251,12 @@ def taken(root: Path, hook_input: Mapping[str, Any], environ: Mapping[str, str],
     """Records the verdict that comes with this prompt, removes its file and returns its text, or "". Runs under the prompt lock."""
     # Asked before the session file is read: a watcher that ends after this look can have written its wake after that read
     watching = watched(root, session_id)
-    entries, _ = watch.session_entries(str(hook_input.get("transcript_path") or ""))
-    if watch.headless(entries, environ):
+    entries, _ = sessions.session_entries(str(hook_input.get("transcript_path") or ""))
+    if sessions.headless(entries, environ):
         storage.log(root, "verdict not shown, no person is at the session")
         return ""
     # Read again under the lock: the prompt before this one may have just taken one
-    waiting = due(root, session_id, watch.verdicts(root, session_id), entries, watching)
+    waiting = due(root, session_id, verdicts.verdicts(root, session_id), entries, watching)
     if not waiting:
         return ""
     verdict = waiting[0]
@@ -267,7 +267,7 @@ def taken(root: Path, hook_input: Mapping[str, Any], environ: Mapping[str, str],
         "prompt_id": prompt_id,
     }
     # Recorded before it is shown, so a crash in between cannot show it twice. Never waits for the status file
-    if not watch.record(root, session_id, verdict["trace_uuid"], watch.SHOWN, ids, wait=False):
+    if not checks.record(root, session_id, verdict["trace_uuid"], checks.SHOWN, ids, wait=False):
         return ""
     remove(root, verdict)
     return str(verdict["text"])
