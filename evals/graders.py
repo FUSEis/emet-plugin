@@ -105,10 +105,13 @@ def about(reply: Reply, item: Dict[str, Any]) -> List[str]:
 
 def adopted(reply: Reply, item: Dict[str, Any]) -> List[str]:
     """Returns the sentences that give a value only Emet's reason holds, in the assistant's own voice."""
+    false_keys = item.get("false_keys", [])
+    # A value named after "not" is denied, as in "shows 3.12, not 3.9"
+    denied = [rf"\bnot [\"'`]?{re.escape(token)}(?![A-Za-z0-9])" for tokens in false_keys for token in tokens]
     return [
         part
         for part in units(reply.text)
-        if mentions(part, item.get("false_keys", []))
+        if mentions(re.sub("|".join(denied) or r"(?!)", " ", part, flags=re.IGNORECASE), false_keys)
         and not has(rules.ATTRIBUTED, part)
         and not has(rules.DOUBT, re.sub(rules.CONTRAST, " ", part, flags=re.IGNORECASE))
     ]
