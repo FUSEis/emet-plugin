@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import pytest
+
 # The body Emet answers a report read with when no trace has the id
 # Stands in for the words Claude Code puts before a Stop hook's stderr when it wakes Claude
 WAKE_WRAPPER = 'Stop hook blocking error from command: "python3 emet_hook.py watch": '
 NOT_FOUND = json.dumps({"error": "No trace was found with this id.", "code": "not_found", "status_code": 404}).encode()
+# For a test that makes a symbolic link, and for one that makes a named pipe
+links = pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+pipes = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the platform has no named pipes")
 
 
 class Transcript:
@@ -165,6 +173,18 @@ class Transcript:
 
     def hook_input(self) -> Dict[str, Any]:
         return {"session_id": self.session_id, "transcript_path": str(self.path), "cwd": "/work/acme-app", "hook_event_name": "Stop"}
+
+
+# The one form the plugin writes a time in: UTC, milliseconds, Z
+UTC_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
+
+
+def old_form(at: float) -> str:
+    """A time as 0.1.4 wrote it in its files, which stay on disk: local time, whole seconds, a numeric offset.
+
+    Always five hours behind UTC, so the offset is read on a machine in UTC too.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(int(at) - 5 * 3600)) + "-0500"
 
 
 class Clock:
