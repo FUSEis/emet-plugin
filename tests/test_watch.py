@@ -1726,8 +1726,9 @@ def test_a_scheduled_turn_is_named_before_the_cap_a_newer_turn_and_a_late_report
     found = watch.checks(root(environ), SESSION)
     assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == watch.SHOWN_TURN
     # Only the sender's one word marks a line
-    lines = [{"trace_uuid": T1, "at": storage.now(clock.now), "endpoint": "e", "turn_origin": origin} for origin in ("peer", True, "")]
-    assert [found.scheduled for found in watch.delivered(lines[:1], "e") + watch.delivered(lines[1:2], "e")] == [False, False]
+    for origin, marked in (("scheduled", True), ("peer", False), (True, False)):
+        line = {"trace_uuid": T1, "at": storage.now(clock.now), "endpoint": "e", "turn_origin": origin}
+        assert [found.scheduled for found in watch.delivered([line], "e")] == [marked], origin
 
 
 def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, capfdbinary):
