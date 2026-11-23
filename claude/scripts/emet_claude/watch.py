@@ -38,13 +38,18 @@ polling of its turn. A turn without one is polled again after a later Stop.
 | `no_person` | no | The Stop was not polled: no person is at the session (`claude -p`, the SDK). |
 
 A `flagged` line that was not handed over names the reason under "held": `shown_turn` (the turn
-began with a prompt that carried an earlier verdict), `wake_cap` (the session already had 3 wakes),
-`newer_turn` (a later turn had started or been delivered) or `late` (the report was ready
-more than 60 seconds after its turn ended). The first of the four that applies is the one named.
+began with a prompt that carried an earlier verdict), `scheduled_turn` (Claude Code started the turn
+on a schedule), `wake_cap` (the session already had 3 wakes), `newer_turn` (a later turn had started
+or been delivered) or `late` (the report was ready more than 60 seconds after its turn ended).
+The first of the five that applies is the one named.
 
 Claude's answer in a `shown_turn` quotes the claims of the earlier verdict, and Emet flags such an
 answer again. So its report is read and recorded, and Claude is never told of it: no wake, and no
 verdict is saved.
+
+No one reads along at a `scheduled_turn` (a `/loop` iteration, a scheduled wake-up), and a wake
+there would spend a turn and one of the session's wakes. So its verdict is saved and no wake is
+made: the next prompt of the session carries it, which the loop's next iteration is.
 
 A turn is still polled after those 60 seconds, until the 300 are over. A flagged report that
 comes then wakes no one. It is read so that it can be saved and recorded, for the next prompt
@@ -73,7 +78,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from . import VERSION, pause, pending, report, storage, timestamps, transcript, transport
 from .config import Config, endpoint_problem, load
 
-# The first Claude Code that reports a waking hook it cannot start once, not at every turn. The README requires it
+# The first Claude Code that reports a waking hook whose script is missing once, not at every turn. The README requires it
 MIN_CLAUDE_CODE = (2, 1, 287)
 # Read from the environment as a second sign of a session with no person at it. Not a plugin option
 ENTRYPOINT_NAME = "CLAUDE_CODE_ENTRYPOINT"
@@ -117,6 +122,7 @@ LATE_S = 60
 EDGE_S = 1
 # Why a flagged report was not handed to Claude
 SHOWN_TURN = "shown_turn"
+SCHEDULED_TURN = "scheduled_turn"
 CAPPED = "wake_cap"
 NEWER_TURN = "newer_turn"
 LATE = "late"
@@ -211,6 +217,8 @@ class Trace:
     # Claude Code's id of the turn and the time of its last entry, "" and 0 for a line that names none
     prompt_id: str = ""
     ended: float = 0.0
+    # Whether Claude Code started the turn on a schedule, as the sender marked its line
+    scheduled: bool = False
 
 
 @dataclass(frozen=True)
@@ -228,14 +236,18 @@ class Stop:
     token: str = ""
     # The time of the last entry the turn had written when the run started, 0 when none could be read
     ended: float = 0.0
+    # The steady clock when the run started. The waits of the run are counted from it. Never saved
+    steady: float = 0.0
 
 
 @dataclass
 class Plan:
-    """When a turn's report is asked for next, and how many times it was not ready."""
+    """When a turn's report is asked for next, on the steady clock, and how many times it was not ready."""
 
     due: float
     step: int = 0
+    # The earliest the next read may start, on the steady clock
+    soonest: float = 0.0
 
 
 def sleep(seconds: float) -> None:
@@ -412,7 +424,14 @@ def latest(root: Path, own: Stop) -> Stop:
         return own
     ended = timestamps.parse(saved.get("ended"))
     return Stop(
-        own.session_id, own.transcript_path, pending.plain(prompt_id), size, at.timestamp(), token, ended.timestamp() if ended else 0.0
+        own.session_id,
+        own.transcript_path,
+        pending.plain(prompt_id),
+        size,
+        at.timestamp(),
+        token,
+        ended.timestamp() if ended else 0.0,
+        own.steady,
     )
 
 
@@ -434,11 +453,15 @@ def turn_end(trace: Trace, stop: Stop) -> float:
 def hold_reason(root: Path, config: Config, stop: Stop, trace: Trace, found: List[Dict[str, Any]]) -> str:
     """Returns why a flagged report is not handed to Claude, or "" when it is. stop is the session's latest Stop.
 
-    The first reason that applies is the one recorded: a turn that carried a verdict, the cap, then a newer turn, then a late report.
+    The first reason that applies is the one recorded: a turn that carried a verdict, a scheduled turn, the cap,
+    then a newer turn, then a late report.
     """
     # Its answer quotes the claims of the verdict it carried. Telling Claude of that would start a chain
     if trace.prompt_id and trace.prompt_id in shown_prompts(found):
         return SHOWN_TURN
+    # No one reads along, and a wake would spend a turn. Before the rest, so the word always names such a turn: showings count by it
+    if trace.scheduled:
+        return SCHEDULED_TURN
     if wakes(found) >= WAKE_CAP:
         return CAPPED
     # A wake that lands in a running turn is folded into it and can go unseen
@@ -450,13 +473,19 @@ def hold_reason(root: Path, config: Config, stop: Stop, trace: Trace, found: Lis
     return ""
 
 
+def on_the_steady_clock(at: float) -> float:
+    """Returns what the steady clock reads at a time of the system clock, as the two stand now."""
+    return pause.steady() + at - pause.clock()
+
+
 def before_the_window_closes(due: float, end: float, soonest: float) -> float:
     """Returns when to ask next: as planned, or sooner, so that one read still starts inside the time a wake is allowed in.
 
     The waits only grow by chance and by the time requests take, so the planned read would often come just after it.
-    Never sooner than soonest: the shortest wait, or the one Emet named.
+    Never sooner than soonest: the shortest wait, or the one Emet named. due and soonest are on the steady clock.
+    end is the time of the system clock the turn ended at, as the late rule reads it.
     """
-    edge = end + LATE_S - EDGE_S
+    edge = on_the_steady_clock(end + LATE_S - EDGE_S)
     return edge if soonest <= edge < due else due
 
 
@@ -565,6 +594,7 @@ def delivered(lines: List[Dict[str, Any]], endpoint: str, by_plugin: bool = Fals
                 conversation,
                 pending.plain(item.get("prompt_id")),
                 ended.timestamp() if ended else 0.0,
+                item.get(pending.TURN_ORIGIN) == pending.SCHEDULED,
             ),
         )
     return list(found.values())
@@ -898,8 +928,8 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     """Records a report that is ready. Returns the text to wake Claude with, or "" when Claude is not woken.
 
     stop is the session's latest Stop. Text is returned only for a flagged report not yet recorded,
-    of a turn that carried no earlier verdict, under the cap, of the turn that Stop ended, with no newer turn under way, ready within LATE_S
-    of the end of that turn, and after it was recorded as handed over.
+    of a turn that carried no earlier verdict and was not started on a schedule, under the cap, of the turn that Stop ended,
+    with no newer turn under way, ready within LATE_S of the end of that turn, and after it was recorded as handed over.
     """
     session_id = stop.session_id
     status = report.status(document)
@@ -985,15 +1015,15 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
     """Polls the session's delivered turns until none is waiting or the time is up. Returns the text to wake Claude with, or ""."""
     session_id = stop.session_id
     # The time is counted from the Stop, also for a run that waited to take over
-    start = stop.at
-    idle_since = pause.clock()
+    start = stop.steady
+    idle_since = pause.steady()
     plans: Dict[str, Plan] = {}
     # Handled in this run, whether or not the outcome could be written
     done: Set[str] = set()
     # Asked for at least once in this run
     asked: Set[str] = set()
     while True:
-        now = pause.clock()
+        now = pause.steady()
         if now - start >= BUDGET_S:
             # A turn this run never asked about did not time out
             return close(root, config, session_id, TIMED_OUT, asked)
@@ -1013,7 +1043,8 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         for trace in delivered(lines, config.endpoint):
             if trace.trace_uuid in done:
                 continue
-            if now - trace.at > MAX_AGE_S:
+            # The system clock: the line was stamped by another process
+            if pause.clock() - trace.at > MAX_AGE_S:
                 done.add(trace.trace_uuid)
                 record(root, session_id, trace.trace_uuid, EXPIRED)
                 continue
@@ -1021,14 +1052,17 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         watched = waiting[-MAX_WATCHED:]
         if watched:
             idle_since = now
-        elif sender_done(lines, start) or now - idle_since >= IDLE_S:
+        elif sender_done(lines, stop.at) or now - idle_since >= IDLE_S:
             return ""
         for trace in watched:
-            plan = plans.setdefault(trace.trace_uuid, Plan(max(now, start + FIRST_S)))
+            first = max(now, start + FIRST_S)
+            plan = plans.setdefault(trace.trace_uuid, Plan(first, soonest=first))
+            # A change of the system clock moves the edge of the window after the read was planned
+            plan.due = before_the_window_closes(plan.due, turn_end(trace, stop), plan.soonest)
             if plan.due > now:
                 continue
             # Checked before each request: the ones before it in this pass can each take the full timeout
-            if pause.clock() - start >= BUDGET_S:
+            if pause.steady() - start >= BUDGET_S:
                 break
             asked.add(trace.trace_uuid)
             answer = read_report(config, trace.trace_uuid)
@@ -1056,9 +1090,9 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
                     storage.log(root, f"report {trace.trace_uuid} -> {answer.status or 'network'}, asked again later")
                 wait = max(float(STEPS_S[min(plan.step, len(STEPS_S) - 1)]), answer.retry_after or 0.0)
                 plan.step += 1
-                soonest = pause.clock() + max(float(STEPS_S[0]), answer.retry_after or 0.0)
-                plan.due = before_the_window_closes(pause.clock() + wait * (1 + extra()), turn_end(trace, stop), soonest)
-        now = pause.clock()
+                plan.soonest = pause.steady() + max(float(STEPS_S[0]), answer.retry_after or 0.0)
+                plan.due = before_the_window_closes(pause.steady() + wait * (1 + extra()), turn_end(trace, stop), plan.soonest)
+        now = pause.steady()
         due = [plans[trace.trace_uuid].due for trace in watched if trace.trace_uuid not in done]
         until = min([*due, now + TICK_S, start + BUDGET_S])
         sleep(max(until - now, SHORTEST_SLEEP_S))
@@ -1081,7 +1115,7 @@ def attend(root: Path, config: Config, stop: Stop) -> str:
         if latest(root, stop).token != stop.token:
             storage.log(root, "watch left, a later Stop of the session waits")
             return ""
-        if pause.clock() - stop.at + TICK_S >= BUDGET_S:
+        if pause.steady() - stop.steady + TICK_S >= BUDGET_S:
             storage.log(root, "watch left, the watcher before it ran on")
             return ""
         sleep(TICK_S)
@@ -1089,7 +1123,7 @@ def attend(root: Path, config: Config, stop: Stop) -> str:
 
 def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     """Decides whether this Stop is polled at all, and polls. Returns the text to wake Claude with, or ""."""
-    began = pause.clock()
+    began, steady = pause.clock(), pause.steady()
     hook_input = storage.loads(raw or b"{}")
     if not isinstance(hook_input, dict):
         return ""
@@ -1115,7 +1149,9 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     if headless(found, environ):
         storage.log(root, "watch skipped, no person is at the session")
         return skip(root, config, session_id, NO_PERSON)
-    stop = Stop(session_id, transcript_path, pending.plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found))
+    stop = Stop(
+        session_id, transcript_path, pending.plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found), steady
+    )
     # Written before the lock is tried: the watcher already running judges this turn by it
     announce(root, stop)
     return attend(root, config, stop)

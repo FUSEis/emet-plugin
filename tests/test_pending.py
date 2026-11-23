@@ -569,6 +569,9 @@ def test_a_turn_id_that_is_not_a_plain_name_is_left_out_of_the_line(transcript, 
     [
         ({"prompt_id": "prompt-1", "ended": "2026-10-20T10:00:02+00:00"}, {"prompt_id": "prompt-1", "ended": "2026-10-20T10:00:02.000Z"}),
         ({"prompt_id": "a b", "ended": "soon"}, {}),
+        ({"turn_origin": "scheduled"}, {"turn_origin": "scheduled"}),
+        ({"turn_origin": "peer"}, {}),
+        ({"turn_origin": True}, {}),
         ({"prompt_id": 5, "ended": 1_800_000_000}, {}),
         ({"ended": "2026-10-20T10:00:02"}, {}),
         ("prompt-1", {}),
@@ -580,7 +583,7 @@ def test_what_a_queued_envelope_says_of_its_turn_is_checked_again_before_it_is_w
     sent = {"conversation_id": "session-1", "end": True, envelope.LOCAL: local}
     sender.record(sent, transport.Outcome(202, True, True, "", "", TRACE))
     (line,) = trace_lines(environ)
-    assert {key: value for key, value in line.items() if key in ("prompt_id", "ended")} == kept
+    assert {key: value for key, value in line.items() if key in ("prompt_id", "ended", "turn_origin")} == kept
 
 
 def test_a_turn_id_that_is_not_a_plain_name_never_reaches_the_queue(transcript, environ, emet):

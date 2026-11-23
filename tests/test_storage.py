@@ -1,11 +1,12 @@
 import json
 import os
+import threading
 import time
 
 import pytest
 
 from emet_claude import commands, pending, storage, transcript, transport, watch
-from helpers import UTC_FORM
+from helpers import UTC_FORM, pipes
 
 
 def log_lines(root):
@@ -167,6 +168,43 @@ def test_a_run_writes_through_no_link_planted_in_the_data_folder(transcript, env
         assert target.read_text(encoding="utf-8") == "{}", name
         assert not (root / name).is_symlink(), name
     assert json.loads((root / "status.json").read_text(encoding="utf-8"))["last_delivery"]["status"] == 202
+
+
+@pipes
+def test_a_pipe_at_the_log_with_no_reader_makes_no_hook_wait(tmp_path, link_flag):
+    os.mkfifo(tmp_path / "emet.log")
+    failed = []
+
+    def write():
+        try:
+            storage.log(tmp_path, "key check -> accepted")
+        except BaseException as error:  # noqa: BLE001 - the log must raise nothing at all
+            failed.append(error)
+
+    # On another thread, so an open that waits for a reader fails the test and does not hang it
+    waiter = threading.Thread(target=write, daemon=True)
+    waiter.start()
+    waiter.join(5)
+    assert not waiter.is_alive(), "every hook logs, so a log that waits for a reader blocks the session"
+    assert failed == [], "the log cannot log its own failure, so it gives the line up in silence"
+
+
+def test_a_folder_at_the_log_stops_no_hook_and_leaves_no_descriptor_open(tmp_path, monkeypatch):
+    (tmp_path / "emet.log").mkdir()
+    opened = []
+    real = os.open
+
+    def recorded(*args, **kwargs):
+        opened.append(real(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(os, "open", recorded)
+    storage.log(tmp_path, "key check -> accepted")
+    monkeypatch.undo()
+    assert (tmp_path / "emet.log").is_dir()
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
 
 
 def test_private_files_and_the_log_are_written_where_no_flag_refuses_a_link(tmp_path, monkeypatch):

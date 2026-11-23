@@ -88,15 +88,17 @@ def started_by(envelope: Dict[str, Any]) -> str:
     return ""
 
 
-def turn_identity(envelope: Dict[str, Any]) -> Tuple[str, str]:
-    """Returns Claude Code's id of the envelope's turn and the time the turn ended, each "" when the envelope names none.
+def turn_identity(envelope: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Returns Claude Code's id of the envelope's turn, the time the turn ended and "scheduled" for a turn started on a schedule.
 
-    Read back from a queued file, so both are checked again: a plain name, and a time written the one way.
+    Each is "" when the envelope names none. Read back from a queued file, so all are checked again: a plain name,
+    a time written the one way, and the one word.
     """
     local = envelope.get(LOCAL)
     named = local if isinstance(local, dict) else {}
     ended = timestamps.parse(named.get("ended"))
-    return pending.plain(named.get("prompt_id")), timestamps.text(ended) if ended else ""
+    origin = pending.SCHEDULED if named.get(pending.TURN_ORIGIN) == pending.SCHEDULED else ""
+    return pending.plain(named.get("prompt_id")), timestamps.text(ended) if ended else "", origin
 
 
 def sendable(envelope: Dict[str, Any]) -> Dict[str, Any]:
@@ -190,6 +192,9 @@ def for_turn(
     local = {"ended": root["ended_at"]}
     if pending.plain(first.get("promptId")):
         local["prompt_id"] = first["promptId"]
+    # Kept on this machine only: the turn is sent as any other, and its report wakes no one
+    if transcript.on_schedule(first):
+        local[pending.TURN_ORIGIN] = pending.SCHEDULED
     # Kept on this machine only: the turn is sent as any other, and its report is never read
     if not woken and transcript.own_command(first):
         local[pending.STARTED_BY] = pending.OWN_COMMAND

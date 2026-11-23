@@ -204,14 +204,27 @@ def old_form(at: float) -> str:
 
 
 class Clock:
-    """Stands in for the time and the randomness of the pause, so no test waits or depends on chance."""
+    """Stands in for the time and the randomness of the pause, so no test waits or depends on chance.
+
+    now is the system clock and steady the one a run counts its waits on. Time that passes moves both.
+    """
 
     def __init__(self) -> None:
         self.now = 1_800_000_000.0
+        self.steady = 5_000.0
         self.spread = 1.0
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+        self.steady += seconds
+
+    def set_by(self, seconds: float) -> None:
+        """Sets the system clock forward, or back with a negative number, as a correction or a machine that slept does."""
+        self.now += seconds
+
+    def run_unseen(self, seconds: float) -> None:
+        """Moves the steady clock alone, as when the system clock is set back by the time that passed."""
+        self.steady += seconds
 
 
 class FakeEmet:
