@@ -12,7 +12,7 @@ import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional, Union
+from typing import IO, Any, Iterator, Mapping, Optional, Union
 
 from . import timestamps
 
@@ -101,8 +101,9 @@ def loads(data: Union[str, bytes]) -> Any:
 def read_json(path: Path, default: Any) -> Any:
     """Returns what the file holds, or default when it cannot be read. A symbolic link is not read where the platform can refuse one."""
     try:
-        with os.fdopen(os.open(str(path), READ_FLAGS), "r", encoding="utf-8") as handle:
-            return loads(handle.read())
+        # An opener, so that a folder in the file's place leaves no descriptor open. A pipe with nothing in it reads as None
+        with open(path, "rb", opener=lambda name, _: os.open(name, READ_FLAGS)) as handle:
+            return loads((handle.read() or b"").decode("utf-8"))
     except (OSError, ValueError):
         return default
 
@@ -117,10 +118,19 @@ def write_json(path: Path, value: Any) -> None:
     write_private(path, json.dumps(value, ensure_ascii=False))
 
 
+def open_lock(path: Path) -> IO[str]:
+    """Opens a lock file, and makes it when there is none. A link in its place is removed, never opened or made through."""
+    if path.is_symlink():
+        # Another process can have removed it first
+        path.unlink(missing_ok=True)
+    # The flag closes the gap after the look. The mode is the one open gives a new file
+    return open(path, "a+", opener=lambda name, flags: os.open(name, flags | NOFOLLOW, 0o666))
+
+
 @contextmanager
 def locked(path: Path) -> Iterator[None]:
     """Holds an exclusive lock on path, so two hooks never process one session at once."""
-    with open(path, "a+") as handle:
+    with open_lock(path) as handle:
         if sys.platform == "win32":
             import msvcrt
 
@@ -144,7 +154,7 @@ def locked(path: Path) -> Iterator[None]:
 @contextmanager
 def try_locked(path: Path) -> Iterator[bool]:
     """Takes the lock on path only when no one holds it, and never waits. Yields whether it was taken."""
-    with open(path, "a+") as handle:
+    with open_lock(path) as handle:
         if sys.platform == "win32":
             import msvcrt
 
@@ -200,7 +210,8 @@ def log(root: Path, message: str) -> None:
             path.unlink()
         if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
             os.replace(path, root / "emet.log.1")
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND | NOFOLLOW, 0o600)
+        # A pipe in the log's place with no reader fails the open, and cannot make it wait
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND | NOFOLLOW | getattr(os, "O_NONBLOCK", 0), 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(f"{now()} {message}\n")
     except OSError:

@@ -1,9 +1,14 @@
-"""Runs the Windows branches of the two file locks on every system, against a stand-in for msvcrt."""
+"""Runs the Windows branches of the two file locks on every system, against a stand-in for msvcrt.
+
+Then what a lock does with a link, a pipe or a folder in its file's place.
+"""
 
 from __future__ import annotations
 
 import os
+import stat
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, ContextManager, List, Set, Tuple
@@ -11,6 +16,7 @@ from typing import Any, Callable, ContextManager, List, Set, Tuple
 import pytest
 
 from emet_claude import storage
+from helpers import links, pipes
 
 # The numbers the real msvcrt gives these names
 LK_UNLCK, LK_LOCK, LK_NBLCK, LK_RLCK, LK_NBRLCK = 0, 1, 2, 3, 4
@@ -111,3 +117,108 @@ def test_off_windows_the_stand_in_is_never_called(monkeypatch: pytest.MonkeyPatc
     with storage.locked(lock), storage.try_locked(lock) as second:
         assert second is False, "the two locks exclude each other through the real system call"
     assert fake.calls == [], "the platform check, and nothing else, picks the Windows branch"
+
+
+BOTH: List[Any] = [pytest.param(storage.locked, id="locked"), pytest.param(storage.try_locked, id="try_locked")]
+Take = Callable[[Path], ContextManager[Any]]
+
+
+@links
+@pytest.mark.parametrize("take", BOTH)
+@pytest.mark.parametrize("exists", [True, False])
+def test_a_link_at_a_lock_file_is_removed_and_the_lock_is_taken_on_a_new_file(
+    tmp_path: Path, link_flag: int, take: Take, exists: bool
+) -> None:
+    outside = tmp_path / "outside.lock"
+    if exists:
+        outside.write_bytes(FILLER)
+    lock = tmp_path / "some.lock"
+    lock.symlink_to(outside)
+    with take(lock) as given:
+        assert given is not False, "the lock is taken all the same, or a planted link would stop every hook of the session"
+        assert not lock.is_symlink() and lock.is_file()
+        with storage.try_locked(lock) as second:
+            assert second is False, "the new file is the lock from here on"
+    assert outside.read_bytes() == FILLER if exists else not outside.exists(), "the plugin makes and opens no file outside its data folder"
+
+
+@links
+@pytest.mark.parametrize("take", BOTH)
+def test_a_link_put_at_a_lock_file_after_the_look_is_refused_by_the_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, take: Take
+) -> None:
+    outside = tmp_path / "outside.lock"
+    lock = tmp_path / "some.lock"
+    lock.symlink_to(outside)
+    # The look sees no link, as when one is planted between the look and the open
+    monkeypatch.setattr(type(lock), "is_symlink", lambda self: False)
+    ran = []
+    with pytest.raises(OSError), take(lock):
+        ran.append("work")
+    assert ran == [] and not outside.exists()
+
+
+@pytest.mark.parametrize("take", BOTH)
+def test_a_link_that_another_process_removed_first_does_not_stop_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, take: Take
+) -> None:
+    lock = tmp_path / "some.lock"
+    # The look still saw the link, and it is gone by the time it is removed
+    monkeypatch.setattr(type(lock), "is_symlink", lambda self: True)
+    with take(lock) as given:
+        assert given is not False
+    monkeypatch.undo()
+    assert lock.is_file()
+
+
+@pytest.mark.parametrize("take", BOTH)
+def test_a_new_lock_file_gets_the_mode_any_new_file_gets(tmp_path: Path, take: Take) -> None:
+    with open(tmp_path / "plain", "a+"), take(tmp_path / "some.lock"):
+        pass
+    assert stat.S_IMODE((tmp_path / "some.lock").stat().st_mode) == stat.S_IMODE((tmp_path / "plain").stat().st_mode)
+
+
+@pipes
+@pytest.mark.parametrize("take", BOTH)
+def test_a_pipe_at_a_lock_file_fails_the_lock_and_nothing_waits(tmp_path: Path, link_flag: int, take: Take) -> None:
+    lock = tmp_path / "some.lock"
+    os.mkfifo(lock)
+    seen: List[str] = []
+
+    def work() -> None:
+        try:
+            with take(lock):
+                seen.append("work")
+        except OSError:
+            seen.append("OSError")
+
+    # On another thread, so an open that waits on the pipe fails the test and does not hang it
+    waiter = threading.Thread(target=work, daemon=True)
+    waiter.start()
+    waiter.join(5)
+    assert seen == ["OSError"], "no work runs under a lock that is a pipe, and the caller gets the error its own handler logs by type"
+    assert stat.S_ISFIFO(lock.stat().st_mode)
+
+
+@pytest.mark.parametrize("take", BOTH)
+def test_a_folder_at_a_lock_file_fails_the_lock_and_leaves_no_descriptor_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, take: Take
+) -> None:
+    lock = tmp_path / "some.lock"
+    lock.mkdir()
+    opened = []
+    real = os.open
+
+    def recorded(*args: Any, **kwargs: Any) -> int:
+        opened.append(real(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(os, "open", recorded)
+    ran = []
+    with pytest.raises(OSError), take(lock):
+        ran.append("work")
+    monkeypatch.undo()
+    assert ran == []
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
