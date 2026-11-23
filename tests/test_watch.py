@@ -2128,6 +2128,18 @@ def test_after_the_system_clock_is_set_back_a_report_is_not_late_by_it_and_still
 
 
 @pytest.mark.parametrize("set_by", [HOUR, -HOUR], ids=["set forward", "set back"])
+def test_the_first_request_comes_eight_seconds_after_the_stop_whatever_the_system_clock_is_set_to(
+    session, environ, emet, clock, sleeper, asked, set_by
+):
+    emet.report(T1, 200, document(status="clear"))
+    sleeper.at(2, lambda: clock.set_by(set_by))
+    sleeper.at(4, lambda: deliver(environ, clock))
+    sleeper.at(4, lambda: finish(environ, clock))
+    assert stop(session, environ) == 0
+    assert asked == [(watch.FIRST_S, T1)]
+
+
+@pytest.mark.parametrize("set_by", [HOUR, -HOUR], ids=["set forward", "set back"])
 def test_the_minute_with_nothing_to_poll_is_not_moved_by_a_change_of_the_system_clock(session, environ, emet, clock, sleeper, set_by):
     start = clock.steady
     sleeper.at(10, lambda: clock.set_by(set_by))
