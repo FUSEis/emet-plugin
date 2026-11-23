@@ -156,6 +156,7 @@ PUBLIC_HOSTS = {
     "keepachangelog.com",
     "semver.org",
     "www.apache.org",
+    "www.contributor-covenant.org",
     "hooks.slack.com",
     "localhost",
     "127.0.0.1",
