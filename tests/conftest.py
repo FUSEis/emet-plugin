@@ -27,6 +27,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     """The pause reads this clock in every test. Advance it past a pause to let the next run send."""
     fake = Clock()
     monkeypatch.setattr(pause, "clock", lambda: fake.now)
+    monkeypatch.setattr(pause, "steady", lambda: fake.steady)
     monkeypatch.setattr(pause, "spread", lambda: fake.spread)
     return fake
 

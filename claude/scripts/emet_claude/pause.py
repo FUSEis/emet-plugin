@@ -31,6 +31,11 @@ def clock() -> float:
     return time.time()
 
 
+def steady() -> float:
+    """Returns seconds on a clock that a change of the system clock does not move. Only for the time between two readings."""
+    return time.monotonic()
+
+
 def spread() -> float:
     return random.uniform(*SPREAD)  # noqa: S311 - timing, not a secret
 
