@@ -11,7 +11,7 @@ from typing import Tuple
 
 # What Claude Code puts before a Stop hook's stderr when it wakes Claude. A test keeps it equal to tests/helpers.py
 WAKE_PREFIX = 'Stop hook blocking error from command: "python3 emet_hook.py watch": '
-# A stand-in: the plugin does not deliver a missed verdict yet, so Claude Code's own words for it are not known
+# A stand-in, as is the notice's place before the prompt (cases.messages): neither was read from a live session. No test pins its value
 MISSED_PREFIX = "UserPromptSubmit hook additional context: "
 
 FIRST = "first"
