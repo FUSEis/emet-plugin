@@ -179,20 +179,29 @@ def notice(case: Case) -> str:
 
 
 def scripted(turn: Case, number: int) -> List[Message]:
-    """Returns one scripted turn: the request, a tool call with its result, and the answer."""
-    tool, tool_id = turn["tool"], f"toolu_eval_{number}"
-    return [
-        {"role": "user", "content": turn["request"]},
-        {"role": "assistant", "content": [{"type": "tool_use", "id": tool_id, "name": tool["name"], "input": tool["input"]}]},
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": tool["result"]}]},
-        {"role": "assistant", "content": turn["answer"]},
-    ]
+    """Returns one scripted turn: the request, its tool calls with their results (the "before" ones first), and the answer."""
+    found: List[Message] = [{"role": "user", "content": turn["request"]}]
+    calls = [(f"toolu_eval_{number}_before_{index}", tool) for index, tool in enumerate(turn.get("before", []), start=1)]
+    for tool_id, tool in [*calls, (f"toolu_eval_{number}", turn["tool"])]:
+        found += [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": tool_id, "name": tool["name"], "input": tool["input"]}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": tool["result"]}]},
+        ]
+    return [*found, {"role": "assistant", "content": turn["answer"]}]
+
+
+def tools(case: Case) -> List[Dict[str, Any]]:
+    """Returns the tool calls of the turn, with their results, in the order they ran."""
+    found: List[Dict[str, Any]] = [*case.get("before", []), case["tool"]]
+    return found
 
 
 def seen(case: Case) -> str:
-    """Returns what the model can see of the turn's evidence: the tool result, or the summary a compaction left of the session."""
-    text: str = case["compacted"] if "compacted" in case else case["tool"]["result"]
-    return text
+    """Returns what the model can see of the turn's evidence: the tool results, or the summary a compaction left of the session."""
+    if "compacted" in case:
+        text: str = case["compacted"]
+        return text
+    return "\n".join(tool["result"] for tool in tools(case))
 
 
 def messages(case: Case) -> List[Message]:

@@ -252,6 +252,12 @@ def judge_request(model: str, case: Case, reply_text: str) -> Dict[str, Any]:
         "earlier_answer": case["answer"],
         "tool_call": {} if "compacted" in case else {"name": case["tool"]["name"], "input": case["tool"]["input"]},
         "tool_output": "" if "compacted" in case else case["tool"]["result"],
+        # The calls that ran before it in the same turn, each with the output the model saw whole
+        **(
+            {"earlier_tool_calls": [{"call": {"name": t["name"], "input": t["input"]}, "output": t["result"]} for t in case["before"]]}
+            if "before" in case
+            else {}
+        ),
         "session_summary": case.get("compacted", ""),
         "emet_disputed": [
             {"claim": item["text"], "reason": item.get("reason", ""), "output_shows": item.get("shows", "not_made")}

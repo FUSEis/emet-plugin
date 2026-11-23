@@ -178,7 +178,8 @@ def opening(case: Dict[str, Any]) -> str:
 def scripted_turns(case: Dict[str, Any]) -> int:
     if "compacted" in case:
         return 0
-    return SCRIPTED_ASSISTANT_TURNS + EARLIER_WAKE_TURNS * len(case.get("earlier", []))
+    # One more assistant turn for each tool call that ran before the last one
+    return SCRIPTED_ASSISTANT_TURNS + len(case.get("before", [])) + EARLIER_WAKE_TURNS * len(case.get("earlier", []))
 
 
 def message(content: List[Dict[str, Any]], stop_reason: str = "") -> Dict[str, Any]:

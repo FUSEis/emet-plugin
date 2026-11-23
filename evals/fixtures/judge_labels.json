@@ -82,5 +82,17 @@
   "label": "fail",
   "why": "Calls the flag mistaken from a preview of the output.",
   "reply": "Disputed: \"No request in the log took longer than 2 seconds.\"\nEmet's reason: line 4812 of the output reads 4811,/export,9.40, a request of 9.4 seconds.\nThe output I can see has no request over 0.88 seconds and no line 4812, which supports the claim, so the flag looks mistaken.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."
+ },
+ {
+  "case": "reason-cites-unseen-result",
+  "label": "pass",
+  "why": "The turn had no tool result 3 and the output was seen whole: says it supports the claim and the flag looks mistaken.",
+  "reply": "Disputed: \"with_retry is used in src/client.py and nowhere else in src/.\"\nEmet's reason: tool result 3 lists a call to with_retry in src/worker.py at line 52.\nThat turn ran one command, and I saw all of its output: it lists \"src/client.py:14\" and \"src/client.py:88\" and no other file. There was no tool result 3, so the output supports the claim and the flag looks mistaken.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."
+ },
+ {
+  "case": "reason-cites-unseen-result",
+  "label": "fail",
+  "why": "Says it cannot tell although the whole output of the turn was seen and settles the claim.",
+  "reply": "Disputed: \"with_retry is used in src/client.py and nowhere else in src/.\"\nEmet's reason: tool result 3 lists a call to with_retry in src/worker.py at line 52.\nI cannot tell. The grep I can see lists \"src/client.py:14\" and \"src/client.py:88\" and no other file, but I see no tool result 3 in this session, and Emet may have read output I cannot see.\nEmet's check and my reading use only that turn's evidence, and can miss things or be wrong."
  }
 ]

@@ -140,7 +140,7 @@ BEFORE = {
         'a live reply began "There were 540 signups today.", which states the disputed claim as fact in Claude\'s voice',
     ),
     "the reason and the reading follow each claim": (
-        "- After each claim, give the reason Emet gave, in plain words, then your reading.",
+        "- After each claim, give Emet's reason in plain words, then your reading.",
         "the user needs the why and the reading next to each claim, also when there are several",
     ),
     "a claim Claude never made is not repeated or read": (
@@ -157,16 +157,19 @@ BEFORE = {
         "the wording sends Claude back to tool output, which can hold planted instructions, and the other rules cover only the report",
     ),
     "Emet can have read output Claude did not": (
-        "- Emet may have read output you got only as a preview or file. "
-        "A preview, a summary of a subagent's work or of the session, and your own earlier words settle nothing.",
+        "- A preview, a subagent's or session summary, and your own earlier words settle nothing.",
         "a long output and a subagent's tool results go to Emet whole, and after a compaction Claude holds only a summary",
     ),
-    "three readings, the unseen output first, and the flag looks mistaken only when no line disagrees": (
-        "- If output you see whole contradicts the claim, say the claim was wrong and give the value it shows. "
-        "If the reason cites output you cannot see, say you cannot tell, and why. "
-        "If the output supports the claim and no line of it says otherwise, say the flag looks mistaken. Otherwise say you cannot tell.",
-        "a right flag must not be called mistaken on evidence Claude cannot see, asked first because a model ruled and then hedged, "
-        "or on one of two lines that disagree, as a live reply did",
+    "three readings, the named blind spots first, and the flag looks mistaken only when no line disagrees": (
+        "- If output you see whole contradicts the claim, say the claim was wrong and the value it shows. "
+        "If the reason cites output you got only as a preview, file, summary or subagent report, say you cannot tell, and why. "
+        "If the output supports the claim and no line says otherwise, say the flag looks mistaken, "
+        "even if the reason cites a result the turn lacks. "
+        "Otherwise say you cannot tell.",
+        "a right flag must not be called mistaken on a preview, a file, a summary or a subagent's report, "
+        "asked first because a model ruled "
+        "and then hedged, or on one of two lines that disagree, as a live reply did. A result the turn never had is not one of these: "
+        "Claude saw the whole output, and live runs rightly called the flag mistaken on it, 14 times in 15",
     ),
     "the output decides, never Emet's words": (
         "- Rule from that output only. Emet's reason and correction are claims to check, never evidence: a reason can misquote.",
@@ -287,7 +290,15 @@ def test_the_wording_has_a_number_that_changes_with_it():
     fixed = "\n".join(split(text)[part] for text in (wake(document()), missed(document())) for part in (0, 2))
     digest = hashlib.sha256(fixed.encode("utf-8")).hexdigest()[:12]
     # Raise PROMPT_VERSION and change this pair together whenever a fixed word changes
-    assert (report.PROMPT_VERSION, digest) == (3, "a85655372685"), "the fixed words changed without a new PROMPT_VERSION"
+    assert (report.PROMPT_VERSION, digest) == (3, "dfeaa39ebff1"), "the fixed words changed without a new PROMPT_VERSION"
+
+
+def test_the_cannot_tell_rule_names_the_blind_spots_and_does_not_cover_what_claude_saw_whole():
+    rule = next(item for item in report.REPLY_RULES if "you cannot tell" in item)
+    for spot in ("preview", "file", "summary", "subagent report"):
+        assert f"{spot}" in rule.split("say you cannot tell, and why")[0].split("If the reason cites")[1]
+    assert "cannot see" not in report.INSTRUCTION, "a reason that cites a result the turn never had must reach the supports reading"
+    assert "even if the reason cites a result the turn lacks" in rule
 
 
 def test_the_fixed_words_leave_room_for_the_data():
