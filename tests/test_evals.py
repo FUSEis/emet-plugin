@@ -601,8 +601,8 @@ def test_the_defaults_are_the_current_small_medium_and_large_models():
 
 STAND_IN = """#!{python}
 import json, os, sys
-folder = os.environ["STAND_IN_DIR"]
-record = {{"argv": sys.argv[1:], "stdin": sys.stdin.read(), "cwd": os.getcwd(), "has_key": "ANTHROPIC_API_KEY" in os.environ}}
+folder = os.path.dirname(os.path.realpath(__file__))
+record = {{"argv": sys.argv[1:], "stdin": sys.stdin.read(), "cwd": os.getcwd(), "env": dict(os.environ)}}
 json.dump(record, open(os.path.join(folder, "record.json"), "w"))
 sys.stdout.write(open(os.path.join(folder, "canned.txt")).read())
 sys.exit(int(open(os.path.join(folder, "exit.txt")).read()))
@@ -641,7 +641,6 @@ def claude(tmp_path, monkeypatch) -> StandIn:
         pytest.skip("the stand-in claude is a POSIX script")
     (tmp_path / "bin").mkdir()
     monkeypatch.setenv("PATH", str(tmp_path / "bin") + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("STAND_IN_DIR", str(tmp_path / "bin"))
     stand_in = StandIn(tmp_path / "bin")
     stand_in.answer(said("Hello."), RESULT)
     return stand_in
@@ -651,6 +650,7 @@ def ask(**more: Any) -> Dict[str, Any]:
     request = {
         "model": "claude-haiku-5-5",
         "system": "Be brief.",
+        "max_tokens": 321,
         "tools": case_data.TOOLS,
         "messages": [{"role": "user", "content": "Hi."}],
     }
@@ -669,13 +669,32 @@ def test_the_client_pins_the_model_and_turns_off_every_customization(claude):
         assert flag in argv
 
 
-def test_the_child_has_no_api_key_and_runs_in_an_empty_temporary_directory(claude, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", KEY)
+def test_the_child_gets_only_the_named_variables_and_runs_in_an_empty_temporary_directory(claude, monkeypatch):
+    routing = (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "HTTPS_PROXY",
+    )
+    for name in routing:
+        monkeypatch.setenv(name, KEY)
     ask()
     seen = claude.record()
     cwd = Path(seen["cwd"])
-    assert seen["has_key"] is False and cwd.name.startswith("emet-eval-") and not cwd.exists()
+    assert not set(routing) & set(seen["env"]) and cwd.name.startswith("emet-eval-") and not cwd.exists()
+    assert "HOME" in seen["env"] and "PATH" in seen["env"]
+
+
+def test_the_request_max_tokens_caps_the_output_of_the_run(claude):
+    ask()
+    assert claude.record()["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "321"
+
+
+def test_every_enabled_tool_is_set_to_ask_so_the_run_denies_each_call_and_nothing_runs(claude):
+    ask()
+    assert json.loads(claude.flag("--settings")) == {"permissions": {"ask": ["Read", "Bash", "WebFetch"]}}
 
 
 def test_earlier_turns_go_in_as_a_transcript_and_the_latest_message_as_it_is(claude):
@@ -691,6 +710,7 @@ def test_a_tool_the_model_tries_to_call_is_seen_under_the_name_the_case_uses(cla
     claude.answer(
         {"type": "assistant", "message": {"content": [call], "stop_reason": "tool_use"}},
         {**RESULT, "subtype": "error_max_turns", "is_error": True},
+        code=1,
     )
     reply = ask()
     assert reply["stop_reason"] == "tool_use" and reply["content"][0]["name"] == "read_file"
@@ -701,7 +721,7 @@ def test_a_tool_the_model_tries_to_call_is_seen_under_the_name_the_case_uses(cla
 def test_a_refusal_and_a_cut_reply_keep_their_stop_reasons_so_they_are_not_graded(claude, stop):
     claude.answer(said("", stop), RESULT)
     sample = wake.run_sample(api.ClaudeCodeClient(), "m", BY_ID["emet-plainly-right"], 1)
-    assert sample["error"] == stop
+    assert sample["error"] == stop and sample["checks"] == {}
 
 
 @pytest.mark.parametrize(
@@ -719,13 +739,25 @@ def test_a_failed_call_is_an_error_with_no_content_and_leaves_the_sample_not_gra
     claude.answer(*lines, code=code)
     with pytest.raises(api.ApiError, match=expected):
         ask()
-    assert wake.run_sample(api.ClaudeCodeClient(), "m", BY_ID["emet-plainly-right"], 1)["error"].startswith("api ")
+    sample = wake.run_sample(api.ClaudeCodeClient(), "m", BY_ID["emet-plainly-right"], 1)
+    assert sample["error"].startswith("api ") and sample["checks"] == {}
+
+
+@pytest.mark.parametrize("stream", ['{"type": "assist', "[1, 2]", '"text"'], ids=["broken-json", "a-list", "a-string"])
+def test_a_stream_that_is_not_json_objects_is_an_error_and_leaves_the_sample_not_graded(claude, stream):
+    (claude.folder / "canned.txt").write_text(stream + "\n", encoding="utf-8")
+    with pytest.raises(api.ApiError, match=r"^0 bad_stream$"):
+        ask()
+    sample = wake.run_sample(api.ClaudeCodeClient(), "m", BY_ID["emet-plainly-right"], 1)
+    assert sample["error"].startswith("api ") and sample["checks"] == {}
 
 
 def test_a_call_that_runs_too_long_is_stopped_and_reported(claude):
     (claude.folder / "claude").write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n", encoding="utf-8")
     with pytest.raises(api.ApiError, match=r"^0 timeout$"):
-        api.ClaudeCodeClient(timeout=0.5).create({"model": "m", "system": "", "messages": [{"role": "user", "content": "x"}]})
+        api.ClaudeCodeClient(timeout=0.5).create(
+            {"model": "m", "system": "", "max_tokens": 9, "messages": [{"role": "user", "content": "x"}]}
+        )
 
 
 def test_the_judge_runs_through_the_same_client_with_the_rubric_and_no_tools(claude):

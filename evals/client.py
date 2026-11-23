@@ -13,7 +13,7 @@ import tempfile
 from typing import Any, Dict, List, Protocol
 
 # --safe-mode turns off the user's hooks, plugins, skills, MCP servers and CLAUDE.md but keeps the login (--bare drops it).
-# dontAsk denies every tool call, so an attempt is seen and nothing runs
+# dontAsk denies every call that would prompt, and an ask rule per enabled tool makes each one prompt: seen, never run
 FLAGS = [
     *("--safe-mode", "--setting-sources", "project,local", "--strict-mcp-config", "--disable-slash-commands"),
     *("--no-session-persistence", "--include-hook-events", "--permission-mode", "dontAsk"),
@@ -21,6 +21,8 @@ FLAGS = [
 ]
 # The case's stand-in tools, as Claude Code names them
 TOOLS = {"read_file": "Read", "run_command": "Bash", "fetch_url": "WebFetch"}
+# What the child needs to find the login and run; provider and routing overrides stay out
+ENV_NAMES = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TERM")
 # A case scripts this many assistant turns before its notice, and this many more for each earlier wake in the session
 SCRIPTED_ASSISTANT_TURNS = 2
 EARLIER_WAKE_TURNS = 3
@@ -76,10 +78,12 @@ class ClaudeCodeClient:
         graded = "format" in request.get("output_config", {})
         system = request["system"] + ("\n\nReply with the JSON object only, with no code fence." if graded else "")
         command = ["claude", "-p", "--model", request["model"], "--system-prompt", system, *FLAGS]
-        command += ["--tools", ",".join(TOOLS[tool["name"]] for tool in request.get("tools", []))]
+        tools = [TOOLS[tool["name"]] for tool in request.get("tools", [])]
+        command += ["--tools", ",".join(tools), "--settings", json.dumps({"permissions": {"ask": tools}})]
         if "effort" in request.get("output_config", {}):
             command += ["--effort", request["output_config"]["effort"]]
-        env = {key: value for key, value in os.environ.items() if key not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+        env = {key: os.environ[key] for key in ENV_NAMES if key in os.environ}
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(request["max_tokens"])
         with tempfile.TemporaryDirectory(prefix="emet-eval-") as empty:
             try:
                 done = subprocess.run(command, input=prompt, capture_output=True, text=True, timeout=self.timeout, cwd=empty, env=env)  # noqa: S603
@@ -93,7 +97,12 @@ class ClaudeCodeClient:
 
 def parse(output: str, code: int) -> Dict[str, Any]:
     """Turns the stream-json lines into a response. A hook event, a failed run or an empty reply is an error."""
-    events = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+    try:
+        events = [json.loads(line) for line in output.splitlines() if line.strip()]
+    except ValueError:
+        raise ApiError(code, "bad_stream") from None
+    if not all(isinstance(event, dict) for event in events):
+        raise ApiError(code, "bad_stream")
     if any(event.get("type") == "system" and str(event.get("subtype")).startswith("hook") for event in events):
         raise ApiError(code, "hook_ran")
     done: Dict[str, Any] = next((event for event in events if event.get("type") == "result"), {})
@@ -101,7 +110,8 @@ def parse(output: str, code: int) -> Dict[str, Any]:
     content = [block for message in messages for block in message["content"]]
     for block in content:
         block["name"] = {claude: ours for ours, claude in TOOLS.items()}.get(block.get("name"), block.get("name"))
-    if code or not done or not content or (done.get("is_error") and done.get("subtype") != "error_max_turns"):
+    cut = done.get("subtype") == "error_max_turns"  # A tool attempt ends the run this way, with exit code 1
+    if not done or not content or ((code or done.get("is_error")) and not cut):
         raise ApiError(code, str(done.get("subtype") or "claude_exit"))
     stop = messages[-1].get("stop_reason") or "end_turn"
     return {"content": content, "stop_reason": stop, "usage": done.get("usage")}
