@@ -270,7 +270,7 @@ def test_the_table_of_outcomes_names_every_outcome_and_whether_it_is_final():
     rows = re.findall(r"^\| `([a-z_]+)` \| (yes|no) \| \S.* \|$", watch.__doc__, re.M)
     assert [name for name, _ in rows] == list(watch.OUTCOMES)
     assert {name: final == "yes" for name, final in rows} == watch.OUTCOMES
-    assert all(f"`{held}`" in watch.__doc__ for held in (watch.CAPPED, watch.NEWER_TURN, watch.LATE))
+    assert all(f"`{held}`" in watch.__doc__ for held in (watch.SCHEDULED_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE))
     assert f"already had {watch.WAKE_CAP} wakes" in watch.__doc__ and f"the {watch.BUDGET_S} seconds" in watch.__doc__
     assert f"more than {watch.LATE_S} seconds after its turn ended" in watch.__doc__
     assert f"A turn is still polled after those {watch.LATE_S} seconds" in watch.__doc__ and "for the next prompt" in watch.__doc__
@@ -1639,9 +1639,9 @@ def test_a_scheduled_or_peer_turn_does_not_hide_that_no_person_is_at_the_session
     assert emet.reads == [] and outcomes(environ) == [(T1, "no_person", False)]
 
 
-@pytest.mark.parametrize("kind", ["scheduled", "peer"])
-def test_the_report_of_a_turn_a_meta_entry_started_is_read_at_its_stop_and_can_wake_claude(
-    session, environ, emet, clock, capfdbinary, sender_on_the_clock, kind
+@pytest.mark.parametrize(("kind", "woken"), [("scheduled", False), ("peer", True)])
+def test_the_report_of_a_turn_a_meta_entry_started_is_read_at_its_stop_and_only_a_peer_turn_can_wake_claude(
+    session, environ, emet, clock, capfdbinary, sender_on_the_clock, kind, woken
 ):
     send(session, environ)
     (first,) = pending.traces(root(environ), SESSION)
@@ -1653,9 +1653,82 @@ def test_the_report_of_a_turn_a_meta_entry_started_is_read_at_its_stop_and_can_w
     send(session, environ)
     first, second = pending.traces(root(environ), SESSION)
     emet.report(second, 200, document())
-    assert stop(session, environ, prompt_id=fired["promptId"]) == 2
+    assert stop(session, environ, prompt_id=fired["promptId"]) == (2 if woken else 0)
     assert outcomes(environ) == [(first, "clear", True), (second, "flagged", True)]
-    assert watch.checks(root(environ), SESSION)[-1]["handed"] is True and capfdbinary.readouterr()[1]
+    assert watch.checks(root(environ), SESSION)[-1]["handed"] is woken and bool(capfdbinary.readouterr()[1]) is woken
+
+
+def prompt(transcript, environ, capfdbinary, prompt_id):
+    """Runs the prompt hook for the next prompt of the session and returns the text it gives Claude, or ""."""
+    capfdbinary.readouterr()
+    given = {**transcript.hook_input(), "hook_event_name": "UserPromptSubmit", "prompt": "check the deploy", "prompt_id": prompt_id}
+    assert missed.run(json.dumps(given).encode(), environ) == 0
+    out, err = capfdbinary.readouterr()
+    assert err == b""
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+
+def test_a_flagged_report_of_a_scheduled_turn_wakes_no_one_and_comes_with_the_next_prompt(
+    session, environ, emet, clock, capfdbinary, sender_on_the_clock
+):
+    fired = session.meta_turn("check the deploy")
+    session.text("msg_2", "Spend rose 12% in March.")
+    send(session, environ)
+    first, trace = pending.traces(root(environ), SESSION)
+    emet.report(first, 200, document(status="clear"))
+    # The mark stays on this machine: Emet is sent the turn as any other
+    mine, line = [item for item in pending.lines(root(environ), SESSION) if "trace_uuid" in item]
+    assert "turn_origin" not in mine and line["turn_origin"] == "scheduled" and "started_by" not in line
+    assert all("plugin_local" not in sent and "turn_origin" not in json.dumps(sent) for sent in emet.envelopes)
+    emet.report(trace, 200, document())
+    assert stop(session, environ, prompt_id=fired["promptId"]) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    assert emet.polled(trace) == 1, "the report is read"
+    (check,) = [item for item in watch.checks(root(environ), SESSION) if item["trace_uuid"] == trace]
+    assert (check["outcome"], check["final"], check["handed"], check["held"]) == ("flagged", True, False, "scheduled_turn")
+    assert f"report {trace} not handed to Claude, scheduled_turn" in log(environ)
+    (listed,) = [item for item in status(environ)["checks"] if item["trace_uuid"] == trace]
+    assert (listed["outcome"], listed["handed"], listed["held"]) == ("flagged", False, "scheduled_turn")
+    (saved,) = watch.verdicts(root(environ), SESSION)
+    assert saved["handed"] is False
+    assert watch.wakes(watch.checks(root(environ), SESSION)) == 0, "it uses up none of the session's wakes"
+    # The next prompt of the session, such as the loop's next iteration, carries it
+    assert prompt(session, environ, capfdbinary, "prompt-2") == saved["text"]
+    assert [outcome for found, outcome, _ in outcomes(environ) if found == trace] == ["flagged", "shown"]
+    assert watch.verdicts(root(environ), SESSION) == []
+
+
+def test_a_persons_turn_still_wakes_claude_after_three_scheduled_turns_were_flagged_and_shown(session, environ, emet, clock, capfdbinary):
+    for number in range(1, watch.WAKE_CAP + 1):
+        trace = str(uuid.UUID(int=number))
+        deliver(environ, clock, trace, turn_origin="scheduled")
+        emet.report(trace, 200, document())
+        assert stop(session, environ) == 0
+        assert prompt(session, environ, capfdbinary, f"prompt-{number + 1}")
+    found = watch.checks(root(environ), SESSION)
+    assert [item["held"] for item in found if item["outcome"] == "flagged"] == ["scheduled_turn"] * watch.WAKE_CAP
+    # The person's own turn, which just ended
+    next_turn(session, clock)
+    deliver(environ, clock, T1)
+    emet.report(T1, 200, document())
+    assert stop(session, environ) == 2
+    assert watch.checks(root(environ), SESSION)[-1]["handed"] is True
+
+
+def test_a_scheduled_turn_is_named_before_the_cap_a_newer_turn_and_a_late_report_and_after_a_turn_that_carried_a_verdict(environ, clock):
+    for number in range(watch.WAKE_CAP):
+        assert watch.record(root(environ), SESSION, str(uuid.UUID(int=number + 1)), "flagged", {"handed": True})
+    latest = watch.Stop(SESSION, "", "prompt-2", 0, clock.now, "own", clock.now)
+    trace = watch.Trace(T1, clock.now, "", "prompt-1", clock.now - watch.LATE_S - 1, scheduled=True)
+    found = watch.checks(root(environ), SESSION)
+    assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == watch.SCHEDULED_TURN
+    assert watch.record(root(environ), SESSION, T2, "shown", {"prompt_id": "prompt-1"})
+    found = watch.checks(root(environ), SESSION)
+    assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == watch.SHOWN_TURN
+    # Only the sender's one word marks a line
+    for origin, marked in (("scheduled", True), ("peer", False), (True, False)):
+        line = {"trace_uuid": T1, "at": storage.now(clock.now), "endpoint": "e", "turn_origin": origin}
+        assert [found.scheduled for found in watch.delivered([line], "e")] == [marked], origin
 
 
 def test_a_prompt_queued_before_the_poller_started_is_told_apart_by_the_turns_id(transcript, environ, emet, clock, capfdbinary):

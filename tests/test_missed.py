@@ -329,7 +329,7 @@ def test_a_report_claude_was_not_woken_for_is_shown_with_the_next_prompt(session
     assert [(item["trace_uuid"], item["outcome"], item["session_id"]) for item in status["checks"]] == [(T2, "shown", SESSION)]
 
 
-@pytest.mark.parametrize("reason", [watch.CAPPED, watch.NEWER_TURN, watch.LATE])
+@pytest.mark.parametrize("reason", [watch.SCHEDULED_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE])
 def test_every_reason_a_wake_was_held_back_for_leads_to_a_showing(session, environ, clock, capfdbinary, reason):
     verdict = held(environ, clock.now, reason=reason)
     assert run(session, environ, capfdbinary) == expected(verdict)
@@ -495,6 +495,40 @@ def test_a_session_gets_three_showings_and_the_verdicts_after_them_are_removed_u
     assert files(environ) == [], "a verdict that will never be shown does not rest on disk"
     assert f"verdict {traces[3]} removed, the session already had 3 showings" in log(environ)
     assert [outcome for _, outcome in lines(environ)].count("shown") == 3
+
+
+def test_the_showings_of_reports_on_scheduled_turns_are_counted_apart_from_the_others(session, environ, clock, capfdbinary):
+    assert missed.SCHEDULED_SHOW_CAP == 3
+    traces = iter(str(uuid.UUID(int=number)) for number in range(1, 20))
+    prompts = iter(f"prompt-{number}" for number in range(2, 20))
+
+    def shown(reason):
+        clock.advance(1)
+        verdict = held(environ, clock.now, next(traces), reason=reason)
+        return run(session, environ, capfdbinary, prompt_id=next(prompts)) == expected(verdict)
+
+    assert [shown(watch.SCHEDULED_TURN) for _ in range(3)] == [True] * 3
+    assert [shown(watch.LATE) for _ in range(3)] == [True] * 3, "a loop does not use up the showings of a person's own turns"
+    # One more of each kind waits. Each is removed under its own count
+    over = [held(environ, clock.now, next(traces), reason=reason)["trace_uuid"] for reason in (watch.SCHEDULED_TURN, watch.LATE)]
+    assert run(session, environ, capfdbinary, prompt_id=next(prompts)) == b"" and files(environ) == []
+    assert f"verdict {over[0]} removed, the session already had 3 showings for scheduled turns\n" in log(environ)
+    assert f"verdict {over[1]} removed, the session already had 3 showings\n" in log(environ)
+    assert [outcome for _, outcome in lines(environ)].count("shown") == 6
+
+
+def test_three_showings_of_other_reports_leave_the_report_of_a_scheduled_turn_to_be_shown(session, environ, clock, capfdbinary):
+    for number in range(1, missed.SHOW_CAP + 1):
+        clock.advance(1)
+        held(environ, clock.now, str(uuid.UUID(int=number)))
+        assert run(session, environ, capfdbinary, prompt_id=f"prompt-{number + 1}")
+    clock.advance(1)
+    older = held(environ, clock.now, T1, reason=watch.SCHEDULED_TURN)
+    late = held(environ, clock.now, T2)["trace_uuid"]
+    newer = held(environ, clock.now + 1, T3, reason=watch.SCHEDULED_TURN)
+    assert run(session, environ, capfdbinary, prompt_id="prompt-8") == expected(newer), "one per prompt, the newest first"
+    assert f"verdict {late} removed, the session already had 3 showings\n" in log(environ)
+    assert run(session, environ, capfdbinary, prompt_id="prompt-9") == expected(older)
 
 
 def test_wakes_and_showings_are_counted_apart(session, environ, clock, capfdbinary):
@@ -984,7 +1018,7 @@ def test_a_turn_that_carried_a_verdict_is_the_first_reason_a_report_is_held_for(
     trace = watch.Trace(T1, clock.now, "", "prompt-1", clock.now - watch.LATE_S - 1)
     found = watch.checks(root(environ), SESSION)
     assert watch.hold_reason(root(environ), config.load(environ), latest, trace, found) == watch.SHOWN_TURN
-    assert f"`{watch.SHOWN_TURN}`" in watch.__doc__ and "The first of the four that applies" in watch.__doc__
+    assert f"`{watch.SHOWN_TURN}`" in watch.__doc__ and "The first of the five that applies" in watch.__doc__
     # A trace that names no turn is never taken for one that carried a verdict
     check(environ, clock.now, T3, "shown", prompt_id="")
     unnamed = watch.Trace(T1, clock.now, "", "", clock.now)

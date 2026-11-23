@@ -313,14 +313,17 @@ def test_the_status_skill_says_once_what_the_check_cannot_do_and_shows_no_text_o
     # The backstop for a report Claude was not woken for
     assert "List every flagged entry, also one Claude already told the user about." in text
     held = check_rows()[watch.FLAGGED][1]
-    for reason in (watch.SHOWN_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE):
+    for reason in (watch.SHOWN_TURN, watch.SCHEDULED_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE):
         assert f"`{reason}`" in held, reason
     assert f"`{watch.SHOWN_TURN}` (the turn's own prompt carried the notice about an earlier report" in held
+    assert f"`{watch.SCHEDULED_TURN}` (Claude Code started the turn on a schedule" in held
+    assert "Claude is never woken for such a turn" in held
     assert f"Unless `held` is `{watch.SHOWN_TURN}`, the plugin gives the notice to Claude with a later prompt of that session" in held
     assert f"a `{watch.SHOWN}` entry for the same `trace_uuid` then takes the place of this one" in held
     from emet_claude import missed
 
     assert f"is given to Claude with the user's next prompt, for at most {missed.SHOW_CAP} reports in a session" in text
+    assert f"such reports are counted apart, also {missed.SCHEDULED_SHOW_CAP} at most" in text
     assert f"already had {watch.WAKE_CAP} notices" in held and f"more than {watch.LATE_S} seconds after the turn ended" in held
     assert f"holds the last {NUMBER_WORDS[watch.RECENT_CHECKS]} outcomes, newest first" in text
     assert "Do not print the contents of the `verdicts` folder" in text
@@ -420,6 +423,9 @@ def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_and_the_
     for why in ("Claude was woken with it", "the conversation was compacted since", f"the session already had {missed.SHOW_CAP} showings"):
         assert f"`verdict <id> removed, {why}`" in table, why
         assert f'"{why}"'.replace(str(missed.SHOW_CAP), "{SHOW_CAP}") in source, why
+    scheduled = f"the session already had {missed.SCHEDULED_SHOW_CAP} showings for scheduled turns"
+    assert f"`verdict <id> removed, {scheduled}`" in table
+    assert f'"{scheduled}"'.replace(str(missed.SCHEDULED_SHOW_CAP), "{SCHEDULED_SHOW_CAP}") in source
     assert source.count("remove(root, verdict, ") == 3
     (unread,) = [row for row in table.splitlines() if row.startswith("| `verdict not shown, <word>` |")]
     problems = (
@@ -438,7 +444,7 @@ def test_the_status_skill_has_a_row_for_every_log_line_the_report_check_and_the_
     assert f"`verdict <id> {watch.SHOWN} with a prompt, not recorded ...`" in table
     assert f"or once it is {watch.VERDICT_DAYS} days old" in table
     (held,) = [row for row in table.splitlines() if row.startswith("| `report <id> not handed to Claude, ...` |")]
-    for reason in (watch.SHOWN_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE):
+    for reason in (watch.SHOWN_TURN, watch.SCHEDULED_TURN, watch.CAPPED, watch.NEWER_TURN, watch.LATE):
         assert f"(`{reason}`)" in held, reason
 
 
@@ -990,11 +996,14 @@ def test_the_documents_say_what_the_prompt_hook_gives_claude_now_that_a_hook_sav
     assert f'shows one line under your prompt, "{missed.USER_LINE}"' in told
     assert "Once for each report, one report with a prompt, the newest first." in told
     assert f"At most {missed.SHOW_CAP} times in one session, counted apart from the {watch.WAKE_CAP} messages above." in told
+    assert "- Never for a turn Claude Code started on a schedule: a `/loop` iteration or a scheduled wake-up." in told
+    assert f"on a schedule have a count of their own, also {missed.SCHEDULED_SHOW_CAP}, so a loop cannot use up" in told
     assert "Never with a slash command" in told and "makes no request, and cannot change or hold back your prompt" in told
     assert "Claude is never told of it, because that answer quotes the disputed claims" in told
     policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
     assert "The hook on your prompt gives Claude the text of a report on an earlier answer" in policy
     assert f"with your next prompt in that session, once, for at most {missed.SHOW_CAP} reports in a session" in policy
+    assert f"comes with the next prompt of the session, counted apart, for at most {missed.SCHEDULED_SHOW_CAP} more." in policy
     assert "It cannot change the prompt or hold it back." in policy
     assert "change or hold back a prompt, let text from Emet reach Claude outside the data block" in policy
     guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
@@ -1006,6 +1015,7 @@ def test_the_documents_say_what_the_prompt_hook_gives_claude_now_that_a_hook_sav
     assert not [line for line in changelog_check().unreleased(changelog) if "o hook starts" in line or "No hook of this version" in line]
     setup = (PLUGIN / "skills" / "setup" / "SKILL.md").read_text(encoding="utf-8")
     assert f"is given to Claude with the user's next prompt, at most {missed.SHOW_CAP} times in a session" in setup
+    assert f"comes with the next prompt of the session, counted apart, also at most {missed.SCHEDULED_SHOW_CAP} times" in setup
     assert "with the next prompt" in load(PLUGIN / "hooks" / "hooks.json")["description"]
 
 
