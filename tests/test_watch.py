@@ -2075,6 +2075,123 @@ def test_without_any_end_the_window_is_counted_from_the_second_the_stop_began_in
     assert watch.turn_end(watch.Trace(T1, began, ""), read) == clock.now
 
 
+HOUR = 3600
+
+
+def test_a_report_read_after_the_machine_slept_an_hour_wakes_no_one_and_comes_with_the_next_prompt(
+    session, environ, emet, clock, sleeper, asked, capfdbinary
+):
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    finish(environ, clock)
+    began = clock.now
+    # Asleep between two reads: the system clock is an hour on, and the steady clock of macOS and Linux did not move
+    sleeper.at(9, lambda: clock.set_by(HOUR))
+    assert stop(session, environ) == 0
+    assert capfdbinary.readouterr() == (b"", b"")
+    # The run goes on with the time it had left, and the report is still read
+    assert [at for at, _ in asked] == [8, 13]
+    (check,) = watch.checks(root(environ), SESSION)
+    assert (check["outcome"], check["final"], check["handed"], check["held"]) == ("flagged", True, False, "late")
+    # Stamped by the system clock, as every time in a file is
+    assert check["at"] == storage.now(began + HOUR + 13)
+    (verdict,) = watch.verdicts(root(environ), SESSION)
+    assert verdict["handed"] is False and verdict["text"] == report.missed_message(document(), emet.url, SESSION)
+    prompt = {**session.hook_input(), "hook_event_name": "UserPromptSubmit", "prompt": "And 3 + 3?", "prompt_id": "prompt-2"}
+    assert missed.choose(json.dumps(prompt).encode(), environ) == verdict["text"]
+
+
+def test_a_system_clock_set_back_an_hour_in_the_middle_of_a_run_does_not_make_the_run_longer(session, environ, emet, clock, sleeper, asked):
+    deliver(environ, clock)
+    emet.report(T1, 202)
+    start = clock.steady
+    sleeper.at(9, lambda: clock.set_by(-HOUR))
+    assert stop(session, environ) == 0
+    assert [at for at, _ in asked] == EVERY_REQUEST
+    assert clock.steady - start == watch.BUDGET_S
+    assert outcomes(environ) == [(T1, "timed_out", False)]
+
+
+def test_after_the_system_clock_is_set_back_a_report_is_not_late_by_it_and_still_wakes_claude_within_the_run(
+    session, environ, emet, clock, sleeper, asked, capfdbinary
+):
+    deliver(environ, clock)
+    for _ in range(5):
+        emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    sleeper.at(9, lambda: clock.set_by(-HOUR))
+    # The late rule reads the system clock, which now stands before the end of the turn
+    assert stop(session, environ) == 2
+    assert [at for at, _ in asked] == [8, 13, 23, 38, 58, 88] and watch.LATE_S < 88 < watch.BUDGET_S
+    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+
+
+@pytest.mark.parametrize("set_by", [HOUR, -HOUR], ids=["set forward", "set back"])
+def test_the_minute_with_nothing_to_poll_is_not_moved_by_a_change_of_the_system_clock(session, environ, emet, clock, sleeper, set_by):
+    start = clock.steady
+    sleeper.at(10, lambda: clock.set_by(set_by))
+    assert stop(session, environ) == 0
+    assert clock.steady - start == watch.IDLE_S
+    assert emet.reads == []
+
+
+@pytest.mark.parametrize("set_by", [HOUR, -HOUR], ids=["set forward", "set back"])
+def test_the_wait_to_take_over_ends_with_the_time_of_the_stop_whatever_the_system_clock_is_set_to(
+    session, environ, emet, clock, sleeper, set_by
+):
+    deliver(environ, clock)
+    emet.report(T1, 200, document())
+    start = clock.steady
+    with watcher_lock(environ):
+        sleeper.at(10, lambda: clock.set_by(set_by))
+        assert stop(session, environ) == 0
+    assert clock.steady - start == watch.BUDGET_S - watch.TICK_S and emet.reads == []
+    assert "watch left, the watcher before it ran on" in log(environ)
+
+
+def test_the_last_read_inside_the_window_follows_a_system_clock_set_forward(session, environ, emet, clock, sleeper, asked):
+    deliver(environ, clock)
+    for _ in range(4):
+        emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    sleeper.at(9, lambda: clock.set_by(10))
+    # The window closes 10 seconds sooner for the run, so its last read inside it moves from 59 to 49
+    assert stop(session, environ) == 2
+    assert [at for at, _ in asked] == [8, 13, 23, 38, watch.LATE_S - watch.EDGE_S - 10]
+
+
+def test_a_stop_read_from_its_file_keeps_the_steady_start_of_the_run_that_reads_it(environ, clock):
+    own = watch.Stop(SESSION, "", "", 0, clock.now, "own", 0.0, clock.steady)
+    watch.announce(root(environ), watch.Stop(SESSION, "", "", 0, clock.now, "later", 0.0, clock.steady + 40))
+    read = watch.latest(root(environ), own)
+    assert (read.token, read.steady) == ("later", own.steady)
+    assert "steady" not in watch.stop_path(root(environ), SESSION).read_text(encoding="utf-8")
+
+
+def test_the_read_before_the_window_closes_is_placed_on_the_steady_clock_by_where_the_system_clock_stands(clock):
+    end = clock.now
+    clock.advance(30)
+
+    def planned():
+        return watch.before_the_window_closes(clock.steady + 40, end, clock.steady + 5) - clock.steady
+
+    assert planned() == watch.LATE_S - watch.EDGE_S - 30
+    # The steady clock alone tells nothing of how long ago the turn ended
+    clock.run_unseen(1000)
+    assert planned() == watch.LATE_S - watch.EDGE_S - 30
+    clock.set_by(20)
+    assert planned() == watch.LATE_S - watch.EDGE_S - 50
+    # Too close to ask, then past: the read stays where it was planned
+    clock.set_by(5)
+    assert planned() == 40
+    clock.set_by(HOUR)
+    assert planned() == 40
+    # Set back: the window is still open at the planned read
+    clock.set_by(-2 * HOUR)
+    assert planned() == 40
+
+
 @pytest.mark.parametrize(
     ("capped", "earlier", "late", "reason"),
     [

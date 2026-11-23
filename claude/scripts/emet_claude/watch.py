@@ -1131,7 +1131,9 @@ def poll(raw: bytes, environ: Mapping[str, str]) -> str:
     if headless(found, environ):
         storage.log(root, "watch skipped, no person is at the session")
         return skip(root, config, session_id, NO_PERSON)
-    stop = Stop(session_id, transcript_path, pending.plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found), steady)
+    stop = Stop(
+        session_id, transcript_path, pending.plain(hook_input.get("prompt_id")), size, began, uuid.uuid4().hex, last_time(found), steady
+    )
     # Written before the lock is tried: the watcher already running judges this turn by it
     announce(root, stop)
     return attend(root, config, stop)
