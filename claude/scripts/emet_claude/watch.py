@@ -238,6 +238,8 @@ class Plan:
 
     due: float
     step: int = 0
+    # The earliest the next read may start, on the steady clock
+    soonest: float = 0.0
 
 
 def sleep(seconds: float) -> None:
@@ -1040,7 +1042,10 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
         elif sender_done(lines, stop.at) or now - idle_since >= IDLE_S:
             return ""
         for trace in watched:
-            plan = plans.setdefault(trace.trace_uuid, Plan(max(now, start + FIRST_S)))
+            first = max(now, start + FIRST_S)
+            plan = plans.setdefault(trace.trace_uuid, Plan(first, soonest=first))
+            # A change of the system clock moves the edge of the window after the read was planned
+            plan.due = before_the_window_closes(plan.due, turn_end(trace, stop), plan.soonest)
             if plan.due > now:
                 continue
             # Checked before each request: the ones before it in this pass can each take the full timeout
@@ -1072,8 +1077,8 @@ def follow(root: Path, config: Config, stop: Stop) -> str:
                     storage.log(root, f"report {trace.trace_uuid} -> {answer.status or 'network'}, asked again later")
                 wait = max(float(STEPS_S[min(plan.step, len(STEPS_S) - 1)]), answer.retry_after or 0.0)
                 plan.step += 1
-                soonest = pause.steady() + max(float(STEPS_S[0]), answer.retry_after or 0.0)
-                plan.due = before_the_window_closes(pause.steady() + wait * (1 + extra()), turn_end(trace, stop), soonest)
+                plan.soonest = pause.steady() + max(float(STEPS_S[0]), answer.retry_after or 0.0)
+                plan.due = before_the_window_closes(pause.steady() + wait * (1 + extra()), turn_end(trace, stop), plan.soonest)
         now = pause.steady()
         due = [plans[trace.trace_uuid].due for trace in watched if trace.trace_uuid not in done]
         until = min([*due, now + TICK_S, start + BUDGET_S])

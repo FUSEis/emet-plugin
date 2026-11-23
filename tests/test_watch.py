@@ -2173,6 +2173,20 @@ def test_the_last_read_inside_the_window_follows_a_system_clock_set_forward(sess
     assert [at for at, _ in asked] == [8, 13, 23, 38, watch.LATE_S - watch.EDGE_S - 10]
 
 
+def test_a_system_clock_set_forward_after_the_last_read_was_planned_moves_that_read_inside_the_window(
+    session, environ, emet, clock, sleeper, asked
+):
+    deliver(environ, clock)
+    for _ in range(4):
+        emet.report(T1, 202)
+    emet.report(T1, 200, document())
+    # The read at 58 was planned at 38. Set forward 10 seconds, it would start 68 seconds after the turn, late
+    sleeper.at(45, lambda: clock.set_by(10))
+    assert stop(session, environ) == 2
+    assert [at for at, _ in asked] == [8, 13, 23, 38, watch.LATE_S - watch.EDGE_S - 10]
+    assert watch.checks(root(environ), SESSION)[0]["handed"] is True
+
+
 def test_a_stop_read_from_its_file_keeps_the_steady_start_of_the_run_that_reads_it(environ, clock):
     own = watch.Stop(SESSION, "", "", 0, clock.now, "own", 0.0, clock.steady)
     watch.announce(root(environ), watch.Stop(SESSION, "", "", 0, clock.now, "later", 0.0, clock.steady + 40))
