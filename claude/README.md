@@ -18,7 +18,7 @@ Then restart Claude Code and run `/emet:setup`. To install it with your agent in
 
 Requirements: Claude Code 2.1.287 or later, and `python3` 3.9 or later on the `PATH` (macOS and most Linux distributions include it). The plugin installs no packages.
 
-Why 2.1.287: the plugin's check of Emet's report runs as a background hook that can wake Claude. Before 2.1.287, a hook of that kind whose script file could not be opened woke Claude again and again, each time using your Claude plan; from 2.1.287 on, Claude Code reports the broken hook once ([Claude Code changelog, 2.1.287](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md), [issue 96148](https://github.com/anthropics/claude-code/issues/96148)). On an older Claude Code the plugin still sends turns and reads no report, but it is not supported there. `claude --version` prints yours, and `claude update` updates it.
+Why 2.1.287: the plugin's check of Emet's report runs as a background hook that can wake Claude. Before 2.1.287, a hook of that kind whose script file was missing woke Claude again and again, each time using your Claude plan; from 2.1.287 on, Claude Code reports the broken hook once ([release note for 2.1.287](https://github.com/anthropics/claude-code/releases/tag/v2.1.287)). [Issue 96148](https://github.com/anthropics/claude-code/issues/96148) describes the same looping for a hook that fails to run for any reason; the release note does not name it, and it was still open on 2026-11-23. On an older Claude Code the plugin still sends turns and reads no report, but it is not supported there. `claude --version` prints yours, and `claude update` updates it.
 
 ## Options
 

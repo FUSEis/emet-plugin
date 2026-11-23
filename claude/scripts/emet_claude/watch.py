@@ -78,7 +78,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from . import VERSION, pause, pending, report, storage, timestamps, transcript, transport
 from .config import Config, endpoint_problem, load
 
-# The first Claude Code that reports a waking hook it cannot start once, not at every turn. The README requires it
+# The first Claude Code that reports a waking hook whose script is missing once, not at every turn. The README requires it
 MIN_CLAUDE_CODE = (2, 1, 287)
 # Read from the environment as a second sign of a session with no person at it. Not a plugin option
 ENTRYPOINT_NAME = "CLAUDE_CODE_ENTRYPOINT"
