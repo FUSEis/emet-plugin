@@ -28,7 +28,7 @@ Only to `https://app.emet.so`, with the key as a bearer token: finished turns, a
 
 **Emet's answers to a send, a key check or a report that is not ready.** The plugin acts on little of such an answer: the HTTP status, the wait a `Retry-After` header names (an hour at most), two ids, each kept only when it is a UUID, and the short code Emet puts in its own `404` answers. Nothing in an answer is executed, and no text from one of these answers is shown to Claude. Of an error, the log and `status.json`, which `/emet:status` reads, keep the HTTP status and a short code of lowercase letters and underscores, 40 characters at most. The error message is not kept.
 
-**Emet's reports.** A report is written by a model that read tool results and web pages, so any sentence in it can be an attempt to steer Claude. The plugin reads a report after each turn, and tells Claude about one that Emet flagged. This is in the plugin on `main`. Release 0.1.4 does not have it. When the plugin tells Claude about a report:
+**Emet's reports.** A report is written by a model that read tool results and web pages, so any sentence in it can be an attempt to steer Claude. The plugin reads a report after each turn, and tells Claude about one that Emet flagged. When the plugin tells Claude about a report:
 
 - A report over 2 MB, of a version the plugin does not know, or with a status it does not know is not shown at all.
 - Each piece of text is cut to a fixed length, put on one line, and stripped of control and invisible characters.
