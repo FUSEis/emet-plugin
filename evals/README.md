@@ -33,36 +33,38 @@ The cases are in [`cases.json`](cases.json): one disputed claim, three, disputed
 ## How to run it
 
 ```bash
-export ANTHROPIC_API_KEY=...        # read at run time, never printed or written
 uv run python -m evals.wake
 ```
 
-That runs 17 cases, 5 samples each, on `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`, with `claude-opus-5-5` as the grader. The markdown table goes to stdout. `evals/results/<time>/` gets `results.json` (every reply and verdict), `table.md` and one file under `failures/` for each sample that did not pass every check. The folder is git-ignored.
+It needs the `claude` command, logged in. Each model call is one headless `claude -p` run on that account, so it counts against your Claude Code usage limits and nothing bills per token. No API key is read; the child process gets only a short list of variables (PATH, HOME, USER and a few more), so no API key, auth token or provider override reaches it and it cannot bill an API account. Every tool the model is given is set to ask, which the run denies, so a call is seen in the reply and never executed. That runs 17 cases, 5 samples each, on `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`, with `claude-opus-5-5` as the grader. The markdown table goes to stdout. `evals/results/<time>/` gets `results.json` (every reply and verdict), `table.md` and one file under `failures/` for each sample that did not pass every check. The folder is git-ignored.
 
 Each run gets its own folder. The files are written beside it first and the folder is renamed into place at the end, so a results folder is whole or absent; a run that dies while writing leaves a `*.partial` folder you can delete. A folder named with `--out` must be new or empty, and the run stops before any call when it is not.
 
 ```bash
-uv run python -m evals.wake --offline                         # no key: replays fixtures/replies.json through the whole pipeline
+uv run python -m evals.wake --offline                         # no login: replays fixtures/replies.json through the whole pipeline
 uv run python -m evals.wake --models claude-haiku-5-5 --samples 3 --no-judge
-uv run python -m evals.wake --cases emet-plainly-right followup-is-emet-right
+uv run python -m evals.wake --workers 2 --cases emet-plainly-right followup-is-emet-right
 uv run python -m evals.wake --help
 ```
 
-The client is `client.py`, about a hundred lines of standard library. It reads only `ANTHROPIC_API_KEY`. The official `anthropic` SDK is not used: its current release needs Python 3.10, the repository locks for 3.9, and CI could not run the real client path without installing it.
+The client is `client.py`. Every run starts `claude` from an empty temporary directory with these flags ([headless](https://code.claude.com/docs/en/headless), [CLI reference](https://code.claude.com/docs/en/cli-reference)):
 
-## What a run costs
-
-Not measured yet: nobody has run it against the API. An estimate from list prices on 2026-11-19 (Haiku 5.5 $0.10 and $0.50, Sonnet 5.5 $2 and $10, Opus 5.5 $4 and $20 per million input and output tokens), about 1,500 input and up to 1,000 output tokens per call with thinking, about 100 calls per model and about 270 grader calls on Opus:
-
-| Part | Estimate |
+| Flag | Why |
 |---|---|
-| Haiku 5.5 | under $0.10 |
-| Sonnet 5.5 | about $1 |
-| Opus 5.5 | about $3 |
-| Grader (Opus 5.5) | about $4 |
-| Whole default run | about $8, say $5 to $12 |
+| `--model` | pins the model under test |
+| `--system-prompt` | replaces Claude Code's prompt with the case's stand-in |
+| `--output-format stream-json --verbose` | gives the reply, the tool calls and the usage as JSON lines |
+| `--max-turns 1` | one model message per call; the harness answers a tool call itself and asks again |
+| `--tools Read,Bash,WebFetch`, `--permission-mode dontAsk` | the model can try a tool and the run sees it; every call is denied, so nothing runs |
+| `--safe-mode`, `--setting-sources project,local`, `--strict-mcp-config`, `--disable-slash-commands` | no hooks, plugins, skills, MCP servers, CLAUDE.md or user settings (`--bare` would do the same but reads no login) |
+| `--no-session-persistence` | writes no session file |
+| `--include-hook-events` | a run that reports any hook event is recorded as an error |
 
-`--models claude-haiku-5-5 --no-judge` costs cents. Each run prints the tokens each tested model used and, on a line of its own, the tokens the grader used with the hand labels included; correct this table from the first real run.
+The eval must never load your installed plugins, the Emet plugin included, because that would send eval turns to Emet. `--safe-mode`, the empty directory and the hook-event check keep that off. The grader runs through the same client with no tools.
+
+## What a run uses
+
+The default run makes about 85 `claude -p` calls on each of Haiku 5.5, Sonnet 5.5 and Opus 5.5, plus about 270 on Opus 5.5 for the grader. One call took about 5 seconds on Haiku 5.5 with the model grader off; use `--workers` (default 4) to bound how many run at once. A full run is a few minutes to an hour, depending on your limits. `--models claude-haiku-5-5 --no-judge` is the cheap check.
 
 ## How to read the table
 
@@ -98,11 +100,10 @@ Without the flag the harness renders through the `report.py` of the checkout it 
 
 ## Limits
 
-- The conversation is rebuilt through the Messages API with a short stand-in system prompt. Claude Code's own system prompt, tools and context are far larger, so rates here are a guide to the wording, not a forecast for live sessions.
+- The conversation is sent as one user message. The CLI takes no earlier assistant turn or tool result as input, so earlier turns, tool calls and results are written as a transcript in that message, and only the latest message arrives as the live prompt. The model sees Claude Code's real tools (`Read`, `Bash`, `WebFetch`) in place of the stand-in ones, and a stand-in system prompt replaces Claude Code's own.
 - The plugin gives Claude a missed verdict with a later prompt of the user, within the limits [the plugin's README](../claude/README.md#when-emet-disputes-a-claim) names: its `UserPromptSubmit` hook prints the saved text as `hookSpecificOutput.additionalContext`. How the eval shows that text to the model is a stand-in: one user message of two text blocks, the text behind `MISSED_PREFIX` of `rules.py` first and the new prompt second. Where Claude Code places that context and how it wraps it has not been read from a live session. No test pins the value of `MISSED_PREFIX`, where one keeps `WAKE_PREFIX` equal to the wrapper in `tests/helpers.py`.
 - Models run at their default effort unless `--effort` is given. Claude Code may use another.
-- A refusal is recorded as an error. No fallback model is asked, so each column is one model.
-- The client asks again after a rate limit (429) and after a server error or overload (5xx), as the API's errors page says to, and when the connection was refused or the host name did not resolve. The Messages API documents no idempotency key, so a 5xx sent after the model ran can be billed a second time, at most four times per call. A timeout, a redirect, a reply lost after the request was sent, and a response that is not a JSON object are never retried: the sample is recorded as an error. A timeout is not retried even while connecting, because the client cannot tell that case from one where the request arrived.
+- A refusal, a cut reply, a timeout, a non-zero exit and any hook event are recorded as errors and not graded. No call is retried, and no fallback model is asked.
 
 ## Sources
 

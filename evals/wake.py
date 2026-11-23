@@ -1,7 +1,7 @@
 """Runs the cases against Claude models and reports how often each rule of the Emet notice holds.
 
-uv run python -m evals.wake              # the real API, key from ANTHROPIC_API_KEY
-uv run python -m evals.wake --offline    # replays the written replies, no key and no network
+uv run python -m evals.wake              # runs `claude -p` on the logged-in Claude Code account
+uv run python -m evals.wake --offline    # replays the written replies, no login and no network
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import cases as case_data
 from . import graders, rules
-from .client import AnthropicClient, ApiError, Client, ReplayClient, blocks, count, text_of
+from .client import ApiError, ClaudeCodeClient, Client, ReplayClient, blocks, count, text_of
 from .graders import Reply
 
 HERE = Path(__file__).resolve().parent
@@ -350,7 +350,7 @@ def arguments(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     )
     parser.add_argument("--workers", type=int, default=4, metavar="N", help="samples run at once (default: %(default)s)")
     parser.add_argument("--out", type=Path, default=None, metavar="DIR", help="results folder (default: evals/results/<time>)")
-    parser.add_argument("--offline", action="store_true", help="replay the written replies: no key, no network, no model")
+    parser.add_argument("--offline", action="store_true", help="replay the written replies: no login, no network, no model")
     parser.add_argument(
         "--plugin-scripts",
         type=Path,
@@ -380,7 +380,7 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[Client] = None) 
         labels = json.loads((FIXTURES / "judge_labels.json").read_text(encoding="utf-8"))
         client = ReplayClient(case_data.load(), replies, labels)
     if client is None:
-        client = AnthropicClient()
+        client = ClaudeCodeClient()
     models = ["replay"] if options.offline else options.models
     judge_model = "" if options.no_judge else "replay" if options.offline else options.judge_model
     result = run(client, models, cases, options.samples, judge_model, options.effort, options.workers, options.offline)

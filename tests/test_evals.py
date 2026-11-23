@@ -1,15 +1,13 @@
-"""Proves the eval harness in evals/ works with no key: every case, every grader, the client and the table."""
+"""Proves the eval harness in evals/ works with no login: every case, every grader, the client and the table."""
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
-import socket
-import threading
-import urllib.error
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import sys
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pytest
 
@@ -234,7 +232,7 @@ def test_the_tokens_of_every_call_are_added_up_per_model():
 def test_the_graders_tokens_are_counted_too_the_hand_labels_included():
     class Metered(api.ReplayClient):
         def create(self, request):
-            spent = {"input_tokens": 100, "output_tokens": 10} if "output_config" in request else {"input_tokens": 7, "output_tokens": "x"}
+            spent = {"input_tokens": 100, "output_tokens": 10} if "output_config" in request else {"input_tokens": 7, "output_tokens": 0}
             return {**super().create(request), "usage": spent}
 
     result = wake.run(Metered(CASES, REPLIES, LABELS), ["m"], [BY_ID["emet-plainly-right"]], samples=2, judge_model="j")
@@ -506,8 +504,8 @@ def test_a_run_writes_the_json_the_table_and_each_failing_reply(tmp_path, capsys
     assert bad in failure and "- no_ruling: Sorry, Emet is right." in failure and "- names_claims" not in failure
 
 
-def test_the_offline_run_needs_no_key_and_says_it_is_not_a_model(tmp_path, capsys, monkeypatch):
-    monkeypatch.delenv(api.KEY_VARIABLE, raising=False)
+def test_the_offline_run_needs_no_login_and_says_it_is_not_a_model(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
     assert wake.main(["--offline", "--samples", "1", "--out", str(tmp_path)]) == 0
     text = capsys.readouterr().out
     assert "**Offline replay of the written replies: these are not model results.**" in text
@@ -601,242 +599,180 @@ def test_the_defaults_are_the_current_small_medium_and_large_models():
 
 # The client
 
+STAND_IN = """#!{python}
+import json, os, sys
+folder = os.path.dirname(os.path.realpath(__file__))
+record = {{"argv": sys.argv[1:], "stdin": sys.stdin.read(), "cwd": os.getcwd(), "env": dict(os.environ)}}
+json.dump(record, open(os.path.join(folder, "record.json"), "w"))
+sys.stdout.write(open(os.path.join(folder, "canned.txt")).read())
+sys.exit(int(open(os.path.join(folder, "exit.txt")).read()))
+"""
+RESULT = {"type": "result", "subtype": "success", "is_error": False, "usage": {"input_tokens": 11, "output_tokens": 5}}
 
-# A planned status that makes the stand-in read the request and close without a reply
-HANG_UP = -1
+
+def said(text: str, stop: str = "end_turn") -> Dict[str, Any]:
+    return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}], "stop_reason": stop}}
 
 
-class FakeAnthropic:
-    """A stand-in for the Messages endpoint: records each request and answers with the next planned status."""
+class StandIn:
+    """A `claude` executable on a temporary PATH that records how it was called and prints canned stream-json."""
 
-    def __init__(self) -> None:
-        self.seen: List[Dict[str, Any]] = []
-        self.plan: List[Tuple[int, Any, Dict[str, str]]] = []
-        owner = self
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        (folder / "claude").write_text(STAND_IN.format(python=sys.executable), encoding="utf-8")
+        (folder / "claude").chmod(0o755)
 
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-                owner.seen.append({"path": self.path, "headers": {key.lower(): value for key, value in self.headers.items()}, "body": body})
-                status, reply, headers = owner.plan.pop(0) if owner.plan else (200, says("ok"), {})
-                if status == HANG_UP:
-                    self.close_connection = True
-                    return
-                data = reply if isinstance(reply, bytes) else json.dumps(reply).encode()
-                self.send_response(status)
-                for name, value in headers.items():
-                    self.send_header(name, value)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+    def answer(self, *lines: Dict[str, Any], code: int = 0) -> None:
+        (self.folder / "canned.txt").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+        (self.folder / "exit.txt").write_text(str(code), encoding="utf-8")
 
-            def log_message(self, *args: Any) -> None:
-                pass
+    def record(self) -> Dict[str, Any]:
+        found: Dict[str, Any] = json.loads((self.folder / "record.json").read_text(encoding="utf-8"))
+        return found
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/messages"
+    def flag(self, name: str) -> str:
+        argv = self.record()["argv"]
+        return str(argv[argv.index(name) + 1])
 
 
 @pytest.fixture
-def anthropic(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeAnthropic]:
-    monkeypatch.setenv(api.KEY_VARIABLE, KEY)
-    server = FakeAnthropic()
-    yield server
-    server.server.shutdown()
-    server.server.server_close()
+def claude(tmp_path, monkeypatch) -> StandIn:
+    if sys.platform == "win32":
+        pytest.skip("the stand-in claude is a POSIX script")
+    (tmp_path / "bin").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "bin") + os.pathsep + os.environ["PATH"])
+    stand_in = StandIn(tmp_path / "bin")
+    stand_in.answer(said("Hello."), RESULT)
+    return stand_in
 
 
-def failed(kind: str) -> Dict[str, Any]:
-    return {"type": "error", "error": {"type": kind, "message": f"details that mention {KEY}"}}
+def ask(**more: Any) -> Dict[str, Any]:
+    request = {
+        "model": "claude-haiku-5-5",
+        "system": "Be brief.",
+        "max_tokens": 321,
+        "tools": case_data.TOOLS,
+        "messages": [{"role": "user", "content": "Hi."}],
+    }
+    return api.ClaudeCodeClient().create({**request, **more})
 
 
-def test_the_client_posts_the_request_with_the_key_and_version_headers(anthropic):
-    assert api.API_URL == "https://api.anthropic.com/v1/messages" and api.API_VERSION == "2026-10-21"
-    response = api.AnthropicClient(url=anthropic.url).create({"model": "m", "max_tokens": 1, "messages": []})
-    assert api.text_of(response) == "ok"
-    (seen,) = anthropic.seen
-    assert seen["path"] == "/v1/messages" and seen["body"] == {"model": "m", "max_tokens": 1, "messages": []}
-    assert seen["headers"]["x-api-key"] == KEY and seen["headers"]["anthropic-version"] == "2026-10-21"
-    assert seen["headers"]["content-type"] == "application/json"
-
-
-def test_the_client_retries_an_overloaded_or_limited_call_and_waits_as_told(anthropic):
-    anthropic.plan = [
-        (529, failed("overloaded_error"), {}),
-        (429, failed("rate_limit_error"), {"retry-after": "7"}),
-        (500, failed("api_error"), {}),
-    ]
-    waits: List[float] = []
-    response = api.AnthropicClient(url=anthropic.url, sleep=waits.append).create({"model": "m"})
-    assert api.text_of(response) == "ok" and len(anthropic.seen) == 4
-    assert waits == [1.0, 7.0, 4.0]
-
-
-def test_the_client_gives_up_after_its_retries_and_never_retries_a_bad_request(anthropic):
-    anthropic.plan = [(400, failed("invalid_request_error"), {})]
-    waits: List[float] = []
-    client = api.AnthropicClient(url=anthropic.url, sleep=waits.append)
-    with pytest.raises(api.ApiError) as caught:
-        client.create({"model": "m"})
-    assert (caught.value.status, caught.value.kind, str(caught.value), waits) == (
-        400,
-        "invalid_request_error",
-        "400 invalid_request_error",
-        [],
+def test_the_client_pins_the_model_and_turns_off_every_customization(claude):
+    assert api.text_of(ask(output_config={"effort": "low"})) == "Hello."
+    argv = claude.record()["argv"]
+    assert (
+        claude.flag("--model") == "claude-haiku-5-5" and claude.flag("--system-prompt") == "Be brief." and claude.flag("--effort") == "low"
     )
-    anthropic.plan = [(529, failed("overloaded_error"), {"retry-after": "900"})] * (api.RETRIES + 1)
-    with pytest.raises(api.ApiError, match="529 overloaded_error"):
-        client.create({"model": "m"})
-    assert waits == [api.MAX_WAIT_S] * api.RETRIES
-    anthropic.plan = [(403, {"error": {"type": "x" * 50}}, {})]
-    with pytest.raises(api.ApiError, match=r"^403 error$"):
-        client.create({"model": "m"})
+    assert claude.flag("--tools") == "Read,Bash,WebFetch" and claude.flag("--setting-sources") == "project,local"
+    assert claude.flag("--max-turns") == "1" and claude.flag("--permission-mode") == "dontAsk" and "--bare" not in argv
+    for flag in ("--safe-mode", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--include-hook-events"):
+        assert flag in argv
 
 
-def test_the_client_follows_no_redirect_so_the_key_reaches_no_other_host(anthropic):
-    other = FakeAnthropic()
-    try:
-        waits: List[float] = []
-        for status in (301, 302, 303, 307, 308):
-            anthropic.plan = [(status, {}, {"Location": other.url})]
-            with pytest.raises(api.ApiError, match=f"^{status} redirect$"):
-                api.AnthropicClient(url=anthropic.url, sleep=waits.append).create({"model": "m"})
-        assert other.seen == [] and len(anthropic.seen) == 5 and waits == []
-    finally:
-        other.server.shutdown()
-        other.server.server_close()
-
-
-@pytest.mark.parametrize("body", [b"<html>gateway</html>", b"[1]", b'"text"', b"null", b""])
-def test_a_success_that_is_not_a_json_object_is_an_error_of_that_call(anthropic, body):
-    anthropic.plan = [(200, body, {})]
-    waits: List[float] = []
-    with pytest.raises(api.ApiError, match=r"^200 bad_response$"):
-        api.AnthropicClient(url=anthropic.url, sleep=waits.append).create({"model": "m"})
-    assert len(anthropic.seen) == 1 and waits == []
-
-
-def test_a_bad_response_is_recorded_on_its_sample_and_the_run_goes_on(anthropic, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(wake, "AnthropicClient", lambda: api.AnthropicClient(url=anthropic.url, sleep=lambda seconds: None))
-    anthropic.plan = [(200, b"not json", {}), (200, says(REPLIES["emet-plainly-right"][0]), {})]
-    arguments = ["--models", "m", "--samples", "2", "--cases", "emet-plainly-right", "--no-judge", "--workers", "1", "--out", str(tmp_path)]
-    assert wake.main(arguments) == 0
-    saved = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
-    assert [sample["error"] for sample in saved["results"]] == ["api 200 bad_response", ""]
-    assert saved["summary"]["m"]["checks"]["no_apology"]["total"] == 1
-
-
-def test_a_reply_lost_after_the_request_was_sent_is_never_asked_for_again(anthropic):
-    anthropic.plan = [(HANG_UP, {}, {})]
-    waits: List[float] = []
-    with pytest.raises(api.ApiError, match=r"^0 no_reply$"):
-        api.AnthropicClient(url=anthropic.url, sleep=waits.append).create({"model": "m"})
-    assert len(anthropic.seen) == 1 and waits == []
-
-
-def test_a_request_timeout_or_a_conflict_status_is_not_retried(anthropic):
-    for status in (408, 409):
-        anthropic.plan = [(status, failed("invalid_request_error"), {})]
-        waits: List[float] = []
-        with pytest.raises(api.ApiError, match=f"^{status} invalid_request_error$"):
-            api.AnthropicClient(url=anthropic.url, sleep=waits.append).create({"model": "m"})
-        assert waits == []
-    assert len(anthropic.seen) == 2
-
-
-def closed_port() -> int:
-    """Returns a local port nothing listens on: one that was bound a moment ago and released."""
-    with socket.socket() as taken:
-        taken.bind(("127.0.0.1", 0))
-        port: int = taken.getsockname()[1]
-    return port
-
-
-def test_a_refused_connection_is_asked_again_and_then_reported(monkeypatch):
-    monkeypatch.setenv(api.KEY_VARIABLE, KEY)
-    monkeypatch.setattr(api, "RETRIES", 1)
-    waits: List[float] = []
-    # Windows takes about two seconds to report a refusal on this machine's own address, so the timeout is far above that
-    client = api.AnthropicClient(url=f"http://127.0.0.1:{closed_port()}/v1/messages", timeout=30, sleep=waits.append)
-    with pytest.raises(api.ApiError, match=r"^0 connection_error$"):
-        client.create({"model": "m"})
-    assert waits == [1.0]
-
-
-def failing_with(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> Tuple[List[float], int, str]:
-    """Makes every call of the client fail with the error. Returns its waits, how often it tried, and the error it reports."""
-    monkeypatch.setenv(api.KEY_VARIABLE, KEY)
-    attempts: List[float] = []
-
-    def ask(call: Any, timeout: float) -> Any:
-        attempts.append(timeout)
-        raise error
-
-    monkeypatch.setattr(api, "ask", ask)
-    waits: List[float] = []
-    with pytest.raises(api.ApiError) as caught:
-        api.AnthropicClient(sleep=waits.append).create({"model": "m"})
-    assert caught.value.status == 0
-    return waits, len(attempts), caught.value.kind
-
-
-@pytest.mark.parametrize(
-    "reason",
-    [
-        ConnectionRefusedError(61, "Connection refused"),
-        ConnectionRefusedError(10061, "refused, as Windows numbers it"),
-        socket.gaierror(8, "unknown name"),
-    ],
-    ids=["refused", "refused-on-windows", "name-not-found"],
-)
-def test_a_connection_that_was_never_made_is_asked_again_up_to_the_limit(monkeypatch, reason):
-    assert failing_with(monkeypatch, urllib.error.URLError(reason)) == ([1.0, 2.0, 4.0, 8.0], api.RETRIES + 1, "connection_error")
-
-
-@pytest.mark.parametrize(
-    "reason",
-    [
-        socket.timeout("timed out"),
-        TimeoutError("timed out"),
-        ConnectionResetError(54, "reset while sending"),
-        OSError(51, "unreachable"),
-        "odd",
-    ],
-    ids=["socket-timeout", "timeout", "reset", "unreachable", "not-an-exception"],
-)
-def test_a_timeout_while_connecting_or_any_other_failure_to_send_is_not_asked_again(monkeypatch, reason):
-    assert failing_with(monkeypatch, urllib.error.URLError(reason)) == ([], 1, "connection_error")
-
-
-@pytest.mark.parametrize(
-    "error",
-    [socket.timeout("timed out"), TimeoutError("timed out"), ConnectionResetError(54, "reset")],
-    ids=["socket-timeout", "timeout", "reset"],
-)
-def test_a_timeout_while_waiting_for_the_reply_is_not_asked_again(monkeypatch, error):
-    assert failing_with(monkeypatch, error) == ([], 1, "no_reply")
-
-
-def test_without_a_key_the_run_stops_with_a_hint_and_makes_no_call(monkeypatch, tmp_path):
-    monkeypatch.delenv(api.KEY_VARIABLE, raising=False)
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
-        wake.main(["--out", str(tmp_path)])
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_the_key_never_reaches_the_output_the_results_or_an_error(anthropic, tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(wake, "AnthropicClient", lambda: api.AnthropicClient(url=anthropic.url, sleep=lambda seconds: None))
-    anthropic.plan = [(401, failed("authentication_error"), {}), (200, says(f"A reply. {CAVEAT}"), {})]
-    code = wake.main(
-        ["--models", "m", "--samples", "2", "--cases", "emet-plainly-right", "--no-judge", "--workers", "1", "--out", str(tmp_path)]
+def test_the_child_gets_only_the_named_variables_and_runs_in_an_empty_temporary_directory(claude, monkeypatch):
+    routing = (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "HTTPS_PROXY",
     )
-    out = capsys.readouterr()
-    assert code == 0 and len(anthropic.seen) == 2
-    written = "".join(path.read_text(encoding="utf-8") for path in tmp_path.rglob("*") if path.is_file())
-    assert "api 401 authentication_error" in written and "A reply." in written
-    assert KEY not in written + out.out + out.err
-    assert KEY not in repr(api.AnthropicClient(url=anthropic.url)) + repr(api.ApiError(401, "authentication_error"))
+    for name in routing:
+        monkeypatch.setenv(name, KEY)
+    ask()
+    seen = claude.record()
+    cwd = Path(seen["cwd"])
+    assert not set(routing) & set(seen["env"]) and cwd.name.startswith("emet-eval-") and not cwd.exists()
+    assert "HOME" in seen["env"] and "PATH" in seen["env"]
+
+
+def test_the_request_max_tokens_caps_the_output_of_the_run(claude):
+    ask()
+    assert claude.record()["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "321"
+
+
+def test_every_enabled_tool_is_set_to_ask_so_the_run_denies_each_call_and_nothing_runs(claude):
+    ask()
+    assert json.loads(claude.flag("--settings")) == {"permissions": {"ask": ["Read", "Bash", "WebFetch"]}}
+
+
+def test_earlier_turns_go_in_as_a_transcript_and_the_latest_message_as_it_is(claude):
+    case = BY_ID["third-wake-in-a-session"]
+    ask(messages=case_data.messages(case))
+    sent = claude.record()["stdin"]
+    assert "<transcript>" in sent and case["earlier"][0]["request"] in sent and "toolu_eval_1" in sent
+    assert sent.rstrip().endswith(case_data.notice(case))
+
+
+def test_a_tool_the_model_tries_to_call_is_seen_under_the_name_the_case_uses(claude):
+    call = {"type": "tool_use", "id": "t", "name": "Read", "input": {"path": "a"}}
+    claude.answer(
+        {"type": "assistant", "message": {"content": [call], "stop_reason": "tool_use"}},
+        {**RESULT, "subtype": "error_max_turns", "is_error": True},
+        code=1,
+    )
+    reply = ask()
+    assert reply["stop_reason"] == "tool_use" and reply["content"][0]["name"] == "read_file"
+    assert wake.run_sample(api.ClaudeCodeClient(), "m", BY_ID["emet-plainly-right"], 1)["reply"]["tools"][0]["name"] == "read_file"
+
+
+@pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
+def test_a_refusal_and_a_cut_reply_keep_their_stop_reasons_so_they_are_not_graded(claude, stop):
+    claude.answer(said("", stop), RESULT)
+    sample = wake.run_sample(api.ClaudeCodeClient(), "m", BY_ID["emet-plainly-right"], 1)
+    assert sample["error"] == stop and sample["checks"] == {}
+
+
+@pytest.mark.parametrize(
+    ("lines", "code", "expected"),
+    [
+        ([], 1, "^1 claude_exit$"),
+        ([said("x")], 0, "^0 claude_exit$"),
+        ([RESULT], 0, "^0 success$"),
+        ([said("x"), {**RESULT, "subtype": "error_during_execution", "is_error": True}], 0, "^0 error_during_execution$"),
+        ([{"type": "system", "subtype": "hook_started"}, said("x"), RESULT], 0, "^0 hook_ran$"),
+    ],
+    ids=["non-zero-exit", "no-result", "nothing-said", "error-result", "a-hook-ran"],
+)
+def test_a_failed_call_is_an_error_with_no_content_and_leaves_the_sample_not_graded(claude, lines, code, expected):
+    claude.answer(*lines, code=code)
+    with pytest.raises(api.ApiError, match=expected):
+        ask()
+    sample = wake.run_sample(api.ClaudeCodeClient(), "m", BY_ID["emet-plainly-right"], 1)
+    assert sample["error"].startswith("api ") and sample["checks"] == {}
+
+
+@pytest.mark.parametrize("stream", ['{"type": "assist', "[1, 2]", '"text"'], ids=["broken-json", "a-list", "a-string"])
+def test_a_stream_that_is_not_json_objects_is_an_error_and_leaves_the_sample_not_graded(claude, stream):
+    (claude.folder / "canned.txt").write_text(stream + "\n", encoding="utf-8")
+    with pytest.raises(api.ApiError, match=r"^0 bad_stream$"):
+        ask()
+    sample = wake.run_sample(api.ClaudeCodeClient(), "m", BY_ID["emet-plainly-right"], 1)
+    assert sample["error"].startswith("api ") and sample["checks"] == {}
+
+
+def test_a_call_that_runs_too_long_is_stopped_and_reported(claude):
+    (claude.folder / "claude").write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n", encoding="utf-8")
+    with pytest.raises(api.ApiError, match=r"^0 timeout$"):
+        api.ClaudeCodeClient(timeout=0.5).create(
+            {"model": "m", "system": "", "max_tokens": 9, "messages": [{"role": "user", "content": "x"}]}
+        )
+
+
+def test_the_judge_runs_through_the_same_client_with_the_rubric_and_no_tools(claude):
+    verdict = json.dumps({"critique": "Neutral.", "verdict": "pass"})
+    claude.answer(said("```json\n" + verdict + "\n```"), RESULT)
+    assert graders.judge(api.ClaudeCodeClient(), "claude-opus-5-5", BY_ID["emet-plainly-right"], "A reply.") == (True, "Neutral.")
+    assert claude.flag("--model") == "claude-opus-5-5" and claude.flag("--tools") == ""
+    assert claude.flag("--system-prompt").startswith(rules.JUDGE_RUBRIC)
+
+
+def test_without_claude_on_the_path_the_run_stops_and_the_offline_run_needs_no_login(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(SystemExit, match="claude command is not on PATH"):
+        wake.main(["--out", str(tmp_path / "out")])
+    assert wake.main(["--offline", "--samples", "1", "--out", str(tmp_path / "off")]) == 0
 
 
 def test_text_is_read_from_text_blocks_only():
