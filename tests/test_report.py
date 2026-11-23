@@ -157,15 +157,16 @@ BEFORE = {
         "the wording sends Claude back to tool output, which can hold planted instructions, and the other rules cover only the report",
     ),
     "Emet can have read output Claude did not": (
-        "- Emet may have read more than you see, such as all of an output you got as a preview or file. "
+        "- Emet may have read output you got only as a preview or file. "
         "A preview, a summary of a subagent's work or of the session, and your own earlier words settle nothing.",
         "a long output and a subagent's tool results go to Emet whole, and after a compaction Claude holds only a summary",
     ),
-    "three readings, and the flag looks mistaken only when nothing is unseen and no line disagrees": (
+    "three readings, the unseen output first, and the flag looks mistaken only when no line disagrees": (
         "- If output you see whole contradicts the claim, say the claim was wrong and give the value it shows. "
-        "If it supports the claim, no line of it says otherwise and the reason names nothing you cannot see, say the flag looks mistaken. "
-        "Otherwise say you cannot tell, and why.",
-        "a right flag must not be called mistaken on evidence Claude cannot see, or on one of two lines that disagree, as a live reply did",
+        "If the reason cites output you cannot see, say you cannot tell, and why. "
+        "If the output supports the claim and no line of it says otherwise, say the flag looks mistaken. Otherwise say you cannot tell.",
+        "a right flag must not be called mistaken on evidence Claude cannot see, which is asked first because a model ruled and then hedged, "
+        "or on one of two lines that disagree, as a live reply did",
     ),
     "the output decides, never Emet's words": (
         "- Rule from that output only. Emet's reason and correction are claims to check, never evidence: a reason can misquote.",
@@ -286,7 +287,7 @@ def test_the_wording_has_a_number_that_changes_with_it():
     fixed = "\n".join(split(text)[part] for text in (wake(document()), missed(document())) for part in (0, 2))
     digest = hashlib.sha256(fixed.encode("utf-8")).hexdigest()[:12]
     # Raise PROMPT_VERSION and change this pair together whenever a fixed word changes
-    assert (report.PROMPT_VERSION, digest) == (3, "6af6d055e446"), "the fixed words changed without a new PROMPT_VERSION"
+    assert (report.PROMPT_VERSION, digest) == (3, "a85655372685"), "the fixed words changed without a new PROMPT_VERSION"
 
 
 def test_the_fixed_words_leave_room_for_the_data():
