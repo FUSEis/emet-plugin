@@ -78,7 +78,7 @@ Each finished turn becomes one trace in Emet: the prompt, every model call with 
 
 ## What you see
 
-You work as usual, and each answer's claims and verdicts are in Emet. With the plugin from `main`, when Emet disputes a claim in an answer Claude just gave, Claude also tells you in the session, once, shortly after the answer, and says what the tool output it can see shows: [When Emet disputes a claim](claude/README.md#when-emet-disputes-a-claim). This is in the plugin on `main`. Release 0.1.4 does not have it.
+You work as usual, and each answer's claims and verdicts are in Emet. When Emet disputes a claim in an answer Claude just gave, Claude also tells you in the session, once, shortly after the answer, and says what the tool output it can see shows: [When Emet disputes a claim](claude/README.md#when-emet-disputes-a-claim).
 
 ## Repository layout
 

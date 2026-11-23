@@ -7,7 +7,7 @@ An administrator can install and configure the Emet plugin for every developer a
 - **The key:** in Emet, open **Applications**, then **Manage keys**, and mint one key for the team, choosing the team in its **Team** field. Every developer on the team sends with it. A key pinned to a team sends only to that team, whatever Team ID a machine reports; a key left unpinned can send to any team of your organization.
 - **The Team ID:** the **External ID** of the team, under **Teams** in Emet.
 - **The developers:** Emet attributes a turn to a person by matching their email against the members of your Emet organization. Invite each developer to Emet with the email they sign in to Claude with. A developer who is not a member still sends turns; they appear under the team, with no person, and the developer cannot open the report links the plugin shows them.
-- **Tell the developers:** before the rollout, tell them that each turn goes to Emet under their name, with the capture mode you chose, and link [what is sent](../claude/README.md#what-is-sent). Developers cannot turn the plugin off. With the plugin from `main`, also tell them that Claude may speak once more after an answer, or begin its next answer with it, to say what Emet disputed, why, and what the tool output it can see shows: see [When Emet disputes a claim](../claude/README.md#when-emet-disputes-a-claim). This is in the plugin on `main`. Release 0.1.4 does not have it. Give developers without a Claude sign-in the command in section 4.
+- **Tell the developers:** before the rollout, tell them that each turn goes to Emet under their name, with the capture mode you chose, and link [what is sent](../claude/README.md#what-is-sent). Developers cannot turn the plugin off. Also tell them that Claude may speak once more after an answer, or begin its next answer with it, to say what Emet disputed, why, and what the tool output it can see shows: see [When Emet disputes a claim](../claude/README.md#when-emet-disputes-a-claim). Give developers without a Claude sign-in the command in section 4.
 
 ## 2. Pick a version
 
@@ -23,7 +23,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 {
   "extraKnownMarketplaces": {
     "emet-plugin": {
-      "source": { "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.4" },
+      "source": { "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.2.0" },
       "autoUpdate": false
     }
   },
@@ -47,7 +47,7 @@ Deliver these through the Claude admin console (server-managed settings), MDM, o
 - `enabledPlugins: true` in managed settings turns the plugin on for everyone, and developers cannot turn it off.
 - Options in managed `pluginConfigs` take precedence over a developer's own, so the team and capture mode cannot be changed locally. A project's `.claude/settings.json` cannot set `pluginConfigs` at all, and the plugin refuses any destination other than Emet. A project's `env` can still set an option nobody else set, such as a key on a machine that has none; with the key and options in managed settings, a cloned repository cannot change how much traces hold, or send them anywhere but Emet or a program listening on the developer's own machine (`localhost`, `127.0.0.1`, `::1`), which then receives the key and the turns. The plugin allows that for its own development, and `/emet:status` says when turns go anywhere but Emet.
 - The key goes in `env` because `pluginConfigs` cannot hold a secret option. Claude Code reads it when it starts and passes it to the plugin's hooks. A key a developer saved with `/plugin configure` takes precedence over it, so ask developers not to enter one.
-- If you use `strictKnownMarketplaces`, add `{ "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.1.4" }` to the allowlist. An allowlist entry matches only the same `ref`.
+- If you use `strictKnownMarketplaces`, add `{ "source": "github", "repo": "FUSEis/emet-plugin", "ref": "v0.2.0" }` to the allowlist. An allowlist entry matches only the same `ref`.
 - For developers on several Emet teams, deliver one profile per group, each with its own Team ID and key.
 
 ### What a key in managed settings means
@@ -105,5 +105,5 @@ Images and binary content are never sent in any mode.
 - It sends only to Emet (`https://app.emet.so`), over HTTPS, and refuses any other destination. The one exception is an Emet on the same machine, for plugin development.
 - It reads the session transcript, saved tool outputs and subagent transcripts in Claude Code's own project folder, and nothing outside it. It also parses Claude Code's account file (`~/.claude.json`) and keeps only `oauthAccount.emailAddress`. It runs no other program.
 - It writes only to its own data folder, with owner-only permissions on macOS and Linux. On Windows it has the access rules of the folder it sits in, normally the user profile. The status file and log never hold content or the key.
-- With the plugin from `main`, it also reads Emet's report on each turn it sent, and can hand Claude a notice about a report Emet flagged, which makes Claude speak once more, after the answer or with the developer's next prompt. [SECURITY.md](../SECURITY.md#what-it-does-not-trust) says how the report's text is handled before Claude reads it, and [claude/README.md](../claude/README.md#when-emet-disputes-a-claim) says when this happens. This is in the plugin on `main`. Release 0.1.4 does not have it.
+- It also reads Emet's report on each turn it sent, and can hand Claude a notice about a report Emet flagged, which makes Claude speak once more, after the answer or with the developer's next prompt. [SECURITY.md](../SECURITY.md#what-it-does-not-trust) says how the report's text is handled before Claude reads it, and [claude/README.md](../claude/README.md#when-emet-disputes-a-claim) says when this happens.
 - [claude/README.md](../claude/README.md#what-is-sent) lists every field it sends in each mode.
