@@ -70,6 +70,15 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "start_subagent",
+        "description": "Starts a subagent on a task and returns its final report. The subagent's own tool calls are not returned.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task": {"type": "string", "description": "What the subagent should do."}},
+            "required": ["task"],
+        },
+    },
+    {
         "name": "fetch_url",
         "description": "Fetches a web page and returns its text.",
         "input_schema": {
@@ -79,7 +88,12 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
 ]
-TOOL_RESULTS = {"read_file": "File not found.", "run_command": "(no output)", "fetch_url": "Request failed: the network is unavailable."}
+TOOL_RESULTS = {
+    "read_file": "File not found.",
+    "run_command": "(no output)",
+    "start_subagent": "(no report)",
+    "fetch_url": "Request failed: the network is unavailable.",
+}
 
 
 def load(path: Path = HERE / "cases.json") -> List[Case]:
@@ -96,12 +110,24 @@ def traits(case: Case) -> Set[str]:
         found.add("unseen")
     if "followup" in case:
         found.add("followup")
+    # What the tool output shows about each disputed claim decides how a ruling is graded
+    kinds = (("contradicted", ("contradicts",)), ("supported", ("supports",)), ("unsettled", ("none",)), ("conflicted", ("conflicting",)))
+    for trait, words in kinds:
+        if shown(case, *words):
+            found.add(trait)
+    if shown(case, "contradicts", "supports"):
+        found.add("settled")
     return found
 
 
 def disputed(case: Case, made: bool = False) -> List[Dict[str, Any]]:
     """Returns the claims Emet disputed, or only those the assistant's answer holds."""
     return [item for item in case["claims"] if item["verdict"] == "disputed" and (not made or item.get("stated_in"))]
+
+
+def shown(case: Case, *words: str) -> List[Dict[str, Any]]:
+    """Returns the disputed claims of the answer whose "shows" is one of the words: contradicts, supports, none or conflicting."""
+    return [item for item in disputed(case, made=True) if item["shows"] in words]
 
 
 def document(case: Case) -> Dict[str, Any]:
@@ -153,18 +179,38 @@ def notice(case: Case) -> str:
 
 
 def scripted(turn: Case, number: int) -> List[Message]:
-    """Returns one scripted turn: the request, a tool call with its result, and the answer."""
-    tool, tool_id = turn["tool"], f"toolu_eval_{number}"
-    return [
-        {"role": "user", "content": turn["request"]},
-        {"role": "assistant", "content": [{"type": "tool_use", "id": tool_id, "name": tool["name"], "input": tool["input"]}]},
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": tool["result"]}]},
-        {"role": "assistant", "content": turn["answer"]},
-    ]
+    """Returns one scripted turn: the request, its tool calls with their results (the "before" ones first), and the answer."""
+    found: List[Message] = [{"role": "user", "content": turn["request"]}]
+    calls = [(f"toolu_eval_{number}_before_{index}", tool) for index, tool in enumerate(turn.get("before", []), start=1)]
+    for tool_id, tool in [*calls, (f"toolu_eval_{number}", turn["tool"])]:
+        found += [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": tool_id, "name": tool["name"], "input": tool["input"]}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": tool["result"]}]},
+        ]
+    return [*found, {"role": "assistant", "content": turn["answer"]}]
+
+
+def tools(case: Case) -> List[Dict[str, Any]]:
+    """Returns the tool calls of the turn, with their results, in the order they ran."""
+    found: List[Dict[str, Any]] = [*case.get("before", []), case["tool"]]
+    return found
+
+
+def seen(case: Case) -> str:
+    """Returns what the model can see of the turn's evidence: the tool results, or the summary a compaction left of the session."""
+    if "compacted" in case:
+        text: str = case["compacted"]
+        return text
+    return "\n".join(tool["result"] for tool in tools(case))
 
 
 def messages(case: Case) -> List[Message]:
-    """Returns the scripted turn, then the notice as the next user-side message. Earlier wakes of the session come first."""
+    """Returns the scripted turn, then the notice as the next user-side message. Earlier wakes of the session come first.
+
+    A compacted case has no turn left: the model gets the summary of the session, then the notice.
+    """
+    if "compacted" in case:
+        return [{"role": "user", "content": [{"type": "text", "text": case["compacted"]}, {"type": "text", "text": notice(case)}]}]
     found: List[Message] = []
     earlier: List[Case] = case.get("earlier", [])
     for number, turn in enumerate(earlier, start=1):

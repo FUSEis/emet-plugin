@@ -343,7 +343,7 @@ def arguments(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser.add_argument("--models", nargs="+", default=list(MODELS), metavar="ID", help="model ids to test (default: %(default)s)")
     parser.add_argument("--samples", type=int, default=SAMPLES, metavar="N", help="samples per case and model (default: %(default)s)")
     parser.add_argument("--cases", nargs="+", default=[], metavar="ID", help="run only these case ids")
-    parser.add_argument("--judge-model", default=JUDGE_MODEL, metavar="ID", help="model for the neutrality grader (default: %(default)s)")
+    parser.add_argument("--judge-model", default=JUDGE_MODEL, metavar="ID", help="model for the model grader (default: %(default)s)")
     parser.add_argument("--no-judge", action="store_true", help="skip the model grader and its agreement check")
     parser.add_argument(
         "--effort", choices=EFFORTS, default="", help="output_config.effort for the tested models (default: each model's own)"

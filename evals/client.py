@@ -20,7 +20,7 @@ FLAGS = [
     *("--output-format", "stream-json", "--verbose", "--max-turns", "1"),
 ]
 # The case's stand-in tools, as Claude Code names them
-TOOLS = {"read_file": "Read", "run_command": "Bash", "fetch_url": "WebFetch"}
+TOOLS = {"read_file": "Read", "run_command": "Bash", "fetch_url": "WebFetch", "start_subagent": "Agent"}
 # What the child needs to find the login and run; provider and routing overrides stay out
 ENV_NAMES = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TERM")
 # A case scripts this many assistant turns before its notice, and this many more for each earlier wake in the session
@@ -141,20 +141,24 @@ class ReplayClient:
             graded = json.loads(request["messages"][0]["content"])["reply_to_grade"]
             verdict = {"critique": "Replayed from the hand label.", "verdict": self.labels.get(graded, "pass")}
             return message([{"type": "text", "text": json.dumps(verdict)}])
-        scripted, steps = self.by_request[request["messages"][0]["content"]]
+        first = request["messages"][0]["content"]
+        scripted, steps = self.by_request[first if isinstance(first, str) else first[0]["text"]]
         taken = sum(1 for item in request["messages"] if item["role"] == "assistant")
         step = steps[taken - scripted]
         return message([{"type": "text", "text": step}] if isinstance(step, str) else step)
 
 
 def opening(case: Dict[str, Any]) -> str:
-    """Returns the first user message of the case's conversation."""
-    first: str = (case.get("earlier") or [case])[0]["request"]
+    """Returns the first text the model reads in the case's conversation."""
+    first: str = case["compacted"] if "compacted" in case else (case.get("earlier") or [case])[0]["request"]
     return first
 
 
 def scripted_turns(case: Dict[str, Any]) -> int:
-    return SCRIPTED_ASSISTANT_TURNS + EARLIER_WAKE_TURNS * len(case.get("earlier", []))
+    if "compacted" in case:
+        return 0
+    # One more assistant turn for each tool call that ran before the last one
+    return SCRIPTED_ASSISTANT_TURNS + len(case.get("before", [])) + EARLIER_WAKE_TURNS * len(case.get("earlier", []))
 
 
 def message(content: List[Dict[str, Any]], stop_reason: str = "") -> Dict[str, Any]:
