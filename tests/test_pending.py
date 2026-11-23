@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from emet_claude import commands, envelope, pending, report, storage, timestamps, transport, watch
+from emet_claude import checks, commands, envelope, pending, report, storage, timestamps, transport
 from helpers import WAKE_WRAPPER, Transcript, links, pipes
 from test_report import document
 
@@ -26,7 +26,7 @@ def finished_turn(transcript, text="What is 2 + 2?", answer="4"):
 def woken_turn(transcript, environ, clock, handed=True, answer="Emet disputes one claim."):
     """The turn Claude takes after this plugin woke it with a report. With handed, the poller recorded that wake."""
     if handed:
-        assert watch.record(root(environ), transcript.session_id, TRACE, "flagged", {"handed": True})
+        assert checks.record(root(environ), transcript.session_id, TRACE, "flagged", {"handed": True})
     started = timestamps.text(datetime.fromtimestamp(clock.now + 14, timezone.utc))
     text = WAKE_WRAPPER + report.wake_message(document(), "https://app.emet.so", "session-1")
     prompt = transcript.notice(text, timestamp=started)
@@ -484,11 +484,11 @@ def test_a_notice_with_the_wake_text_is_not_marked_unless_the_poller_recorded_a_
     ],
 )
 def test_only_a_flagged_report_handed_to_claude_counts_as_a_wake_for_the_sender(environ, clock, line, counts):
-    assert watch.record(root(environ), "session-1", TRACE, "flagged", line)
-    assert watch.record(root(environ), "session-1", TRACE, "wake_turn", {"handed": True})
-    assert watch.record(root(environ), "session-2", TRACE, "flagged", {"handed": True})
-    assert watch.handed_times(root(environ), "session-1") == ([clock.now] if counts else [])
-    assert watch.handed_times(root(environ), "session-3") == []
+    assert checks.record(root(environ), "session-1", TRACE, "flagged", line)
+    assert checks.record(root(environ), "session-1", TRACE, "wake_turn", {"handed": True})
+    assert checks.record(root(environ), "session-2", TRACE, "flagged", {"handed": True})
+    assert checks.handed_times(root(environ), "session-1") == ([clock.now] if counts else [])
+    assert checks.handed_times(root(environ), "session-3") == []
 
 
 def trace_lines(environ, session_id="session-1"):

@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 
-from emet_claude import commands, pending, report, storage, timestamps, watch
+from emet_claude import checks, commands, pending, report, sessions, storage, timestamps, watch
 from helpers import FakeEmet, Transcript
 from test_report import claim, document
 
@@ -33,7 +33,7 @@ BEYOND_ASCII = "São Paulo → \U00020bb7"
 # Above the 8 seconds an unchanged run waits before its first read, with room for a slow machine
 PROCESS_TIMEOUT_S = 60
 # Names of the developer's own session that would change what the child does
-INHERITED = ("CLAUDE_PLUGIN_OPTION_", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR", watch.ENTRYPOINT_NAME, "PYTHONPATH", "PYTHONIOENCODING")
+INHERITED = ("CLAUDE_PLUGIN_OPTION_", "CLAUDE_PLUGIN_DATA", "CLAUDE_CONFIG_DIR", sessions.ENTRYPOINT_NAME, "PYTHONPATH", "PYTHONIOENCODING")
 Result = Tuple[int, bytes, bytes]
 
 
@@ -111,7 +111,7 @@ def finish(environ: Dict[str, str]) -> None:
 
 
 def outcomes(environ: Dict[str, str]) -> List[Tuple[str, str]]:
-    return [(item["trace_uuid"], item["outcome"]) for item in watch.checks(root(environ), SESSION)]
+    return [(item["trace_uuid"], item["outcome"]) for item in checks.checks(root(environ), SESSION)]
 
 
 def log(environ: Dict[str, str]) -> str:
@@ -200,8 +200,8 @@ def test_a_flagged_report_of_a_turn_that_ended_too_long_ago_ends_the_process_wit
     assert result == (0, b"", b""), (
         "a report that comes after the user has moved on must not wake Claude: exit 0 and nothing on either stream"
     )
-    held = [(item["outcome"], item["handed"], item["held"]) for item in watch.checks(root(environ), SESSION)]
-    assert held == [("flagged", False, watch.LATE)], "the report was read and kept for later, and the record says why Claude was not woken"
+    held = [(item["outcome"], item["handed"], item["held"]) for item in checks.checks(root(environ), SESSION)]
+    assert held == [("flagged", False, checks.LATE)], "the report was read and kept for later, and the record says why Claude was not woken"
 
 
 @pytest.mark.parametrize("word", sorted(set(report.STATUS_WORDS) - {report.FLAGGED}), ids=lambda word: f"report_is_{word}")
