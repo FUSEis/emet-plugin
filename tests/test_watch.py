@@ -6,6 +6,7 @@ import re
 import socket
 import stat
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 
 from conftest import API_KEY
 from emet_claude import commands, config, pause, pending, report, storage, timestamps, transport, watch
-from helpers import WAKE_WRAPPER, Transcript
+from helpers import WAKE_WRAPPER, Transcript, links, pipes
 from test_report import claim, document
 
 SESSION = "session-1"
@@ -2568,15 +2569,6 @@ def test_a_verdict_file_that_cannot_be_read_once_open_is_unreadable_and_is_close
     assert len(closed) == 1
 
 
-@pytest.fixture(params=["as the system is", "as on Windows"])
-def link_flag(request, monkeypatch):
-    """Runs a test as the system is, and again without the flag that refuses a link at the open, which Windows does not have."""
-    if request.param == "as on Windows":
-        monkeypatch.setattr(storage, "READ_FLAGS", storage.READ_FLAGS & ~storage.NOFOLLOW)
-        monkeypatch.setattr(storage, "NOFOLLOW", 0)
-    return storage.NOFOLLOW
-
-
 def test_a_verdict_file_is_opened_once_and_judged_by_what_was_opened(environ, clock, monkeypatch, link_flag):
     good = verdict_of(clock)
     seen = {"open": [], "fstat": [], "read": [], "by name": [], "link?": []}
@@ -3118,3 +3110,89 @@ def test_a_command_of_the_plugin_starts_a_turn_that_is_sent_unchanged_and_never_
     assert (held["handed"], held["held"]) == (False, "newer_turn")
     # Only the report of the first answer is saved, for /emet:status to list
     assert [path.name.split(".")[1] for path in (root(environ) / "verdicts").glob("*.json")] == [first]
+
+
+@links
+@pytest.mark.parametrize("exists", [True, False])
+def test_a_link_at_the_checks_file_is_removed_and_the_outcome_is_written_to_a_new_file(tmp_path, environ, link_flag, exists):
+    outside = tmp_path / "outside.jsonl"
+    if exists:
+        outside.write_text("untouched", encoding="utf-8")
+    path = watch.checks_path(root(environ), SESSION)
+    path.symlink_to(outside)
+    assert watch.record(root(environ), SESSION, T1, "clear") is True
+    assert outside.read_text(encoding="utf-8") == "untouched" if exists else not outside.exists()
+    assert not path.is_symlink() and path.is_file()
+    assert outcomes(environ) == [(T1, "clear", True)]
+    assert log(environ).count("checks file was a link, removed") == 1
+    assert watch.record(root(environ), SESSION, T1, "clear") is True
+    assert log(environ).count("checks file was a link, removed") == 1 and len(outcomes(environ)) == 2
+
+
+@links
+def test_a_link_put_at_the_checks_file_after_the_look_is_refused_by_the_open(tmp_path, environ, monkeypatch):
+    outside = tmp_path / "outside.jsonl"
+    path = watch.checks_path(root(environ), SESSION)
+    path.symlink_to(outside)
+    # The look sees no link, as when one is planted between the look and the open
+    monkeypatch.setattr(type(path), "is_symlink", lambda self: False)
+    assert watch.record(root(environ), SESSION, T1, "clear") is False
+    assert not outside.exists()
+    assert f"report {T1} -> clear, not recorded OSError" in log(environ)
+    assert not (root(environ) / "status.json").exists()
+
+
+@links
+def test_a_link_at_the_checks_file_is_not_read_and_reading_leaves_it(tmp_path, environ):
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(json.dumps({"trace_uuid": T1, "outcome": "clear", "final": True}) + "\n", encoding="utf-8")
+    path = watch.checks_path(root(environ), SESSION)
+    path.symlink_to(outside)
+    assert watch.checks(root(environ), SESSION) == []
+    assert path.is_symlink()
+
+
+@pipes
+@pytest.mark.parametrize("writer", [False, True])
+def test_a_pipe_at_the_checks_file_is_read_as_empty_without_waiting(environ, writer):
+    path = watch.checks_path(root(environ), SESSION)
+    os.mkfifo(path)
+    # A pipe takes a writer only while it has a reader. With one that writes nothing, a read that does not wait has no answer
+    ends = [os.open(path, os.O_RDONLY | os.O_NONBLOCK), os.open(path, os.O_WRONLY | os.O_NONBLOCK)] if writer else []
+    found = []
+    # On another thread, so an open that waits for a writer fails the test and does not hang it
+    waiter = threading.Thread(target=lambda: found.append(watch.checks(root(environ), SESSION)), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    for end in ends:
+        os.close(end)
+    assert found == [[]]
+
+
+@pipes
+def test_a_pipe_at_the_checks_file_is_not_written_and_nothing_waits(environ):
+    os.mkfifo(watch.checks_path(root(environ), SESSION))
+    recorded = []
+    waiter = threading.Thread(target=lambda: recorded.append(watch.record(root(environ), SESSION, T1, "clear")), daemon=True)
+    waiter.start()
+    waiter.join(5)
+    assert recorded == [False]
+    assert f"report {T1} -> clear, not recorded OSError" in log(environ)
+
+
+def test_a_folder_at_the_checks_file_leaves_no_descriptor_open(environ, monkeypatch):
+    watch.checks_path(root(environ), SESSION).mkdir()
+    opened = []
+    real = os.open
+
+    def kept(*args, **kwargs):
+        opened.append(real(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(os, "open", kept)
+    assert watch.checks(root(environ), SESSION) == []
+    assert watch.record(root(environ), SESSION, T1, "clear") is False
+    monkeypatch.undo()
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
