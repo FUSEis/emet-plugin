@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from conftest import API_KEY
-from emet_claude import commands, config, pause, pending, report, storage, timestamps, transport, watch
-from helpers import UTC_FORM, WAKE_WRAPPER, Transcript, links, old_form, pipes
+from emet_claude import commands, config, missed, pause, pending, report, storage, timestamps, transport, watch
+from helpers import UTC_FORM, WAKE_WRAPPER, Transcript, fork_of, links, old_form, pipes
 from test_report import claim, document
 
 SESSION = "session-1"
@@ -3384,6 +3384,51 @@ def test_a_command_of_the_plugin_starts_a_turn_that_is_sent_unchanged_and_never_
     assert (held["handed"], held["held"]) == (False, "newer_turn")
     # Only the report of the first answer is saved, for /emet:status to list
     assert [path.name.split(".")[1] for path in (root(environ) / "verdicts").glob("*.json")] == [first]
+
+
+def test_a_fork_is_told_nothing_about_the_turns_it_copied_and_its_own_turn_is_checked_as_usual(
+    transcript, environ, emet, clock, capfdbinary, sender_on_the_clock
+):
+    # The first session: a flagged answer, the wake, and the turn the wake started
+    transcript.prompt("How did March go?")
+    transcript.text("msg_1", "Spend rose 12% in March.")
+    send(transcript, environ)
+    (first,) = pending.traces(root(environ), SESSION)
+    emet.report(first, 200, document())
+    assert stop(transcript, environ) == 2
+    _, err = capfdbinary.readouterr()
+    transcript.notice(WAKE_WRAPPER + err.decode("utf-8"))
+    transcript.text("msg_2", "Emet disputes this: spend rose 12% in March.")
+    send(transcript, environ)
+    assert len(emet.envelopes) == 2
+    # A day later the session is forked, and Claude Code copies its entries to the new session's file
+    clock.advance(86400)
+    fork = fork_of(transcript)
+    # An Emet that takes a turn sent again for a new one, and flags whatever it is asked about
+    emet.trace_uuids.clear()
+    emet.read_replies = [(200, "application/json", json.dumps(document()).encode())] * 8
+    commands.process(fork.hook_input(), environ, wait=0, turn_ended=False)
+
+    def with_the_prompt(prompt_id):
+        asked = {**fork.hook_input(), "hook_event_name": "UserPromptSubmit", "prompt": "And April?", "prompt_id": prompt_id}
+        return missed.choose(json.dumps(asked).encode(), environ)
+
+    assert with_the_prompt("prompt-3") == ""
+    own = fork.prompt("And April?", promptId="prompt-3")
+    clock.advance(3)
+    fork.text("msg_3", "April was flat.")
+    send(fork, environ)
+    # Neither the copied answer nor the copied wake turn, whose prompt is Emet's own report text
+    assert [env["trace_id"] for env in emet.envelopes[2:]] == [own["uuid"]]
+    assert "emet-report-data" not in json.dumps(emet.envelopes[2:])
+    assert pending.traces(root(environ), "session-2") == [emet.trace_uuids[own["uuid"]]]
+    assert stop(fork, environ, prompt_id="prompt-3") == 2
+    assert capfdbinary.readouterr()[1] != b""
+    assert outcomes(environ, "session-2") == [(emet.trace_uuids[own["uuid"]], "flagged", True)]
+    assert len(emet.reads) == 2
+    assert [path.name.split(".")[:2] for path in (root(environ) / "verdicts").glob("session-2.*")] == [
+        ["session-2", emet.trace_uuids[own["uuid"]]]
+    ]
 
 
 @links

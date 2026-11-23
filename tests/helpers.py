@@ -175,6 +175,22 @@ class Transcript:
         return {"session_id": self.session_id, "transcript_path": str(self.path), "cwd": "/work/acme-app", "hook_event_name": "Stop"}
 
 
+def fork_of(transcript: Transcript, session_id: str = "session-2", change: Any = None) -> Transcript:
+    """Writes the session's entries to a new session's file, as Claude Code 2.1.305 does for /branch.
+
+    Each copy keeps its uuid, promptId and timestamp and carries forkedFrom. change is given each copy and its place.
+    """
+    fork = Transcript(transcript.path.parent, session_id)
+    with open(transcript.path, encoding="utf-8") as source, open(fork.path, "w", encoding="utf-8", newline="\n") as target:
+        for index, line in enumerate(source):
+            entry = json.loads(line)
+            entry.update(sessionId=session_id, forkedFrom={"sessionId": transcript.session_id, "messageUuid": entry["uuid"]})
+            if change:
+                change(index, entry)
+            target.write(json.dumps(entry) + "\n")
+    return fork
+
+
 # The one form the plugin writes a time in: UTC, milliseconds, Z
 UTC_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 
