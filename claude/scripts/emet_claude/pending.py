@@ -9,7 +9,9 @@ and was never sent, with the error's type as its reason. A refused line names a 
 for good, by the id the plugin sent it under, with the HTTP status and the endpoint that refused it.
 It holds no trace_uuid, so it is never read as a report to fetch. A trace line with started_by
 names a turn that this plugin started or was asked for: the turn after a wake, or a turn one of
-its own commands started. Its report is never read. A trace line also names the turn itself when the sender could: prompt_id is Claude
+its own commands started. Its report is never read. A trace line with turn_origin names a turn
+Claude Code started on a schedule. Its report is read, and Claude is never woken with it.
+A trace line also names the turn itself when the sender could: prompt_id is Claude
 Code's id of the turn, and ended is the time of the turn's last entry, in UTC with milliseconds.
 Both stay on this machine. The poller tells by them which turn a report is about.
 """
@@ -32,6 +34,9 @@ SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 STARTED_BY = "started_by"
 # Its value for a turn one of the plugin's own commands started, such as /emet:status
 OWN_COMMAND = "own_command"
+# The key that marks a trace line as a turn Claude Code started on a schedule, and its one value. Such a turn is polled
+TURN_ORIGIN = "turn_origin"
+SCHEDULED = "scheduled"
 
 
 def plain(value: Any) -> str:
@@ -113,11 +118,13 @@ def note(
     started_by: str = "",
     prompt_id: str = "",
     ended: str = "",
+    turn_origin: str = "",
 ) -> None:
     """Keeps the id of a turn Emet accepted, with Emet's id of its conversation when the reply gave one.
 
     started_by names what of this plugin started the turn, a hook or a command, and marks the line as one whose report is never read.
     prompt_id and ended name the turn itself: Claude Code's id of it and the time of its last entry.
+    turn_origin is "scheduled" for a turn Claude Code started on a schedule, else "".
     """
     item: Dict[str, Union[str, int]] = {"trace_uuid": trace_uuid, "at": storage.now(), "endpoint": endpoint}
     if conversation_uuid:
@@ -128,6 +135,8 @@ def note(
         item["prompt_id"] = prompt_id
     if ended:
         item["ended"] = ended
+    if turn_origin:
+        item[TURN_ORIGIN] = turn_origin
     append(root, session_id, item, once=trace_uuid)
 
 

@@ -9,8 +9,9 @@ for the user. It never sets a field that can block or change the prompt.
 The checks file decides, and the verdict file only supplies the text. A verdict is shown when
 its `flagged` line says Claude was not woken ("handed" false), or says it was, no watcher of the
 session is still running, and the session file holds no wake since. It is shown once, in the session that produced it, one per prompt,
-the newest first, and at most SHOW_CAP times in a session. The showing is recorded as `shown`
-before anything is printed, and the file is removed then, so a crash can lose a showing and never
+the newest first, and at most SHOW_CAP times in a session. The verdicts of turns Claude Code started on a schedule
+are counted apart, up to SCHEDULED_SHOW_CAP, so a loop cannot use up the showings of a person's own turns.
+The showing is recorded as `shown` before anything is printed, and the file is removed then, so a crash can lose a showing and never
 repeat one.
 """
 
@@ -28,6 +29,8 @@ from . import pause, pending, report, storage, timestamps, transcript, watch
 EVENT = "UserPromptSubmit"
 # Showings per session, counted apart from the wakes: a report held back by the wake cap is shown here
 SHOW_CAP = 3
+# The same for the reports of turns Claude Code started on a schedule, counted apart from the ones above
+SCHEDULED_SHOW_CAP = 3
 # A wake handed over less than this long ago may not be in the session file yet, so it is not judged
 HANDED_GRACE_S = 10
 # What a slash command and a shell escape begin with. No model call answers most of them
@@ -141,6 +144,12 @@ def recorded(found: List[Dict[str, Any]], verdict: Dict[str, Any]) -> Optional[D
     return lines[-1] if lines else None
 
 
+def on_schedule(found: List[Dict[str, Any]], item: Dict[str, Any]) -> bool:
+    """Says whether the report is of a turn Claude Code started on a schedule, by the reason its `flagged` line names."""
+    line = recorded(found, item)
+    return line is not None and line.get("held") == watch.SCHEDULED_TURN
+
+
 def remove(root: Path, verdict: Dict[str, Any], why: str = "") -> None:
     """Removes a verdict's file, so no report text rests on disk past its use. Never raises."""
     try:
@@ -179,7 +188,8 @@ def due(root: Path, session_id: str, saved: List[Dict[str, Any]], entries: Entri
     watching says whether a watcher of the session was running before entries were read.
     """
     found = watch.checks(root, session_id)
-    shown = [report_key(item) for item in found if item.get("outcome") == watch.SHOWN]
+    showings = [item for item in found if item.get("outcome") == watch.SHOWN]
+    shown = [report_key(item) for item in showings]
     waiting = []
     for verdict in saved:
         line = recorded(found, verdict)
@@ -198,10 +208,16 @@ def due(root: Path, session_id: str, saved: List[Dict[str, Any]], entries: Entri
             remove(root, verdict, "the conversation was compacted since")
         elif never_given:
             waiting.append(verdict)
-    if waiting and len(shown) >= SHOW_CAP:
-        for verdict in waiting:
-            remove(root, verdict, f"the session already had {SHOW_CAP} showings")
-        return []
+    # Two counts, by the turn the report is about: the prompt does not say who sent it
+    caps = (
+        (False, SHOW_CAP, f"the session already had {SHOW_CAP} showings"),
+        (True, SCHEDULED_SHOW_CAP, f"the session already had {SCHEDULED_SHOW_CAP} showings for scheduled turns"),
+    )
+    for scheduled, cap, why in caps:
+        if sum(1 for item in showings if on_schedule(found, item) is scheduled) >= cap:
+            for verdict in [verdict for verdict in waiting if on_schedule(found, verdict) is scheduled]:
+                waiting.remove(verdict)
+                remove(root, verdict, why)
     return sorted(waiting, key=lambda verdict: (saved_at(verdict), verdict["trace_uuid"]), reverse=True)
 
 

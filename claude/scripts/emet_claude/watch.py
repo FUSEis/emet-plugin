@@ -38,13 +38,18 @@ polling of its turn. A turn without one is polled again after a later Stop.
 | `no_person` | no | The Stop was not polled: no person is at the session (`claude -p`, the SDK). |
 
 A `flagged` line that was not handed over names the reason under "held": `shown_turn` (the turn
-began with a prompt that carried an earlier verdict), `wake_cap` (the session already had 3 wakes),
-`newer_turn` (a later turn had started or been delivered) or `late` (the report was ready
-more than 60 seconds after its turn ended). The first of the four that applies is the one named.
+began with a prompt that carried an earlier verdict), `scheduled_turn` (Claude Code started the turn
+on a schedule), `wake_cap` (the session already had 3 wakes), `newer_turn` (a later turn had started
+or been delivered) or `late` (the report was ready more than 60 seconds after its turn ended).
+The first of the five that applies is the one named.
 
 Claude's answer in a `shown_turn` quotes the claims of the earlier verdict, and Emet flags such an
 answer again. So its report is read and recorded, and Claude is never told of it: no wake, and no
 verdict is saved.
+
+No one reads along at a `scheduled_turn` (a `/loop` iteration, a scheduled wake-up), and a wake
+there would spend a turn and one of the session's wakes. So its verdict is saved and no wake is
+made: the next prompt of the session carries it, which the loop's next iteration is.
 
 A turn is still polled after those 60 seconds, until the 300 are over. A flagged report that
 comes then wakes no one. It is read so that it can be saved and recorded, for the next prompt
@@ -117,6 +122,7 @@ LATE_S = 60
 EDGE_S = 1
 # Why a flagged report was not handed to Claude
 SHOWN_TURN = "shown_turn"
+SCHEDULED_TURN = "scheduled_turn"
 CAPPED = "wake_cap"
 NEWER_TURN = "newer_turn"
 LATE = "late"
@@ -211,6 +217,8 @@ class Trace:
     # Claude Code's id of the turn and the time of its last entry, "" and 0 for a line that names none
     prompt_id: str = ""
     ended: float = 0.0
+    # Whether Claude Code started the turn on a schedule, as the sender marked its line
+    scheduled: bool = False
 
 
 @dataclass(frozen=True)
@@ -445,11 +453,15 @@ def turn_end(trace: Trace, stop: Stop) -> float:
 def hold_reason(root: Path, config: Config, stop: Stop, trace: Trace, found: List[Dict[str, Any]]) -> str:
     """Returns why a flagged report is not handed to Claude, or "" when it is. stop is the session's latest Stop.
 
-    The first reason that applies is the one recorded: a turn that carried a verdict, the cap, then a newer turn, then a late report.
+    The first reason that applies is the one recorded: a turn that carried a verdict, a scheduled turn, the cap,
+    then a newer turn, then a late report.
     """
     # Its answer quotes the claims of the verdict it carried. Telling Claude of that would start a chain
     if trace.prompt_id and trace.prompt_id in shown_prompts(found):
         return SHOWN_TURN
+    # No one reads along, and a wake would spend a turn. Before the rest, so the word always names such a turn: showings count by it
+    if trace.scheduled:
+        return SCHEDULED_TURN
     if wakes(found) >= WAKE_CAP:
         return CAPPED
     # A wake that lands in a running turn is folded into it and can go unseen
@@ -582,6 +594,7 @@ def delivered(lines: List[Dict[str, Any]], endpoint: str, by_plugin: bool = Fals
                 conversation,
                 pending.plain(item.get("prompt_id")),
                 ended.timestamp() if ended else 0.0,
+                item.get(pending.TURN_ORIGIN) == pending.SCHEDULED,
             ),
         )
     return list(found.values())
@@ -915,8 +928,8 @@ def settle(root: Path, config: Config, stop: Stop, trace: Trace, document: Any) 
     """Records a report that is ready. Returns the text to wake Claude with, or "" when Claude is not woken.
 
     stop is the session's latest Stop. Text is returned only for a flagged report not yet recorded,
-    of a turn that carried no earlier verdict, under the cap, of the turn that Stop ended, with no newer turn under way, ready within LATE_S
-    of the end of that turn, and after it was recorded as handed over.
+    of a turn that carried no earlier verdict and was not started on a schedule, under the cap, of the turn that Stop ended,
+    with no newer turn under way, ready within LATE_S of the end of that turn, and after it was recorded as handed over.
     """
     session_id = stop.session_id
     status = report.status(document)
