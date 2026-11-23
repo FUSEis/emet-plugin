@@ -1,33 +1,26 @@
-"""Calls the Anthropic Messages API with the standard library, and a stand-in that replays written replies offline.
+"""Calls models through the Claude Code CLI (`claude -p`) on the logged-in account, and replays written replies offline.
 
-Requests and responses are the JSON the API documents (https://platform.claude.com/docs/en/api/messages), as plain dicts.
+Requests and responses are the Messages-shaped dicts the harness already uses, so graders and cases do not change.
 """
 
 from __future__ import annotations
 
-import http.client
 import json
 import os
-import socket
-import time
-import urllib.error
-import urllib.request
-from typing import Any, Callable, Dict, List, Optional, Protocol
+import shutil
+import subprocess
+import tempfile
+from typing import Any, Dict, List, Protocol
 
-# The only host the eval calls. The plugin itself never does
-API_URL = "https://api.anthropic.com/v1/messages"
-# The version whose request and response shapes this file was written against
-API_VERSION = "2026-10-21"
-KEY_VARIABLE = "ANTHROPIC_API_KEY"
-# The API's errors page says to retry a rate limit, a server error and an overload. A 5xx sent after the model
-# ran can be billed once more; a reply lost after the request was sent is never asked for again
-RETRIED = (429,)
-RETRIES = 4
-# A timeout says nothing about whether the request arrived (socket.timeout is its own class before Python 3.10)
-TIMEOUTS = (socket.timeout, TimeoutError)
-# The only failures that prove no request left: nothing listens at the address, or its name does not resolve
-NEVER_SENT = (ConnectionRefusedError, socket.gaierror)
-MAX_WAIT_S = 60.0
+# --safe-mode turns off the user's hooks, plugins, skills, MCP servers and CLAUDE.md but keeps the login (--bare drops it).
+# dontAsk denies every tool call, so an attempt is seen and nothing runs
+FLAGS = [
+    *("--safe-mode", "--setting-sources", "project,local", "--strict-mcp-config", "--disable-slash-commands"),
+    *("--no-session-persistence", "--include-hook-events", "--permission-mode", "dontAsk"),
+    *("--output-format", "stream-json", "--verbose", "--max-turns", "1"),
+]
+# The case's stand-in tools, as Claude Code names them
+TOOLS = {"read_file": "Read", "run_command": "Bash", "fetch_url": "WebFetch"}
 # A case scripts this many assistant turns before its notice, and this many more for each earlier wake in the session
 SCRIPTED_ASSISTANT_TURNS = 2
 EARLIER_WAKE_TURNS = 3
@@ -35,41 +28,20 @@ EARLIER_WAKE_TURNS = 3
 
 class Client(Protocol):
     def create(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Sends one Messages request and returns the response body."""
+        """Runs one Messages-shaped request and returns a Messages-shaped response."""
 
 
 class ApiError(Exception):
-    """Carries the status and the API's error type. Never the request, its headers or the key."""
+    """One failed call: the exit code and a short kind. Never the prompt or the output."""
 
     def __init__(self, status: int, kind: str) -> None:
         super().__init__(f"{status} {kind}")
-        self.status = status
-        self.kind = kind
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuses every redirect, so the key is never sent on to another address."""
-
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None
-
-
-def ask(call: urllib.request.Request, timeout: float) -> Any:
-    """Makes one request and follows no redirect: a 3xx answer is raised as an HTTPError."""
-    return urllib.request.build_opener(NoRedirect).open(call, timeout=timeout)
 
 
 def count(tokens: Dict[str, int], response: Dict[str, Any]) -> None:
-    """Adds the tokens a response reports to a running total."""
-    usage = response.get("usage")
+    usage = response.get("usage") or {}
     for key in ("input", "output"):
-        spent = usage.get(f"{key}_tokens") if isinstance(usage, dict) else None
-        tokens[key] += spent if isinstance(spent, int) and not isinstance(spent, bool) else 0
-
-
-def text_of(response: Dict[str, Any]) -> str:
-    """Joins the text blocks of a response. Thinking and tool blocks are skipped."""
-    return "\n".join(block.get("text", "") for block in blocks(response) if block.get("type") == "text").strip()
+        tokens[key] += usage.get(f"{key}_tokens", 0)
 
 
 def blocks(response: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -77,74 +49,71 @@ def blocks(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
 
 
-class AnthropicClient:
-    """Reads the key from the environment once, and keeps it out of every message, error and repr."""
+def text_of(response: Dict[str, Any]) -> str:
+    return "\n".join(block.get("text", "") for block in blocks(response) if block.get("type") == "text").strip()
 
-    def __init__(self, url: str = API_URL, timeout: float = 600.0, sleep: Callable[[float], None] = time.sleep) -> None:
-        key = os.environ.get(KEY_VARIABLE, "")
-        if not key:
-            raise SystemExit(f"{KEY_VARIABLE} is not set. Set it in your shell, or pass --offline to replay the written replies.")
-        self._key = key
-        self.url = url
+
+def render(message: Dict[str, Any]) -> str:
+    """Writes a turn as text: the CLI takes no earlier assistant turn or tool result as structured input."""
+    content = message["content"]
+    return content if isinstance(content, str) else "\n".join(block.get("text") or f"[{json.dumps(block)}]" for block in content)
+
+
+class ClaudeCodeClient:
+    """Runs each request as one `claude -p` call, from an empty temporary directory and without any billing key."""
+
+    def __init__(self, timeout: float = 600.0) -> None:
+        if shutil.which("claude") is None:
+            raise SystemExit("The claude command is not on PATH. Install Claude Code and log in, or pass --offline.")
         self.timeout = timeout
-        self.sleep = sleep
 
     def create(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        body = json.dumps(request).encode("utf-8")
-        headers = {"x-api-key": self._key, "anthropic-version": API_VERSION, "content-type": "application/json"}
-        for attempt in range(RETRIES + 1):
-            wait: Optional[float] = None
+        *earlier, last = request["messages"]
+        prompt = render(last)
+        if earlier:
+            transcript = "\n\n".join(f"[{item['role']}]\n{render(item)}" for item in earlier)
+            prompt = f"The conversation so far. You are the assistant.\n\n<transcript>\n{transcript}\n</transcript>\n\n{prompt}"
+        graded = "format" in request.get("output_config", {})
+        system = request["system"] + ("\n\nReply with the JSON object only, with no code fence." if graded else "")
+        command = ["claude", "-p", "--model", request["model"], "--system-prompt", system, *FLAGS]
+        command += ["--tools", ",".join(TOOLS[tool["name"]] for tool in request.get("tools", []))]
+        if "effort" in request.get("output_config", {}):
+            command += ["--effort", request["output_config"]["effort"]]
+        env = {key: value for key, value in os.environ.items() if key not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+        with tempfile.TemporaryDirectory(prefix="emet-eval-") as empty:
             try:
-                call = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
-                with ask(call, self.timeout) as reply:
-                    return parsed(reply.status, reply.read())
-            except urllib.error.HTTPError as error:
-                if 300 <= error.code < 400:
-                    raise ApiError(error.code, "redirect") from None
-                kind = error_kind(error)
-                if attempt == RETRIES or not (error.code in RETRIED or error.code >= 500):
-                    raise ApiError(error.code, kind) from None
-                wait = retry_after(error)
-            except urllib.error.URLError as error:
-                # Asked again only when the request cannot have left. A timeout while connecting is not that proof
-                if attempt == RETRIES or not isinstance(error.reason, NEVER_SENT):
-                    raise ApiError(0, "connection_error") from None
-            except (*TIMEOUTS, ConnectionError, http.client.HTTPException):
-                # Sent, and the reply was lost: the API may have run it
-                raise ApiError(0, "no_reply") from None
-            self.sleep(min(wait if wait is not None else 2.0**attempt, MAX_WAIT_S))
-        raise ApiError(0, "connection_error")  # pragma: no cover - the loop always returns or raises
+                done = subprocess.run(command, input=prompt, capture_output=True, text=True, timeout=self.timeout, cwd=empty, env=env)  # noqa: S603
+            except subprocess.TimeoutExpired:
+                raise ApiError(0, "timeout") from None
+        response = parse(done.stdout, done.returncode)
+        if graded:
+            response["content"] = [{"type": "text", "text": judged(text_of(response))}]
+        return response
 
 
-def parsed(status: int, body: bytes) -> Dict[str, Any]:
-    """Returns the response object. Anything else is an error of this one call, like any other."""
-    try:
-        answer = json.loads(body)
-    except ValueError:
-        raise ApiError(status, "bad_response") from None
-    if not isinstance(answer, dict):
-        raise ApiError(status, "bad_response")
-    return answer
+def parse(output: str, code: int) -> Dict[str, Any]:
+    """Turns the stream-json lines into a response. A hook event, a failed run or an empty reply is an error."""
+    events = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+    if any(event.get("type") == "system" and str(event.get("subtype")).startswith("hook") for event in events):
+        raise ApiError(code, "hook_ran")
+    done: Dict[str, Any] = next((event for event in events if event.get("type") == "result"), {})
+    messages = [event["message"] for event in events if event.get("type") == "assistant" and not event.get("parent_tool_use_id")]
+    content = [block for message in messages for block in message["content"]]
+    for block in content:
+        block["name"] = {claude: ours for ours, claude in TOOLS.items()}.get(block.get("name"), block.get("name"))
+    if code or not done or not content or (done.get("is_error") and done.get("subtype") != "error_max_turns"):
+        raise ApiError(code, str(done.get("subtype") or "claude_exit"))
+    stop = messages[-1].get("stop_reason") or "end_turn"
+    return {"content": content, "stop_reason": stop, "usage": done.get("usage")}
 
 
-def error_kind(error: urllib.error.HTTPError) -> str:
-    """Returns the API's error type, limited to plain characters."""
-    try:
-        kind = json.loads(error.read())["error"]["type"]
-    except (ValueError, KeyError, TypeError, OSError):
-        return "error"
-    return kind if isinstance(kind, str) and kind.replace("_", "").isalnum() and len(kind) <= 40 else "error"
-
-
-def retry_after(error: urllib.error.HTTPError) -> Optional[float]:
-    try:
-        return max(0.0, float(error.headers.get("retry-after", "")))
-    except (ValueError, TypeError):
-        return None
+def judged(text: str) -> str:
+    """Drops a markdown fence a model put around its JSON verdict."""
+    return text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
 
 class ReplayClient:
-    """Answers each case with the reply written for it in fixtures/replies.json, so the whole run works with no key.
+    """Answers each case with the reply written for it in fixtures/replies.json, so the whole run works with no login.
 
     A case is found by its opening request, and the step by how many assistant turns the request already holds.
     A grading request is answered with the hand label of the reply when it has one, else with a pass.
