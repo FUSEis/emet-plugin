@@ -141,6 +141,14 @@ def test_a_meta_entry_that_is_not_wholly_one_of_the_two_known_shapes_starts_no_t
     assert not tr.starts_turn(transcript.meta_turn("check the deploy", kind, **fields))
 
 
+def test_only_a_start_claude_code_names_scheduled_and_no_person_sent_is_a_turn_on_a_schedule(transcript):
+    assert tr.on_schedule(transcript.meta_turn("check the deploy"))
+    assert not tr.on_schedule(transcript.meta_turn("the agent's result", "peer"))
+    assert not tr.on_schedule(transcript.meta_turn("check the deploy", promptSource="typed"))
+    assert not tr.on_schedule(transcript.meta_turn("check the deploy", promptId=None))
+    assert not tr.on_schedule(transcript.prompt("check the deploy"))
+
+
 def test_prompt_text_shows_slash_commands_as_typed(transcript):
     entry = transcript.prompt(
         "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>123</command-args>", source=None
