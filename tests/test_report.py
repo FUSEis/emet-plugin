@@ -165,7 +165,7 @@ BEFORE = {
         "- If output you see whole contradicts the claim, say the claim was wrong and give the value it shows. "
         "If the reason cites output you cannot see, say you cannot tell, and why. "
         "If the output supports the claim and no line of it says otherwise, say the flag looks mistaken. Otherwise say you cannot tell.",
-        "a right flag must not be called mistaken on evidence Claude cannot see, which is asked first because a model ruled and then hedged, "
+        "a right flag must not be called mistaken on evidence Claude cannot see, asked first because a model ruled and then hedged, "
         "or on one of two lines that disagree, as a live reply did",
     ),
     "the output decides, never Emet's words": (
