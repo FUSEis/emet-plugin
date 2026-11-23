@@ -120,11 +120,22 @@ def write_json(path: Path, value: Any) -> None:
 
 def open_lock(path: Path) -> IO[str]:
     """Opens a lock file, and makes it when there is none. A link in its place is removed, never opened or made through."""
-    if path.is_symlink():
-        # Another process can have removed it first
+
+    def opener(name: str, flags: int) -> int:
+        # The mode is the one open gives a new file
+        return os.open(name, flags | NOFOLLOW, 0o666)
+
+    if NOFOLLOW:
+        try:
+            return open(path, "a+", opener=opener)
+        except OSError:
+            # Looked at after the open failed, so a file another hook put there since is opened and never removed
+            if path.is_symlink():
+                path.unlink(missing_ok=True)
+    # Windows has no flag that refuses a link at the open. There this look is the guard
+    elif path.is_symlink():
         path.unlink(missing_ok=True)
-    # The flag closes the gap after the look. The mode is the one open gives a new file
-    return open(path, "a+", opener=lambda name, flags: os.open(name, flags | NOFOLLOW, 0o666))
+    return open(path, "a+", opener=opener)
 
 
 @contextmanager

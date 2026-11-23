@@ -144,31 +144,85 @@ def test_a_link_at_a_lock_file_is_removed_and_the_lock_is_taken_on_a_new_file(
 
 @links
 @pytest.mark.parametrize("take", BOTH)
-def test_a_link_put_at_a_lock_file_after_the_look_is_refused_by_the_open(
+def test_a_link_put_at_a_lock_file_again_after_it_was_removed_is_refused_by_the_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, take: Take
 ) -> None:
     outside = tmp_path / "outside.lock"
     lock = tmp_path / "some.lock"
     lock.symlink_to(outside)
-    # The look sees no link, as when one is planted between the look and the open
-    monkeypatch.setattr(type(lock), "is_symlink", lambda self: False)
+    # The link is still there at the second open, as when one is planted again right after the removal
+    monkeypatch.setattr(type(lock), "unlink", lambda self, missing_ok=False: None)
     ran = []
     with pytest.raises(OSError), take(lock):
         ran.append("work")
     assert ran == [] and not outside.exists()
 
 
+@links
 @pytest.mark.parametrize("take", BOTH)
-def test_a_link_that_another_process_removed_first_does_not_stop_the_lock(
+def test_a_lock_file_another_hook_made_in_the_links_place_is_opened_and_never_removed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, take: Take
 ) -> None:
+    if not storage.NOFOLLOW:
+        pytest.skip("the platform has no flag that refuses a link at the open")
     lock = tmp_path / "some.lock"
-    # The look still saw the link, and it is gone by the time it is removed
+    lock.symlink_to(tmp_path / "outside.lock")
+    look = type(lock).is_symlink
+    made = []
+
+    def another_hook_was_first(self: Path) -> bool:
+        # Between this hook's refused open and its look, another hook removes the link and makes the lock file
+        if not made:
+            self.unlink()
+            self.write_bytes(FILLER)
+            made.append(self.stat().st_ino)
+        return look(self)
+
+    monkeypatch.setattr(type(lock), "is_symlink", another_hook_was_first)
+    with take(lock) as given:
+        assert given is not False
+    monkeypatch.undo()
+    assert lock.stat().st_ino == made[0] and lock.read_bytes() == FILLER, (
+        "removing the file another hook holds its lock on would let both of them in at once"
+    )
+    assert not (tmp_path / "outside.lock").exists()
+
+
+@pytest.mark.parametrize("take", BOTH)
+def test_a_lock_file_is_never_removed_on_a_look_that_is_out_of_date(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, take: Take) -> None:
+    if not storage.NOFOLLOW:
+        pytest.skip("the platform has no flag that refuses a link at the open, so the look comes first there")
+    lock = tmp_path / "some.lock"
+    lock.write_bytes(FILLER)
+    inode = lock.stat().st_ino
+    # Any look says link, as one taken before another hook replaced the link would
     monkeypatch.setattr(type(lock), "is_symlink", lambda self: True)
     with take(lock) as given:
         assert given is not False
     monkeypatch.undo()
-    assert lock.is_file()
+    assert lock.stat().st_ino == inode, "the open comes first, and a path that opens is never removed"
+
+
+@links
+@pytest.mark.parametrize("take", BOTH)
+def test_a_link_that_another_process_removed_first_does_not_stop_the_lock(
+    tmp_path: Path, link_flag: int, monkeypatch: pytest.MonkeyPatch, take: Take
+) -> None:
+    lock = tmp_path / "some.lock"
+    lock.symlink_to(tmp_path / "outside.lock")
+    look = type(lock).is_symlink
+
+    def removed_after_the_look(self: Path) -> bool:
+        found = look(self)
+        if found:
+            self.unlink()
+        return found
+
+    monkeypatch.setattr(type(lock), "is_symlink", removed_after_the_look)
+    with take(lock) as given:
+        assert given is not False
+    monkeypatch.undo()
+    assert lock.is_file() and not lock.is_symlink() and not (tmp_path / "outside.lock").exists()
 
 
 @pytest.mark.parametrize("take", BOTH)
@@ -196,6 +250,7 @@ def test_a_pipe_at_a_lock_file_fails_the_lock_and_nothing_waits(tmp_path: Path, 
     waiter = threading.Thread(target=work, daemon=True)
     waiter.start()
     waiter.join(5)
+    assert not waiter.is_alive(), "an open that waits on the pipe would hold the hook"
     assert seen == ["OSError"], "no work runs under a lock that is a pipe, and the caller gets the error its own handler logs by type"
     assert stat.S_ISFIFO(lock.stat().st_mode)
 

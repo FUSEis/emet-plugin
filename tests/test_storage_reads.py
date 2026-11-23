@@ -42,8 +42,10 @@ def test_a_pipe_in_the_files_place_gives_the_default_without_waiting(tmp_path: P
     waiter = threading.Thread(target=lambda: found.append(storage.read_json(path, DEFAULT)), daemon=True)
     waiter.start()
     waiter.join(5)
+    alive = waiter.is_alive()
     for end in ends:
         os.close(end)
+    assert not alive, "an open that waits for a writer would hold the hook"
     assert found == [DEFAULT], (
         "a pipe is read as an absent file: the read neither waits for a writer nor fails over one that writes nothing"
     )
