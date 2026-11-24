@@ -16,7 +16,7 @@ dev = [
     # Shuffles the tests on every run and prints the seed. pytest-randomly 4 needs Python 3.10, 5 needs 3.11
     "pytest-randomly==3.16.0; python_version < '3.11'",
     "pytest-randomly==5.1.0; python_version >= '3.11'",
-    "ruff==0.17.5",
+    "ruff==0.17.6",
 ]
 
 [tool.uv]
