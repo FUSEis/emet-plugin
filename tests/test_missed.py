@@ -281,14 +281,17 @@ def test_the_sender_never_loads_the_prompt_hook_or_the_poller(transcript, enviro
     # A fresh process runs every sending mode, the hook and its worker, so no module an earlier test imported hides a load
     code = (
         f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); from emet_claude import commands; "
-        "commands.spawn_worker = lambda *args: None; "
+        "import functools; started = []; commands.spawn_worker = lambda mode, raw: started.append(mode); "
+        "commands.process = functools.partial(commands.process, wait=0); "
         "[commands.main([mode]) for mode in commands.HOOK_MODES]; "
         f"[commands.run_worker(mode, {json.dumps(transcript.hook_input()).encode()!r}) for mode in commands.HOOK_MODES]; "
-        "print(sorted(name for name in ('missed', 'watch', 'verdicts', 'sessions') if 'emet_claude.' + name in sys.modules))"
+        "print(started == list(commands.HOOK_MODES), "
+        "sorted(name for name in ('missed', 'watch', 'verdicts', 'sessions') if 'emet_claude.' + name in sys.modules))"
     )
-    env = {**os.environ, **environ}
+    inherited = {name: value for name, value in os.environ.items() if not name.startswith(INHERITED)}
+    env = {**inherited, **environ}
     result = subprocess.run([sys.executable, "-c", code], input=b"", env=env, capture_output=True, timeout=PROCESS_TIMEOUT_S)
-    assert result.stdout.strip() == b"[]", "the sending hooks must not pay for, or break over, the prompt hook's or the poller's modules"
+    assert result.stdout.strip() == b"True []", f"the sending hooks must not pay for, or break over, these modules: {result.stderr!r}"
     assert [envelope["trace_id"] for envelope in emet.envelopes] == [prompt["uuid"]], "the worker sent the turn, so the send path ran"
 
 
