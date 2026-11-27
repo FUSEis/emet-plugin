@@ -51,7 +51,8 @@ A plain paragraph becomes one list item; start lines with `- ` to write several.
 
 The report check (`watch.py`, `checks.py`, `verdicts.py`, `sessions.py` and `report.py`) is the part of the plugin that can wake Claude. `hooks/hooks.json` starts it at every `Stop` as a background hook (`async` and `asyncRewake`), and when it exits with code 2 Claude Code hands what it wrote to stderr to Claude. A change to it keeps the seven rules below. Each rule names the tests that fail when it is broken; they are in `tests/test_watch.py` unless another file is named.
 
-1. **The hook never blocks the session.** The process ends itself after 320 seconds, below the 330 its hook is given, and starts no request after 300. It never waits for the session's watcher lock, and never takes the sender's session lock or the queue lock. It does not run at all where it could not run in the background or no person would see the wake. The status and pause locks are still taken with a wait, each for one small write. Claude Code enforces no timeout on a background hook, so the process's own end is the limit that counts. The hook entry keeps both flags and the 330 seconds, and no other event starts the check.
+1. **The hook never blocks the session.** The process ends itself after 320 seconds, below the 330 its hook is given, and starts no request after 300. It never waits for the session's watcher lock, and never takes the sender's session lock or the queue lock. It does not run at all where it could not run in the background or no person would see the wake. The status and pause locks are still taken with a wait, each for one small write. Claude Code enforces no timeout on a background hook, so the process's own end is the limit that counts. The hook entry keeps both flags and the 330 seconds, and no other event starts the check. The hooks that send a turn never load it, so a fault in it cannot stop sending.
+   - In `tests/test_missed.py`: `test_the_sender_never_loads_the_prompt_hook_or_the_poller`
    - In `tests/test_manifests.py`: `test_the_report_check_runs_only_at_stop_in_the_background_with_the_time_the_poller_needs`
    - In `tests/test_process.py`, which runs the command as `hooks.json` spells it: `test_the_command_under_test_is_the_one_the_shipped_hook_names`, `test_the_process_ends_itself_while_a_request_hangs`
    - `test_the_process_ends_itself_below_the_hook_limit`
@@ -116,7 +117,7 @@ The prompt hook (`missed.py`) runs at `UserPromptSubmit`, in the foreground: the
    - `test_the_hook_takes_no_lock_with_a_wait_and_tries_only_the_three_it_needs`
    - `test_the_hook_needs_no_key_and_asks_emet_nothing`
    - `test_an_error_in_the_prompt_hook_is_logged_by_type_and_never_raised`
-   - `test_the_sender_never_loads_the_prompt_hook`
+   - `test_the_sender_never_loads_the_prompt_hook_or_the_poller`
    - In `tests/test_manifests.py`: `test_the_prompt_hook_runs_in_the_foreground_with_a_short_limit_and_cannot_be_made_to_block`
 2. **A verdict is shown at most once.** The checks file decides, and the verdict file only supplies the text. The showing is recorded as `shown` first, then the file is removed, then the text is printed. A crash in between loses a showing and never repeats one. A showing that cannot be recorded shows nothing. All of it runs under the session's prompt lock, so two prompts that overlap cannot both take one verdict: the one that finds the lock taken shows nothing. A showing is known by the report's id and revision, so a later revision of a report already shown is shown as a report of its own, under the same cap: its claims can differ, and the user never got it.
    - `test_two_prompts_of_a_session_that_overlap_cannot_both_take_the_verdict`

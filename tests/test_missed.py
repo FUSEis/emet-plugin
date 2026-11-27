@@ -275,10 +275,24 @@ def test_the_hook_waits_for_no_lock_another_process_holds(session, environ, emet
     assert "check not shown, the status file is in use" in log(environ), "the status file is left alone when it is in use"
 
 
-def test_the_sender_never_loads_the_prompt_hook():
-    code = f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); import emet_claude.commands; print('emet_claude.missed' in sys.modules)"
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=PROCESS_TIMEOUT_S)
-    assert result.stdout.strip() == b"False", "the four sending hooks must not pay for, or break over, the prompt hook's module"
+def test_the_sender_never_loads_the_prompt_hook_or_the_poller(transcript, environ, emet):
+    prompt = transcript.prompt("What is 2 + 2?")
+    transcript.text(f"msg_{prompt['uuid'][:8]}", "4")
+    # A fresh process runs every sending mode, the hook and its worker, so no module an earlier test imported hides a load
+    code = (
+        f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); from emet_claude import commands; "
+        "import functools; started = []; commands.spawn_worker = lambda mode, raw: started.append(mode); "
+        "commands.process = functools.partial(commands.process, wait=0); "
+        "[commands.main([mode]) for mode in commands.HOOK_MODES]; "
+        f"[commands.run_worker(mode, {json.dumps(transcript.hook_input()).encode()!r}) for mode in commands.HOOK_MODES]; "
+        "print(started == list(commands.HOOK_MODES), "
+        "sorted(name for name in ('missed', 'watch', 'verdicts', 'sessions') if 'emet_claude.' + name in sys.modules))"
+    )
+    inherited = {name: value for name, value in os.environ.items() if not name.startswith(INHERITED)}
+    env = {**inherited, **environ}
+    result = subprocess.run([sys.executable, "-c", code], input=b"", env=env, capture_output=True, timeout=PROCESS_TIMEOUT_S)
+    assert result.stdout.strip() == b"True []", f"the sending hooks must not pay for, or break over, these modules: {result.stderr!r}"
+    assert [envelope["trace_id"] for envelope in emet.envelopes] == [prompt["uuid"]], "the worker sent the turn, so the send path ran"
 
 
 # The same code in this process, on the tests' clock

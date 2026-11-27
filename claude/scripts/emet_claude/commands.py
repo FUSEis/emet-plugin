@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar
 from urllib.parse import urlencode
 
-from . import VERSION, checks, envelope, pause, pending, storage, transcript, transport, watch
+from . import VERSION, checks, envelope, pause, pending, storage, transcript, transport
 from .config import FROM_CLAUDE_ACCOUNT, Config, load
 from .spans import Builder, Capture
 
@@ -388,6 +388,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if mode == WATCH_MODE:
         # The one mode that can exit with another code than 0, to wake Claude for a flagged report
+        # Imported here, so the sender never loads the poller
+        from . import watch
+
         return watch.run(sys.stdin.buffer.read())
     if mode == PROMPT_MODE:
         # Imported here, so the sender never loads the prompt hook
