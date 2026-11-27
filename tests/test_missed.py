@@ -275,10 +275,11 @@ def test_the_hook_waits_for_no_lock_another_process_holds(session, environ, emet
     assert "check not shown, the status file is in use" in log(environ), "the status file is left alone when it is in use"
 
 
-def test_the_sender_never_loads_the_prompt_hook():
-    code = f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); import emet_claude.commands; print('emet_claude.missed' in sys.modules)"
+@pytest.mark.parametrize("module", ["missed", "watch", "verdicts", "sessions"])
+def test_the_sender_never_loads_the_prompt_hook_or_the_poller(module):
+    code = f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); import emet_claude.commands; print('emet_claude.{module}' in sys.modules)"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=PROCESS_TIMEOUT_S)
-    assert result.stdout.strip() == b"False", "the four sending hooks must not pay for, or break over, the prompt hook's module"
+    assert result.stdout.strip() == b"False", f"the sending hooks must not pay for, or break over, the {module} module"
 
 
 # The same code in this process, on the tests' clock

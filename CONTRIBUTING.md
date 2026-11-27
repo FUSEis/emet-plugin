@@ -116,7 +116,7 @@ The prompt hook (`missed.py`) runs at `UserPromptSubmit`, in the foreground: the
    - `test_the_hook_takes_no_lock_with_a_wait_and_tries_only_the_three_it_needs`
    - `test_the_hook_needs_no_key_and_asks_emet_nothing`
    - `test_an_error_in_the_prompt_hook_is_logged_by_type_and_never_raised`
-   - `test_the_sender_never_loads_the_prompt_hook`
+   - `test_the_sender_never_loads_the_prompt_hook_or_the_poller`
    - In `tests/test_manifests.py`: `test_the_prompt_hook_runs_in_the_foreground_with_a_short_limit_and_cannot_be_made_to_block`
 2. **A verdict is shown at most once.** The checks file decides, and the verdict file only supplies the text. The showing is recorded as `shown` first, then the file is removed, then the text is printed. A crash in between loses a showing and never repeats one. A showing that cannot be recorded shows nothing. All of it runs under the session's prompt lock, so two prompts that overlap cannot both take one verdict: the one that finds the lock taken shows nothing. A showing is known by the report's id and revision, so a later revision of a report already shown is shown as a report of its own, under the same cap: its claims can differ, and the user never got it.
    - `test_two_prompts_of_a_session_that_overlap_cannot_both_take_the_verdict`
