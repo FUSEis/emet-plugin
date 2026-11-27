@@ -275,11 +275,21 @@ def test_the_hook_waits_for_no_lock_another_process_holds(session, environ, emet
     assert "check not shown, the status file is in use" in log(environ), "the status file is left alone when it is in use"
 
 
-@pytest.mark.parametrize("module", ["missed", "watch", "verdicts", "sessions"])
-def test_the_sender_never_loads_the_prompt_hook_or_the_poller(module):
-    code = f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); import emet_claude.commands; print('emet_claude.{module}' in sys.modules)"
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, timeout=PROCESS_TIMEOUT_S)
-    assert result.stdout.strip() == b"False", f"the sending hooks must not pay for, or break over, the {module} module"
+def test_the_sender_never_loads_the_prompt_hook_or_the_poller(transcript, environ, emet):
+    prompt = transcript.prompt("What is 2 + 2?")
+    transcript.text(f"msg_{prompt['uuid'][:8]}", "4")
+    # A fresh process runs every sending mode, the hook and its worker, so no module an earlier test imported hides a load
+    code = (
+        f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); from emet_claude import commands; "
+        "commands.spawn_worker = lambda *args: None; "
+        "[commands.main([mode]) for mode in commands.HOOK_MODES]; "
+        f"[commands.run_worker(mode, {json.dumps(transcript.hook_input()).encode()!r}) for mode in commands.HOOK_MODES]; "
+        "print(sorted(name for name in ('missed', 'watch', 'verdicts', 'sessions') if 'emet_claude.' + name in sys.modules))"
+    )
+    env = {**os.environ, **environ}
+    result = subprocess.run([sys.executable, "-c", code], input=b"", env=env, capture_output=True, timeout=PROCESS_TIMEOUT_S)
+    assert result.stdout.strip() == b"[]", "the sending hooks must not pay for, or break over, the prompt hook's or the poller's modules"
+    assert [envelope["trace_id"] for envelope in emet.envelopes] == [prompt["uuid"]], "the worker sent the turn, so the send path ran"
 
 
 # The same code in this process, on the tests' clock
